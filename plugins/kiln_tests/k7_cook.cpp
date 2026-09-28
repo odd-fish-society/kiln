@@ -1,0 +1,206 @@
+// K7 acceptance (spec §9): cook rules, tool discovery, asset IDs, pack.
+#include "doctest.h"
+
+#include <fstream>
+#include <sys/stat.h>
+
+#include "core/hash.h"
+#include "core/util.h"
+#include "test_util.h"
+
+using namespace kiln::testutil;
+
+namespace {
+
+std::map<std::string, std::string> fixture(const fs::path& glslc_path) {
+    return {
+        {"kiln.workspace.luau",
+         "workspace \"k7\" {\n  strict_globs = true,\n  tools = { glslc = \"" +
+             glslc_path.generic_string() + "\" },\n}\n"},
+        {"build/game.target.luau",
+         "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n "
+         " link = { \"app/main\" },\n}\n"},
+        {"plugins/content/plugin.build.luau",
+         "plugin \"content\" {}\n"
+         "cook \"banner\" {\n  rule = \"cook_shader\",\n  inputs = glob(\"content/*.glsl\"),\n"
+         "  params = { stage = \"frag\" },\n}\n"
+         "cook \"icon\" {\n  rule = \"cook_copy\",\n  inputs = glob(\"content/*.png\"),\n}\n"},
+        {"plugins/content/content/banner.glsl", "#version 450\nvoid main() {}\n"},
+        {"plugins/content/content/icon.png", "PNGDATA"},
+        {"plugins/app/plugin.build.luau",
+         "plugin \"app\" { public_deps = { \"content\" } }\n"
+         "module \"main\" {\n  sources = glob(\"src/*.cpp\"),\n  deps = { public = { "
+         "\"content\" } },\n}\n"},
+        {"plugins/app/src/main.cpp", "int main() { return 0; }\n"},
+    };
+}
+
+std::vector<std::string> build_args() {
+    return {"build", "--progress=plain", "--workspace", "."};
+}
+
+} // namespace
+
+TEST_CASE("K7.1 cook rules produce assets; provider carries the manifest; pack works") {
+    TempDir tmp;
+    fs::path tool = tmp.path / "fake_glslc.sh";
+    {
+        std::ofstream f(tool);
+        f << fake_glslc_script();
+    }
+    chmod(tool.c_str(), 0755);
+    write_tree(tmp.path, fixture(tool));
+
+    auto r = run_kiln(tmp.path, build_args());
+    INFO(r.out);
+    REQUIRE(r.code == 0);
+
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/assets/content/content/banner.spv"));
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/assets/content/content/icon.png"));
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/pack/game.kpak"));
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/pack/game.kpak.json"));
+
+    // Provider JSON carries the asset manifest.
+    auto provider = read_file(tmp.path / ".kiln/graph/linux-dev/content.provider.json");
+    CHECK(provider.find("banner.spv") != std::string::npos);
+    CHECK(provider.find("icon.png") != std::string::npos);
+
+    // kpak index has two assets with stable ids.
+    auto index = read_file(tmp.path / ".kiln/out/linux-dev/pack/game.kpak.json");
+    CHECK(index.find("\"assets\"") != std::string::npos);
+}
+
+TEST_CASE("K7.5 kpak layout: 32-byte ids, offsets land exactly on blobs") {
+    TempDir tmp;
+    fs::path tool = tmp.path / "fake_glslc.sh";
+    {
+        std::ofstream f(tool);
+        f << fake_glslc_script();
+    }
+    chmod(tool.c_str(), 0755);
+    write_tree(tmp.path, fixture(tool));
+    REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
+
+    std::string kpak = read_file(tmp.path / ".kiln/out/linux-dev/pack/game.kpak");
+    REQUIRE(kpak.size() >= 9);
+    CHECK(kpak.substr(0, 5) == "KPAK1");
+    auto read_u32 = [&](size_t off) {
+        uint32_t v = 0;
+        for (int i = 0; i < 4; ++i)
+            v |= (uint8_t)kpak[off + i] << (8 * i);
+        return v;
+    };
+    auto read_u64 = [&](size_t off) {
+        uint64_t v = 0;
+        for (int i = 0; i < 8; ++i)
+            v |= (uint64_t)(uint8_t)kpak[off + i] << (8 * i);
+        return v;
+    };
+
+    uint32_t count = read_u32(5);
+    REQUIRE(count == 2);
+    size_t header_size = 9 + (size_t)count * 48;
+    REQUIRE(kpak.size() >= header_size);
+
+    // Expected ids: 32-hex prefix of BLAKE3(plugin/relpath).
+    std::string id_banner = kiln::Hash256::of_string("content/content/banner.glsl").hex().substr(0, 32);
+    std::string id_icon = kiln::Hash256::of_string("content/content/icon.png").hex().substr(0, 32);
+
+    std::map<std::string, std::pair<uint64_t, uint64_t>> entries;
+    uint64_t expect_off = header_size;
+    for (uint32_t i = 0; i < count; ++i) {
+        size_t base = 9 + (size_t)i * 48;
+        std::string id = kpak.substr(base, 32);
+        uint64_t off = read_u64(base + 32);
+        uint64_t size = read_u64(base + 40);
+        CHECK(off == expect_off);
+        CHECK(off + size <= kpak.size());
+        expect_off += size;
+        entries[id] = {off, size};
+    }
+    CHECK(entries.size() == 2);
+    CHECK(entries.count(id_banner) == 1);
+    CHECK(entries.count(id_icon) == 1);
+
+    // Blob fetch round-trip: bytes at the recorded offset match the cooked file.
+    std::string banner = read_file(tmp.path / ".kiln/out/linux-dev/assets/content/content/banner.spv");
+    std::string icon = read_file(tmp.path / ".kiln/out/linux-dev/assets/content/content/icon.png");
+    CHECK(kpak.substr(entries[id_banner].first, entries[id_banner].second) == banner);
+    CHECK(kpak.substr(entries[id_icon].first, entries[id_icon].second) == icon);
+}
+
+TEST_CASE("K7.2 editing the source PNG re-cooks one asset and repacks one archive") {
+    TempDir tmp;
+    fs::path tool = tmp.path / "fake_glslc.sh";
+    {
+        std::ofstream f(tool);
+        f << fake_glslc_script();
+    }
+    chmod(tool.c_str(), 0755);
+    write_tree(tmp.path, fixture(tool));
+    REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
+    REQUIRE(run_kiln(tmp.path, build_args()).code == 0); // settle dep discovery
+
+    {
+        std::ofstream f(tmp.path / "plugins/content/content/icon.png");
+        f << "PNGDATA-v2";
+    }
+    auto r = run_kiln(tmp.path, build_args());
+    REQUIRE(r.code == 0);
+    // Only the copy cook + pack + provider rerun; the shader cook is untouched.
+    auto out = r.out;
+    // The shader cook must not have EXECUTED (a cached line is fine).
+    CHECK(out.find("ok plugins/content/content/banner.glsl/cook_shader") ==
+          std::string::npos);
+    // A CONTENT-only recook must repack: the provider's asset_manifest now
+    // carries per-asset content hashes, so its output changed ⇒ pack re-runs
+    // (pre-fix the pack stayed cached).
+    CHECK(out.find("] ok build/game.target.luau/pack_target") != std::string::npos);
+}
+
+TEST_CASE("K7.3 tool binary swap re-cooks that rule's tasks only") {
+    TempDir tmp;
+    fs::path tool = tmp.path / "fake_glslc.sh";
+    {
+        std::ofstream f(tool);
+        f << fake_glslc_script();
+    }
+    chmod(tool.c_str(), 0755);
+    write_tree(tmp.path, fixture(tool));
+    REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
+    REQUIRE(run_kiln(tmp.path, build_args()).code == 0); // settle dep discovery
+
+    {
+        std::ofstream f(tool);
+        f << fake_glslc_script() << "\n# v2\n";
+    }
+    chmod(tool.c_str(), 0755);
+    auto r = run_kiln(tmp.path, build_args());
+    REQUIRE(r.code == 0);
+    // The shader recooks (tool_hash changed); the copy cook does not.
+    size_t copy_pos = r.out.find("cook_copy");
+    int cook_copy_ran = 0;
+    size_t pos = 0;
+    while ((pos = r.out.find("] ok plugins/content", pos)) != std::string::npos) {
+        if (r.out.find("cook_copy", pos) != std::string::npos &&
+            r.out.find("cook_copy", pos) < r.out.find('\n', pos))
+            ++cook_copy_ran;
+        ++pos;
+    }
+    (void)copy_pos;
+    CHECK(cook_copy_ran == 0);
+    CHECK(r.out.find("cook_shader") != std::string::npos);
+}
+
+TEST_CASE("K7.4 missing tool is a hard error naming the tool") {
+    TempDir tmp;
+    auto files = fixture(tmp.path / "nonexistent_glslc.sh");
+    // Empty the tools table so discovery falls back to PATH; point PATH at an
+    // empty dir so no glslc is found even on machines that have one.
+    files["kiln.workspace.luau"] = "workspace \"k7\" { strict_globs = true }\n";
+    write_tree(tmp.path, files);
+    fs::create_directories(tmp.path / "emptybin");
+    auto r = run_kiln(tmp.path, build_args(), {{"PATH", (tmp.path / "emptybin").generic_string()}});
+    REQUIRE(r.code == 2);
+    CHECK(r.out.find("glslc") != std::string::npos);
+}

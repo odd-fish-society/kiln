@@ -1,0 +1,183 @@
+#include "workspace/workspace.h"
+
+#include <algorithm>
+
+#include "core/util.h"
+#include "luau/manifest_env.h"
+
+namespace kiln {
+
+std::string host_platform() {
+#if defined(_WIN32)
+    return "windows";
+#elif defined(__APPLE__)
+    return "macos";
+#else
+    return "linux";
+#endif
+}
+
+Result<fs::path> find_workspace_root(const fs::path& start) {
+    fs::path dir = fs::absolute(start);
+    std::error_code ec;
+    for (;;) {
+        if (fs::is_regular_file(dir / "kiln.workspace.luau", ec))
+            return Result<fs::path>::success(dir);
+        auto parent = dir.parent_path();
+        if (parent == dir)
+            break;
+        dir = parent;
+    }
+    return Result<fs::path>::fail(
+        "no kiln.workspace.luau found from " + start.generic_string() +
+        " (are you inside a Kiln workspace?)");
+}
+
+Result<Workspace> load_workspace(const fs::path& root) {
+    std::error_code ec;
+    if (!fs::is_regular_file(root / "kiln.workspace.luau", ec))
+        return Result<Workspace>::fail("no kiln.workspace.luau in " +
+                                       root.generic_string());
+
+    Workspace ws;
+    ws.root = fs::absolute(root);
+    ws.config.plugin_roots = {{"plugins", ""}}; // back-compat default (spec §0)
+
+    // Workspace file.
+    luau::ManifestEnvOptions wopts;
+    wopts.workspace_root = ws.root;
+    wopts.manifest_dir = ws.root;
+    wopts.kind = luau::FileKind::Workspace;
+    auto wres = luau::evaluate_file(ws.root / "kiln.workspace.luau", wopts);
+    if (!wres.ok())
+        return Result<Workspace>::fail("kiln.workspace.luau: " + wres.error);
+    if (wres->decls.workspace) {
+        auto& w = *wres->decls.workspace;
+        ws.config.name = w.name;
+        ws.config.pools = w.pools;
+        ws.config.jobs = w.jobs;
+        ws.config.tools = w.tools;
+        ws.config.strict_globs = w.strict_globs;
+        ws.config.cpp_std = w.cpp_std;
+        ws.config.c_std = w.c_std;
+        ws.config.env_allow = w.env_allow;
+        ws.config.default_config = w.default_config;
+        ws.config.system_libs = w.system_libs;
+        if (w.plugin_roots_declared) {
+            ws.config.plugin_roots.clear();
+            for (auto& pr : w.plugin_roots) {
+                ws.config.plugin_roots.push_back(
+                    {util::norm(pr.path), pr.layer});
+            }
+        }
+    }
+
+    // ---- plugin_roots validation (spec §0) -----------------------------------
+    auto& roots = ws.config.plugin_roots;
+    {
+        bool any_layered = false, any_unlayered = false;
+        for (auto& pr : roots) {
+            if (pr.path.empty())
+                return Result<Workspace>::fail(
+                    "plugin_roots: root path must not be empty");
+            if (pr.path[0] == '/' || pr.path == ".." ||
+                util::starts_with(pr.path, "../"))
+                return Result<Workspace>::fail(
+                    "plugin_roots: root path must be workspace-relative: '" +
+                    pr.path + "'");
+            if (pr.layer.empty())
+                any_unlayered = true;
+            else
+                any_layered = true;
+        }
+        // Mixed layered/unlayered roots ⇒ config error.
+        if (any_layered && any_unlayered)
+            return Result<Workspace>::fail(
+                "plugin_roots: either every root declares a layer or none do "
+                "(mixed layered/unlayered roots)");
+        ws.layered = any_layered;
+        // No root may equal or be a path-prefix of another.
+        for (size_t i = 0; i < roots.size(); ++i) {
+            for (size_t j = i + 1; j < roots.size(); ++j) {
+                auto& a = roots[i].path;
+                auto& b = roots[j].path;
+                if (a == b || util::starts_with(a, b + "/") ||
+                    util::starts_with(b, a + "/"))
+                    return Result<Workspace>::fail(
+                        "plugin_roots: root '" + a + "' overlaps root '" + b +
+                        "' (no root may equal or contain another)");
+            }
+        }
+        // Duplicate layer names ⇒ config error (one root per layer).
+        if (any_layered) {
+            std::map<std::string, std::string> layer_of;
+            for (auto& pr : roots) {
+                auto [it, inserted] = layer_of.try_emplace(pr.layer, pr.path);
+                if (!inserted)
+                    return Result<Workspace>::fail(
+                        "plugin_roots: duplicate layer '" + pr.layer +
+                        "' (declared by '" + it->second + "' and '" + pr.path +
+                        "')");
+            }
+        }
+    }
+
+    // ---- discovery: <root>/*/plugin.build.luau, one level per root ------------
+    for (size_t ri = 0; ri < roots.size(); ++ri) {
+        auto dirs = util::list_dirs(ws.root / roots[ri].path);
+        if (!dirs.ok())
+            continue; // missing root directory is legal (zero plugins)
+        for (auto& d : *dirs) {
+            if (fs::is_regular_file(d / "plugin.build.luau", ec)) {
+                std::string name = d.filename().generic_string();
+                std::string manifest_rel = util::norm(
+                    fs::relative(d / "plugin.build.luau", ws.root).generic_string());
+                auto [it, inserted] =
+                    ws.plugin_manifest_paths.try_emplace(name, manifest_rel);
+                if (!inserted)
+                    return Result<Workspace>::fail(
+                        "duplicate plugin '" + name + "' (" + it->second +
+                        " vs " + manifest_rel + ")");
+                ws.plugins.push_back(name);
+                ws.plugin_layer[name] = roots[ri].layer;
+                ws.plugin_layer_index[name] = static_cast<int>(ri);
+            }
+        }
+    }
+    std::sort(ws.plugins.begin(), ws.plugins.end());
+
+    // Targets: build/*.target.luau.
+    luau::ManifestEnvOptions topts;
+    topts.workspace_root = ws.root;
+    topts.manifest_dir = ws.root / "build";
+    topts.kind = luau::FileKind::TargetFile;
+    auto build_dir = ws.root / "build";
+    if (fs::is_directory(build_dir, ec)) {
+        std::vector<fs::path> files;
+        for (auto& e : fs::directory_iterator(build_dir, ec)) {
+            if (e.is_regular_file(ec) && e.path().extension() == ".luau" &&
+                e.path().filename().generic_string().find(".target.") != std::string::npos)
+                files.push_back(e.path());
+        }
+        std::sort(files.begin(), files.end());
+        for (auto& f : files) {
+            auto tres = luau::evaluate_file(f, topts);
+            if (!tres.ok())
+                return Result<Workspace>::fail(f.generic_string() + ": " + tres.error);
+            if (!tres->decls.target)
+                return Result<Workspace>::fail(f.generic_string() +
+                                               ": missing `target` declaration");
+            auto t = *tres->decls.target;
+            std::string rel = util::norm(fs::relative(f, ws.root).generic_string());
+            if (ws.targets.count(t.name))
+                return Result<Workspace>::fail(
+                    "duplicate target '" + t.name + "' (" + rel + " vs " +
+                    ws.target_files[t.name] + ")");
+            ws.targets[t.name] = t;
+            ws.target_files[t.name] = rel;
+        }
+    }
+    return Result<Workspace>::success(std::move(ws));
+}
+
+} // namespace kiln

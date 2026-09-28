@@ -1,0 +1,9 @@
+build/dev/
+build/release/
+build/dbg/
+cmake-build-*/
+.kiln/
+.bootstrap/
+compile_commands.json
+*.tmp
+build/external-build/

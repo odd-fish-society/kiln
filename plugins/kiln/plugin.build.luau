@@ -1,0 +1,72 @@
+-- Kiln builds itself (K5a / spec §7a): the tool's sources live INSIDE this
+-- plugin per the residency principle (src/, include shape preserved so
+-- `#include "core/hash.h"`-style lines are unchanged). Modules mirror the
+-- source-dir map.
+
+plugin "kiln" {
+    public_deps = { "blake3", "sqlite", "luau", "cli11", "json" },
+}
+
+module "core" {
+    sources = glob("src/core/*.cpp"),
+    public_includes = { "src" },
+    deps = { public = { "blake3/blake3", "sqlite/sqlite", "luau/luau_vm", "json/json" } },
+    cpp_std = "c++20",
+}
+
+module "luau" {
+    sources = glob("src/luau/*.cpp"),
+    public_includes = { "src" },
+    deps = { public = {
+        "kiln/core",
+        "luau/luau_vm",
+        "luau/luau_ast",
+        "luau/luau_compiler",
+        "luau/luau_analysis",
+        "luau/luau_config",
+        "luau/luau_eqsat",
+    } },
+    cpp_std = "c++20",
+}
+
+module "rules" {
+    sources = glob("src/rules/*.cpp"),
+    public_includes = { "src" },
+    deps = { public = { "kiln/core", "blake3/blake3", "sqlite/sqlite" } },
+    cpp_std = "c++20",
+}
+
+module "console" {
+    sources = glob("src/console/*.cpp"),
+    public_includes = { "src" },
+    deps = { public = { "kiln/core" } },
+    cpp_std = "c++20",
+}
+
+module "workspace" {
+    sources = glob("src/workspace/*.cpp"),
+    public_includes = { "src" },
+    deps = { public = {
+        "kiln/core",
+        "kiln/luau",
+        "kiln/rules",
+        "kiln/console",
+        "blake3/blake3",
+        "sqlite/sqlite",
+        "luau/luau_vm",
+        "json/json",
+    } },
+    cpp_std = "c++20",
+}
+
+module "cli" {
+    sources = glob("src/cli/*.cpp"),
+    public_includes = { "src" },
+    deps = { public = { "kiln/core", "kiln/luau", "kiln/rules", "kiln/console",
+                        "kiln/workspace", "cli11/cli11", "blake3/blake3", "sqlite/sqlite",
+                        "luau/luau_vm", "luau/luau_ast",
+                        "luau/luau_compiler", "luau/luau_analysis",
+                        "luau/luau_config", "luau/luau_eqsat",
+                        "json/json" } },
+    cpp_std = "c++20",
+}

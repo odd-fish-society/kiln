@@ -1,0 +1,11 @@
+-- SQLite amalgamation (vendored). One plugin per vendored library (spec
+-- §7a.1): sources inside the plugin dir beside the c_library decl.
+
+plugin "sqlite" {}
+
+c_library "sqlite" {
+    sources = glob("sqlite3.c"),
+    public_includes = { "." },
+    defines = { "SQLITE_THREADSAFE=1", "SQLITE_DQS=0" },
+    c_std = "c11",
+}

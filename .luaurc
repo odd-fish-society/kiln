@@ -1,0 +1,19 @@
+# Kiln workspace luau-lsp config. Requires:
+#   - luau-lsp binary
+#   - Kiln's typedefs at <kiln>/types/build.d.luau (copy or reference them here)
+{
+    "$schema": "https://raw.githubusercontent.com/JohnnyMorganz/luau-lsp/main/editor/schema.json",
+    "languageMode": "strict",
+    "typeCheckingMode": "strict",
+    "sourcemap": {
+        "generatedSources": [],
+        "rootPath": "..",
+        "nonGeneratedBasePath": "..",
+        "sourceMapPath": ".luaurc"
+    },
+    "plugins": {
+        "luau-lsp.types.definitionFiles": [
+            "types/build.d.luau"
+        ]
+    }
+}

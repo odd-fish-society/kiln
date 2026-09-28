@@ -1,0 +1,892 @@
+#include "workspace/lower.h"
+
+#include <algorithm>
+#include <set>
+
+#include "core/util.h"
+#include "nlohmann/json.hpp"
+#include "rules/registry.h"
+
+namespace kiln {
+
+namespace {
+
+std::string cfg_name(const ConfigTuple& ct) { return ct.name(); }
+
+void set_indexed(std::map<std::string, std::string>& params, const std::string& prefix,
+                 const std::vector<std::string>& values) {
+    for (size_t i = 0; i < values.size(); ++i) {
+        char key[64];
+        snprintf(key, sizeof(key), "%s.%04zu", prefix.c_str(), i);
+        params[key] = values[i];
+    }
+}
+
+std::vector<std::string> sorted_uniq(std::vector<std::string> v) {
+    std::sort(v.begin(), v.end());
+    v.erase(std::unique(v.begin(), v.end()), v.end());
+    return v;
+}
+
+bool passes_filter(const std::vector<std::string>& platforms,
+                   const std::vector<std::string>& configs, const ConfigTuple& ct) {
+    if (!platforms.empty() &&
+        std::find(platforms.begin(), platforms.end(), ct.platform) == platforms.end())
+        return false;
+    if (!configs.empty() &&
+        std::find(configs.begin(), configs.end(), ct.config) == configs.end())
+        return false;
+    return true;
+}
+
+std::string plugin_dir_of(const LowerCtx& ctx, const std::string& plugin) {
+    return util::path_parent(ctx.ws->plugin_manifest_paths.at(plugin));
+}
+
+std::vector<std::string> public_headers_of(const LowerCtx& ctx,
+                                           const std::vector<std::string>& include_dirs) {
+    std::vector<std::string> headers;
+    auto is_header = [](const std::string& f) {
+        static const char* exts[] = {".h", ".hpp", ".hh", ".hxx", ".inl", ".inc"};
+        for (auto* e : exts)
+            if (f.size() >= strlen(e) && f.compare(f.size() - strlen(e), strlen(e), e) == 0)
+                return true;
+        return false;
+    };
+    for (auto& dir : include_dirs) {
+        auto files = util::walk_files_rel(ctx.ws->root / dir);
+        if (files.ok())
+            for (auto& f : *files)
+                if (is_header(f))
+                    headers.push_back(util::join_rel(dir, f));
+    }
+    return sorted_uniq(std::move(headers));
+}
+
+struct DepRef {
+    std::string plugin;
+    std::string module; // may be empty
+};
+
+Result<DepRef> parse_dep_ref(const std::string& raw, const LowerCtx& ctx,
+                             const std::string& from_plugin, const std::string& site) {
+    std::string plugin = raw;
+    std::string module;
+    auto slash = raw.find('/');
+    if (slash != std::string::npos) {
+        plugin = raw.substr(0, slash);
+        module = raw.substr(slash + 1);
+    }
+    auto it = ctx.declsets.find(plugin);
+    if (it == ctx.declsets.end())
+        return Result<DepRef>::fail(site + ": module of plugin '" + from_plugin +
+                                    "' references unknown/disabled plugin '" + raw +
+                                    "' — enable it or fix the dep");
+    if (!module.empty()) {
+        bool found = false;
+        for (auto& m : it->second.modules)
+            if (m.name == module)
+                found = true;
+        for (auto& c : it->second.c_libraries)
+            if (c.name == module)
+                found = true;
+        if (!found)
+            return Result<DepRef>::fail(site + ": plugin '" + plugin +
+                                        "' has no module/c_library named '" + module + "'");
+    }
+    return Result<DepRef>::success(DepRef{plugin, module});
+}
+
+TaskDecl make_task(LowerCtx& ctx, const std::string& rule, const std::string& primary,
+                   std::map<std::string, std::string> params,
+                   std::vector<std::string> inputs, std::vector<TaskId> deps,
+                   std::vector<std::string> outputs, std::string pool = "") {
+    TaskDecl d;
+    d.id.rule = rule;
+    d.id.primary_input = primary;
+    d.id.config_hash = ctx.ct.hash();
+    d.params = std::move(params);
+    d.declared_inputs = std::move(inputs);
+    d.dep_tasks = std::move(deps);
+    d.declared_outputs = std::move(outputs);
+    d.pool = std::move(pool);
+    d.rule_version = rules::rule_version(rule);
+    d.always_run = rules::rule_always_run(rule);
+    d.outputs_opaque = rules::rule_outputs_opaque(rule);
+    return d;
+}
+
+// Object path is derived from the source path (mirrors the source tree inside
+// .kiln/out/<config>/obj/<plugin>/<module>/). Plugin-local sources strip the
+// plugin dir prefix; sources globbed from outside the plugin dir (../ escapes)
+// keep the historical two-segment strip heuristic, which is layout-independent.
+std::string obj_path(const std::string& src, const std::string& pdir) {
+    std::string rel = src;
+    if (util::starts_with(rel, pdir + "/"))
+        return rel.substr(pdir.size() + 1) + ".o";
+    auto marker = rel.find("/");
+    if (marker != std::string::npos) {
+        // strip two leading path components
+        auto second = rel.find('/', marker + 1);
+        if (second != std::string::npos && second + 1 < rel.size())
+            rel = rel.substr(second + 1);
+    }
+    return rel + ".o";
+}
+
+std::string opt_for(const ConfigTuple& ct) {
+    return (ct.config == "release" || ct.config == "shipping") ? "2" : "0";
+}
+std::string debug_for(const ConfigTuple& ct) {
+    return (ct.config == "dev" || ct.config == "editor") ? "1" : "0";
+}
+
+} // namespace
+
+std::string declset_path(const ConfigTuple& ct, const std::string& plugin) {
+    return ".kiln/graph/" + ct.name() + "/" + plugin + ".declset.json";
+}
+std::string interface_path(const ConfigTuple& ct, const std::string& plugin) {
+    return ".kiln/graph/" + ct.name() + "/" + plugin + ".interface.json";
+}
+std::string provider_path(const ConfigTuple& ct, const std::string& plugin) {
+    return ".kiln/graph/" + ct.name() + "/" + plugin + ".provider.json";
+}
+std::string archive_path(const ConfigTuple& ct, const std::string& plugin) {
+    return ".kiln/out/" + ct.name() + "/lib/" + plugin + "/lib" + plugin + ".a";
+}
+std::string clib_archive_path(const ConfigTuple& ct, const std::string& plugin,
+                              const std::string& clib) {
+    return ".kiln/out/" + ct.name() + "/lib/" + plugin + "/lib" + clib + ".a";
+}
+std::string clib_interface_path(const ConfigTuple& ct, const std::string& plugin,
+                                const std::string& clib) {
+    return ".kiln/graph/" + ct.name() + "/" + plugin + ".clib-" + clib + ".interface.json";
+}
+
+Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& plugin) {
+    auto it = ctx.declsets.find(plugin);
+    if (it == ctx.declsets.end())
+        return Result<void>::fail("lowering: no declset for " + plugin);
+    auto& declset = it->second;
+    auto& pt = ctx.tasks[plugin];
+    pt.declset_path = declset_path(ctx.ct, plugin);
+    pt.interface_path = interface_path(ctx.ct, plugin);
+    pt.provider_path = provider_path(ctx.ct, plugin);
+    std::string pdir = plugin_dir_of(ctx, plugin);
+
+    std::string cxx = ctx.ws->config.tools.count("cxx") ? ctx.ws->config.tools.at("cxx")
+                                                         : "c++";
+    std::string cc = ctx.ws->config.tools.count("cc") ? ctx.ws->config.tools.at("cc") : "cc";
+    std::string ar = ctx.ws->config.tools.count("ar") ? ctx.ws->config.tools.at("ar") : "ar";
+
+    // Effective interface (own public + transitive public deps), incl. link
+    // syslibs (KILN-3): a module/c_library requiring -l flags at link time
+    // carries that requirement so dependents don't need to know.
+    EffectiveInterface eff;
+    {
+        std::vector<std::string> own_includes, own_defines, own_syslibs, own_link_flags;
+        for (auto& m : declset.modules) {
+            for (auto& d : m.public_includes)
+                own_includes.push_back(d);
+            for (auto& d : m.public_defines)
+                own_defines.push_back(d);
+            for (auto& d : m.syslibs)
+                own_syslibs.push_back(d);
+            for (auto& d : m.public_syslibs)
+                own_syslibs.push_back(d);
+            for (auto& d : m.public_link_flags)
+                own_link_flags.push_back(d);
+        }
+        for (auto& c : declset.c_libraries) {
+            for (auto& d : c.public_includes)
+                own_includes.push_back(d);
+            for (auto& d : c.defines)
+                own_defines.push_back(d);
+            for (auto& d : c.syslibs)
+                own_syslibs.push_back(d);
+            for (auto& d : c.public_syslibs)
+                own_syslibs.push_back(d);
+            for (auto& d : c.public_link_flags)
+                own_link_flags.push_back(d);
+        }
+        if (own_includes.empty())
+            own_includes.push_back(util::join_rel(pdir, "include"));
+        eff.includes = own_includes;
+        eff.defines = own_defines;
+        eff.syslibs = own_syslibs;
+        eff.link_flags = own_link_flags;
+        for (auto& dep : declset.plugin->public_deps) {
+            auto dep_it = ctx.effective.find(dep);
+            if (dep_it == ctx.effective.end())
+                continue; // disabled/optional public dep — not a hard edge here
+            for (auto& inc : dep_it->second.includes)
+                eff.includes.push_back(inc);
+            for (auto& def : dep_it->second.defines)
+                eff.defines.push_back(def);
+            for (auto& sl : dep_it->second.syslibs)
+                eff.syslibs.push_back(sl);
+            for (auto& lf : dep_it->second.link_flags)
+                eff.link_flags.push_back(lf);
+        }
+        eff.includes = sorted_uniq(std::move(eff.includes));
+        eff.defines = sorted_uniq(std::move(eff.defines));
+        eff.syslibs = sorted_uniq(std::move(eff.syslibs));
+        eff.link_flags = sorted_uniq(std::move(eff.link_flags));
+        ctx.effective[plugin] = eff;
+    }
+
+    // ---- plugin interface ----------------------------------------------------
+    {
+        std::vector<std::string> pub_includes;
+        for (auto& m : declset.modules)
+            for (auto& d : m.public_includes)
+                pub_includes.push_back(d);
+        for (auto& c : declset.c_libraries)
+            for (auto& d : c.public_includes)
+                pub_includes.push_back(d);
+        if (pub_includes.empty())
+            pub_includes.push_back(util::join_rel(pdir, "include"));
+        pub_includes = sorted_uniq(std::move(pub_includes));
+        auto headers = public_headers_of(ctx, pub_includes);
+
+        std::vector<std::string> pub_defines;
+        for (auto& m : declset.modules)
+            for (auto& d : m.public_defines)
+                pub_defines.push_back(d);
+
+        std::map<std::string, std::string> params;
+        params["plugin"] = plugin;
+        params["out"] = pt.interface_path;
+        set_indexed(params, "header", headers);
+        set_indexed(params, "include", pub_includes);
+        set_indexed(params, "define", sorted_uniq(pub_defines));
+        set_indexed(params, "syslib", eff.syslibs);
+        set_indexed(params, "link_flag", eff.link_flags);
+
+        std::vector<TaskId> iface_deps;
+        std::vector<std::string> dep_ifaces;
+        for (auto& dep : declset.plugin->public_deps) {
+            if (!ctx.declsets.count(dep))
+                continue;
+            iface_deps.push_back(*ctx.tasks[dep].interface_task);
+            dep_ifaces.push_back(ctx.tasks[dep].interface_path);
+        }
+        set_indexed(params, "dep_interface", dep_ifaces);
+
+        TaskDecl d = make_task(ctx, "interface", pdir + "/interface", params,
+                               headers, iface_deps, {pt.interface_path});
+        auto id = d.id;
+        KILN_TRY(void_result(sched.add(std::move(d))));
+        pt.interface_task = id;
+    }
+
+    // ---- module compiles ----------------------------------------------------
+    for (auto& m : declset.modules) {
+        if (!passes_filter(m.platforms, m.configs, ctx.ct))
+            continue;
+        if (m.sources.empty())
+            continue;
+        std::string site = m.file + ":" + std::to_string(m.line);
+
+        std::vector<DepRef> pub_deps, priv_deps;
+        for (auto& raw : m.deps_public) {
+            auto ref = parse_dep_ref(raw, ctx, plugin, site);
+            if (!ref.ok())
+                return Result<void>::fail(ref.error);
+            pub_deps.push_back(std::move(*ref));
+        }
+        for (auto& raw : m.deps_private) {
+            auto ref = parse_dep_ref(raw, ctx, plugin, site);
+            if (!ref.ok())
+                return Result<void>::fail(ref.error);
+            priv_deps.push_back(std::move(*ref));
+        }
+
+        std::vector<std::string> includes = m.public_includes;
+        if (includes.empty())
+            includes.push_back(util::join_rel(pdir, "include"));
+        for (auto& d : m.private_includes)
+            includes.push_back(d);
+        std::vector<std::string> defines = m.public_defines;
+        for (auto& d : m.private_defines)
+            defines.push_back(d);
+        std::vector<TaskId> iface_deps;
+        for (auto& ref : pub_deps) {
+            auto eit = ctx.effective.find(ref.plugin);
+            if (eit != ctx.effective.end()) {
+                for (auto& inc : eit->second.includes)
+                    includes.push_back(inc);
+                for (auto& def : eit->second.defines)
+                    defines.push_back(def);
+            }
+            if (!ctx.tasks[ref.plugin].interface_task)
+                return Result<void>::fail(site + ": internal: interface of '" +
+                                          ref.plugin + "' not lowered before '" + plugin +
+                                          "'");
+            iface_deps.push_back(*ctx.tasks[ref.plugin].interface_task);
+        }
+        for (auto& ref : priv_deps) {
+            auto eit = ctx.effective.find(ref.plugin);
+            if (eit != ctx.effective.end()) {
+                for (auto& inc : eit->second.includes)
+                    includes.push_back(inc);
+                for (auto& def : eit->second.defines)
+                    defines.push_back(def);
+            }
+            if (!ctx.tasks[ref.plugin].interface_task)
+                return Result<void>::fail(site + ": internal: interface of '" +
+                                          ref.plugin + "' not lowered before '" + plugin +
+                                          "'");
+            iface_deps.push_back(*ctx.tasks[ref.plugin].interface_task);
+        }
+        for (auto& odep : declset.plugin->optional_deps)
+            defines.push_back("KILN_HAS_" + util::to_upper(odep) + "=" +
+                              (ctx.declsets.count(odep) ? "1" : "0"));
+        defines.push_back("KILN_PLATFORM_" + util::to_upper(ctx.ct.platform) + "=1");
+        defines.push_back("KILN_CONFIG_" + util::to_upper(ctx.ct.config) + "=1");
+        if (ctx.ct.config == "release" || ctx.ct.config == "shipping")
+            defines.push_back("NDEBUG=1");
+
+        std::vector<std::string> sdk_roots;
+        for (auto& [k, v] : ctx.ct.env_allow)
+            if (fs::is_directory(v))
+                sdk_roots.push_back(v);
+        pt.module_compiles[m.name].clear();
+
+        // PCH (KILN-2): the header is COPIED into the output tree and the gch
+        // compiled next to the copy; compiles -include that copy. Flags are
+        // byte-identical to the compiles (gch validity + -Werror=invalid-pch).
+        std::optional<TaskId> pch_task;
+        std::string pch_include_path;
+        if (!m.pch.empty()) {
+            std::string pch_dir = ".kiln/out/" + cfg_name(ctx.ct) + "/pch/" + plugin + "/" +
+                                  m.name;
+            std::string out_header = pch_dir + "/" + util::path_basename(m.pch);
+            std::string gch = out_header + ".gch";
+            std::map<std::string, std::string> pch_params;
+            pch_params["std"] = m.cpp_std.empty() ? ctx.ws->config.cpp_std : m.cpp_std;
+            pch_params["opt"] = opt_for(ctx.ct);
+            pch_params["debug"] = debug_for(ctx.ct);
+            pch_params["tool"] = cxx;
+            pch_params["pch_header"] = m.pch;
+            pch_params["out_header"] = out_header;
+            pch_params["gch"] = gch;
+            pch_params["depfile"] = gch + ".d";
+            set_indexed(pch_params, "include", sorted_uniq(includes));
+            set_indexed(pch_params, "define", sorted_uniq(defines));
+            set_indexed(pch_params, "sdk_root", sdk_roots);
+            set_indexed(pch_params, "flag", m.flags);
+            // Identity note: two modules may share one pch header (engine +
+            // engine_editor both use tepch.h) but need DIFFERENT gch artifacts
+            // (different defines). The identity must be module-qualified —
+            // primary_input is a synthetic module-scoped path, the real header
+            // stays in declared_inputs.
+            std::string pch_identity = pdir + "/" + m.name + "/pch:" + m.pch;
+            TaskDecl pchd =
+                make_task(ctx, "compile_pch", pch_identity, pch_params, {m.pch}, {},
+                          {out_header, gch});
+            auto pch_id = pchd.id;
+            KILN_TRY(void_result(sched.add(std::move(pchd))));
+            pch_task = pch_id;
+            pch_include_path = out_header;
+        }
+
+        for (auto& src : m.sources) {
+            std::string obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/" +
+                              m.name + "/" + obj_path(src, pdir);
+            std::map<std::string, std::string> params;
+            params["std"] = m.cpp_std.empty() ? ctx.ws->config.cpp_std : m.cpp_std;
+            params["opt"] = opt_for(ctx.ct);
+            params["debug"] = debug_for(ctx.ct);
+            params["tool"] = cxx;
+            params["out"] = obj;
+            params["depfile"] = obj + ".d";
+            set_indexed(params, "include", sorted_uniq(includes));
+            set_indexed(params, "define", sorted_uniq(defines));
+            set_indexed(params, "sdk_root", sdk_roots);
+            set_indexed(params, "flag", m.flags);
+
+            std::vector<TaskId> deps = iface_deps;
+            if (pch_task) {
+                deps.push_back(*pch_task);
+                params["pch"] = pch_include_path;
+            }
+
+            TaskDecl d = make_task(ctx, "compile_cpp", src, params, {src}, deps, {obj});
+            auto id = d.id;
+            KILN_TRY(void_result(sched.add(std::move(d))));
+            pt.compiles.push_back(id);
+            pt.module_compiles[m.name].push_back(id);
+            pt.module_objs[m.name].push_back(obj);
+        }
+    }
+
+    // ---- c_libraries --------------------------------------------------------
+    for (auto& c : declset.c_libraries) {
+        if (!passes_filter(c.platforms, c.configs, ctx.ct))
+            continue;
+        std::vector<TaskId> clib_compiles;
+        std::vector<std::string> clib_objs;
+        for (auto& src : c.sources) {
+            // Headers appear in vendor file lists (premake `files` for IDE
+            // visibility) but are never compiled.
+            auto ext = fs::path(src).extension().generic_string();
+            if (ext != ".c" && ext != ".cpp" && ext != ".cc" && ext != ".cxx" &&
+                ext != ".m" && ext != ".mm")
+                continue;
+            bool is_c = src.size() >= 2 && src.substr(src.size() - 2) == ".c";
+            std::string obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin +
+                              "/clib-" + c.name + "/" + obj_path(src, pdir);
+            std::map<std::string, std::string> params;
+            params["std"] = is_c ? (c.c_std.empty() ? ctx.ws->config.c_std : c.c_std)
+                                 : (c.cpp_std.empty() ? ctx.ws->config.cpp_std : c.cpp_std);
+            params["opt"] = opt_for(ctx.ct);
+            params["debug"] = debug_for(ctx.ct);
+            params["tool"] = is_c ? cc : cxx;
+            params["out"] = obj;
+            params["depfile"] = obj + ".d";
+            std::vector<std::string> incs = c.includes;
+            for (auto& p : c.public_includes)
+                incs.push_back(p);
+            set_indexed(params, "include", sorted_uniq(incs));
+            set_indexed(params, "define", sorted_uniq(c.defines));
+            set_indexed(params, "flag", c.flags);
+            TaskDecl d =
+                make_task(ctx, is_c ? "compile_c" : "compile_cpp", src, params, {src}, {},
+                          {obj});
+            auto id = d.id;
+            KILN_TRY(void_result(sched.add(std::move(d))));
+            clib_compiles.push_back(id);
+            clib_objs.push_back(obj);
+        }
+        ctx.tasks[plugin].clib_compiles[c.name] = clib_compiles;
+
+        std::string archive = clib_archive_path(ctx.ct, plugin, c.name);
+        if (!clib_compiles.empty()) {
+            std::map<std::string, std::string> params;
+            params["tool"] = ar;
+            params["out"] = archive;
+            set_indexed(params, "obj", clib_objs);
+            TaskDecl d = make_task(ctx, "archive", pdir + "/clib:" + c.name,
+                                   params, {}, clib_compiles, {archive});
+            auto id = d.id;
+            KILN_TRY(void_result(sched.add(std::move(d))));
+            ctx.tasks[plugin].clib_archive[c.name] = id;
+        }
+
+        std::string iface_path = clib_interface_path(ctx.ct, plugin, c.name);
+        {
+            std::vector<std::string> pub_includes = c.public_includes;
+            if (pub_includes.empty())
+                pub_includes.push_back(util::join_rel(pdir, "include"));
+            auto headers = public_headers_of(ctx, pub_includes);
+            std::map<std::string, std::string> params;
+            params["plugin"] = plugin + "/" + c.name;
+            params["out"] = iface_path;
+            set_indexed(params, "header", headers);
+            set_indexed(params, "include", pub_includes);
+            set_indexed(params, "define", sorted_uniq(c.defines));
+            TaskDecl d = make_task(ctx, "interface", pdir + "/clib:" + c.name,
+                                   params, headers, {}, {iface_path});
+            auto id = d.id;
+            KILN_TRY(void_result(sched.add(std::move(d))));
+            ctx.tasks[plugin].clib_interface[c.name] = id;
+        }
+    }
+
+    // ---- module archives (one .a per module with sources) --------------------
+    for (auto& m : declset.modules) {
+        if (!passes_filter(m.platforms, m.configs, ctx.ct))
+            continue;
+        auto objs_it = pt.module_objs.find(m.name);
+        if (objs_it == pt.module_objs.end() || objs_it->second.empty())
+            continue;
+        std::string path = ".kiln/out/" + cfg_name(ctx.ct) + "/lib/" + plugin + "/lib" +
+                           m.name + ".a";
+        std::map<std::string, std::string> params;
+        params["tool"] = ar;
+        params["out"] = path;
+        set_indexed(params, "obj", sorted_uniq(objs_it->second));
+        std::vector<TaskId> mod_deps = pt.module_compiles[m.name];
+        TaskDecl d = make_task(ctx, "archive", pdir + "/" + m.name + "/archive",
+                               params, {}, mod_deps, {path});
+        auto id = d.id;
+        KILN_TRY(void_result(sched.add(std::move(d))));
+        pt.module_archives[m.name] = id;
+        pt.module_archive_paths[m.name] = path;
+        pt.archives.push_back(id);
+    }
+
+    // ---- cook tasks ----------------------------------------------------------
+    // ONE TASK PER INPUT: every cook rule's TaskFn is bytes+params → bytes for
+    // a single primary input (the tool invocation takes one source, and the
+    // output path derives from that source). A multi-input declaration (one
+    // glob matching N files) must therefore lower to N tasks — a single task
+    // per declaration would silently cook only the first input.
+    for (auto& c : declset.cooks) {
+        if (!passes_filter(c.platforms, c.configs, ctx.ct))
+            continue;
+        for (auto& primary : c.inputs) {
+        std::string ext;
+        bool append_ext = false;
+        if (c.rule == "cook_shader")
+            ext = ".spv";
+        else if (c.rule == "cook_texture")
+            ext = ".ktx2";
+        else if (c.rule == "cook_font")
+            ext = ".png";
+        else if (c.rule == "cook_tinyasset") {
+            // Engine convention keeps the source extension:
+            // "debug_albedo.frag" → "debug_albedo.frag.tinyasset".
+            ext = ".tinyasset";
+            append_ext = true;
+        } else
+            ext = fs::path(primary).extension().generic_string();
+        // Lexically resolve any ".." hops FIRST (norm collapses them once
+        // preceded by real components): a cook input globbed via a "../"
+        // escape (e.g. engine content outside the plugin dir) must land at
+        // .kiln/out/<cfg>/assets/<plugin>/<resolved> — never escape out of
+        // assets/ through the ".." segments (no writes outside
+        // .kiln/out/<cfg>/assets/<plugin>/ for cooked content).
+        std::string rel_in = util::norm(primary);
+        if (util::starts_with(rel_in, pdir + "/"))
+            rel_in = rel_in.substr(pdir.size() + 1);
+        std::string rel_out = append_ext
+                                  ? (rel_in + ext)
+                                  : fs::path(rel_in).replace_extension(ext).generic_string();
+        std::string out = ".kiln/out/" + cfg_name(ctx.ct) + "/assets/" + plugin + "/" +
+                          rel_out;
+        std::string metrics_out;
+        if (c.rule == "cook_font")
+            metrics_out = out + ".json";
+
+        std::string tool_name;
+        if (c.rule == "cook_shader")
+            tool_name = "glslc";
+        else if (c.rule == "cook_texture")
+            tool_name = "basisu";
+        else if (c.rule == "cook_font")
+            tool_name = "msdf-atlas-gen";
+        std::string tool;
+        if (!tool_name.empty()) {
+            auto tit = ctx.ws->config.tools.find(tool_name);
+            if (tit != ctx.ws->config.tools.end())
+                tool = tit->second;
+            else
+                tool = util::find_in_path(tool_name);
+            if (tool.empty())
+                return Result<void>::fail("cook rule '" + c.rule + "' in " + c.file +
+                                          " requires tool '" + tool_name +
+                                          "' (not found in PATH; set it in "
+                                          "kiln.workspace.luau `tools` table)");
+        }
+
+        std::map<std::string, std::string> params = c.params;
+        params["out"] = out;
+        if (!metrics_out.empty())
+            params["metrics_out"] = metrics_out;
+        set_indexed(params, "input", std::vector<std::string>{primary});
+        if (c.rule == "cook_tinyasset") {
+            // Source path for the tool + a DETERMINISTIC AssetID
+            // (first 16 bytes of BLAKE3(plugin/relpath) → High/Low), unless
+            // the manifest pinned one explicitly.
+            params["source"] = primary;
+            if (!params.count("asset_id")) {
+                std::string id = Hash256::of_string(plugin + "/" + rel_in).hex();
+                params["asset_id"] = id.substr(0, 32);
+            }
+        }
+        if (!tool.empty()) {
+            params["tool"] = tool;
+        }
+        // tool_hash covers BOTH discovered tools and manifest-pinned tool
+        // paths (build outputs like the tinycook binary): upgrading the tool
+        // must recook exactly this rule's tasks. Paths resolve against
+        // the workspace root — never the caller's cwd.
+        if (params.count("tool")) {
+            std::string effective = params["tool"];
+            if (fs::path(effective).is_relative())
+                effective = (ctx.ws->root / effective).generic_string();
+            auto th = Hash256::of_file(effective);
+            if (th.ok())
+                params["tool_hash"] = th->hex();
+        }
+
+        std::vector<std::string> outputs = {out};
+        if (!metrics_out.empty())
+            outputs.push_back(metrics_out);
+
+        TaskDecl d = make_task(ctx, c.rule, primary, params,
+                               std::vector<std::string>{primary}, {}, outputs);
+        auto id = d.id;
+        KILN_TRY(void_result(sched.add(std::move(d))));
+        pt.cooks.push_back(id);
+        for (auto& o : outputs)
+            pt.cook_outputs.push_back(o);
+
+        std::string asset_id = Hash256::of_string(plugin + "/" + rel_in).hex();
+        pt.cook_assets.push_back(asset_id + "=" + out);
+        }
+    }
+
+    // ---- implementation record (spec §7.2) ----------------------------------
+    // Depends ONLY on this plugin's link task (its archive) and its cook tasks
+    // (asset_manifest) — never on dep plugins' records, never on the interface
+    // record. Dependents' LINKS gate on this; their COMPILES gate on the
+    // interface record above.
+    {
+        std::map<std::string, std::string> params;
+        params["plugin"] = plugin;
+        params["out"] = pt.provider_path;
+        std::vector<std::string> archive_paths;
+        for (auto& [name, path] : pt.module_archive_paths)
+            archive_paths.push_back(path);
+        set_indexed(params, "archive", archive_paths);
+
+        std::vector<TaskId> deps;
+        for (auto& t : pt.archives)
+            deps.push_back(t);
+        for (auto& t : pt.cooks)
+            deps.push_back(t);
+        for (auto& [name, arch] : pt.clib_archive) {
+            params["clib_archive." + name] =
+                name + "=" + clib_archive_path(ctx.ct, plugin, name);
+            deps.push_back(arch);
+        }
+        set_indexed(params, "asset", pt.cook_assets);
+
+        TaskDecl d = make_task(ctx, "provider", pdir + "/provider", params,
+                               {}, deps, {pt.provider_path});
+        auto id = d.id;
+        KILN_TRY(void_result(sched.add(std::move(d))));
+        pt.provider = id;
+    }
+
+    return Result<void>::success();
+}
+
+Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
+                                const luau::TargetDecl& target) {
+    std::string cfg = ctx.ct.name();
+    std::string cxx = ctx.ws->config.tools.count("cxx") ? ctx.ws->config.tools.at("cxx")
+                                                         : "c++";
+
+    // ---- link ----------------------------------------------------------------
+    {
+        // Root module objects (so main() is pulled); archives for the rest.
+        std::vector<std::string> objs;
+        if (!target.link.empty()) {
+            for (auto& root : target.link) {
+                auto slash = root.find('/');
+                std::string rplugin = slash == std::string::npos ? "" : root.substr(0, slash);
+                std::string rmodule = slash == std::string::npos ? root : root.substr(slash + 1);
+                if (!ctx.tasks.count(rplugin) || !ctx.tasks[rplugin].module_objs.count(rmodule))
+                    return Result<void>::fail(
+                        "target '" + target.name + "': link root module '" + root +
+                        "' not found among enabled plugins");
+                for (auto& o : ctx.tasks[rplugin].module_objs[rmodule])
+                    objs.push_back(o);
+            }
+        } else {
+            for (auto& [plugin, pt] : ctx.tasks)
+                for (auto& [module, mod_objs] : pt.module_objs)
+                    for (auto& o : mod_objs)
+                        objs.push_back(o);
+        }
+
+        std::vector<std::string> archives;
+        std::vector<TaskId> deps;
+        for (auto& [plugin, pt] : ctx.tasks) {
+            for (auto& [name, path] : pt.module_archive_paths)
+                archives.push_back(path);
+            for (auto& [name, arch] : pt.clib_archive)
+                archives.push_back(clib_archive_path(ctx.ct, plugin, name));
+            // Gate on the IMPLEMENTATION record (spec §7.2): its output changes
+            // exactly when impl_hash/artifact changes ⇒ relink, never recompile.
+            if (pt.provider)
+                deps.push_back(*pt.provider);
+        }
+        archives = sorted_uniq(std::move(archives));
+
+        // Syslibs: workspace-global + target-declared + every enabled plugin's
+        // effective (public) link requirements — KILN-3 propagation.
+        std::vector<std::string> syslibs = ctx.ws->config.system_libs;
+        for (auto& sl : target.syslibs)
+            syslibs.push_back(sl);
+        for (auto& [plugin, eit] : ctx.effective)
+            for (auto& sl : eit.syslibs)
+                syslibs.push_back(sl);
+
+        // Link flags: target-declared + every enabled plugin's effective
+        // (public) link-flag tokens — the same KILN-3 propagation shape as
+        // syslibs (a module carrying a link requirement, e.g. a sanitizer
+        // runtime, must not force every dependent target to know).
+        std::vector<std::string> link_flags = target.link_flags;
+        for (auto& [plugin, eit] : ctx.effective)
+            for (auto& lf : eit.link_flags)
+                link_flags.push_back(lf);
+
+        std::map<std::string, std::string> params;
+        params["tool"] = cxx;
+        params["out"] = ".kiln/out/" + cfg + "/bin/" + target.name;
+        set_indexed(params, "obj", objs);
+        set_indexed(params, "archive", archives);
+        set_indexed(params, "syslib", sorted_uniq(std::move(syslibs)));
+        set_indexed(params, "flag", sorted_uniq(std::move(link_flags)));
+        TaskDecl d = make_task(ctx, "link", ctx.target_files.at(target.name), params, {}, deps,
+                               {params["out"]}, "link");
+        KILN_TRY(void_result(sched.add(std::move(d))));
+    }
+
+    // ---- pack ----------------------------------------------------------------
+    {
+        std::map<std::string, std::string> params;
+        params["out"] = ".kiln/out/" + cfg + "/pack/" + target.name + ".kpak";
+        params["out_index"] = ".kiln/out/" + cfg + "/pack/" + target.name + ".kpak.json";
+        std::vector<TaskId> deps;
+        std::vector<std::string> providers;
+        for (auto& [plugin, pt] : ctx.tasks) {
+            if (pt.provider) {
+                deps.push_back(*pt.provider);
+                providers.push_back(pt.provider_path);
+            }
+        }
+        set_indexed(params, "provider", providers);
+        TaskDecl d = make_task(ctx, "pack_target", ctx.target_files.at(target.name), params,
+                               {}, deps, {params["out"], params["out_index"]});
+        KILN_TRY(void_result(sched.add(std::move(d))));
+    }
+
+    // ---- compile_commands (S1) -------------------------------------------------
+    {
+        nlohmann::json entries = nlohmann::json::array();
+        for (auto& [plugin, declset] : ctx.declsets) {
+            std::string pdir = plugin_dir_of(ctx, plugin);
+            for (auto& m : declset.modules) {
+                if (!passes_filter(m.platforms, m.configs, ctx.ct))
+                    continue;
+                for (auto& src : m.sources) {
+                    std::string obj = ".kiln/out/" + cfg + "/obj/" + plugin + "/" + m.name +
+                                      "/" + obj_path(src, pdir);
+                    nlohmann::json e;
+                    e["file"] = src;
+                    e["rule"] = "compile_cpp";
+                    nlohmann::json p = nlohmann::json::object();
+                    p["std"] = m.cpp_std.empty() ? ctx.ws->config.cpp_std : m.cpp_std;
+                    p["opt"] = opt_for(ctx.ct);
+                    p["debug"] = debug_for(ctx.ct);
+                    p["tool"] = cxx;
+                    p["out"] = obj;
+                    if (!m.pch.empty()) {
+                        std::string pch_dir = ".kiln/out/" + cfg + "/pch/" + plugin + "/" +
+                                              m.name;
+                        p["pch"] = pch_dir + "/" + util::path_basename(m.pch);
+                    }
+                    std::vector<std::string> includes = m.public_includes;
+                    if (includes.empty())
+                        includes.push_back(util::join_rel(pdir, "include"));
+                    for (auto& d : m.private_includes)
+                        includes.push_back(d);
+                    std::vector<std::string> defines = m.public_defines;
+                    for (auto& d : m.private_defines)
+                        defines.push_back(d);
+                    for (auto& raw : m.deps_public) {
+                        auto slash = raw.find('/');
+                        std::string dep = slash == std::string::npos ? raw : raw.substr(0, slash);
+                        auto eit = ctx.effective.find(dep);
+                        if (eit != ctx.effective.end())
+                            for (auto& inc : eit->second.includes)
+                                includes.push_back(inc);
+                    }
+                    for (auto& raw : m.deps_private) {
+                        auto slash = raw.find('/');
+                        std::string dep = slash == std::string::npos ? raw : raw.substr(0, slash);
+                        auto eit = ctx.effective.find(dep);
+                        if (eit != ctx.effective.end())
+                            for (auto& inc : eit->second.includes)
+                                includes.push_back(inc);
+                    }
+                    for (auto& odep : declset.plugin->optional_deps)
+                        defines.push_back("KILN_HAS_" + util::to_upper(odep) + "=" +
+                                          (ctx.declsets.count(odep) ? "1" : "0"));
+                    defines.push_back("KILN_PLATFORM_" + util::to_upper(ctx.ct.platform) +
+                                      "=1");
+                    defines.push_back("KILN_CONFIG_" + util::to_upper(ctx.ct.config) + "=1");
+                    nlohmann::json inc_arr = nlohmann::json::array();
+                    for (auto& inc : sorted_uniq(includes))
+                        inc_arr.push_back(inc);
+                    nlohmann::json def_arr = nlohmann::json::array();
+                    for (auto& def : sorted_uniq(defines))
+                        def_arr.push_back(def);
+                    for (size_t i = 0; i < inc_arr.size(); ++i) {
+                        char key[64];
+                        snprintf(key, sizeof(key), "include.%04zu", i);
+                        p[key] = inc_arr[i];
+                    }
+                    for (size_t i = 0; i < def_arr.size(); ++i) {
+                        char key[64];
+                        snprintf(key, sizeof(key), "define.%04zu", i);
+                        p[key] = def_arr[i];
+                    }
+                    e["params"] = p;
+                    entries.push_back(std::move(e));
+                }
+            }
+            for (auto& c : declset.c_libraries) {
+                if (!passes_filter(c.platforms, c.configs, ctx.ct))
+                    continue;
+                for (auto& src : c.sources) {
+                    bool is_c = src.size() >= 2 && src.substr(src.size() - 2) == ".c";
+                    std::string obj = ".kiln/out/" + cfg + "/obj/" + plugin + "/clib-" +
+                                      c.name + "/" + obj_path(src, pdir);
+                    nlohmann::json e;
+                    e["file"] = src;
+                    e["rule"] = is_c ? "compile_c" : "compile_cpp";
+                    nlohmann::json p = nlohmann::json::object();
+                    p["std"] = is_c
+                                   ? (c.c_std.empty() ? ctx.ws->config.c_std : c.c_std)
+                                   : (c.cpp_std.empty() ? ctx.ws->config.cpp_std : c.cpp_std);
+                    p["opt"] = opt_for(ctx.ct);
+                    p["debug"] = debug_for(ctx.ct);
+                    p["tool"] = is_c ? (ctx.ws->config.tools.count("cc")
+                                            ? ctx.ws->config.tools.at("cc")
+                                            : "cc")
+                                     : cxx;
+                    p["out"] = obj;
+                    nlohmann::json inc_arr = nlohmann::json::array();
+                    for (auto& inc : sorted_uniq(c.includes))
+                        inc_arr.push_back(inc);
+                    for (auto& inc : c.public_includes)
+                        inc_arr.push_back(inc);
+                    nlohmann::json def_arr = nlohmann::json::array();
+                    for (auto& def : sorted_uniq(c.defines))
+                        def_arr.push_back(def);
+                    for (size_t i = 0; i < inc_arr.size(); ++i) {
+                        char key[64];
+                        snprintf(key, sizeof(key), "include.%04zu", i);
+                        p[key] = inc_arr[i];
+                    }
+                    for (size_t i = 0; i < def_arr.size(); ++i) {
+                        char key[64];
+                        snprintf(key, sizeof(key), "define.%04zu", i);
+                        p[key] = def_arr[i];
+                    }
+                    e["params"] = p;
+                    entries.push_back(std::move(e));
+                }
+            }
+        }
+
+        std::map<std::string, std::string> params;
+        params["out"] = ".kiln/compile_commands/" + cfg + "/compile_commands.json";
+        params["entries"] = entries.dump();
+        TaskDecl d = make_task(ctx, "gen_compile_commands", ctx.target_files.at(target.name),
+                               params, {}, ctx.expansion_tasks, {params["out"]});
+        KILN_TRY(void_result(sched.add(std::move(d))));
+    }
+
+    return Result<void>::success();
+}
+
+} // namespace kiln
