@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <span>
 
 #include "core/hash.h"
 #include "core/util.h"
@@ -226,7 +227,7 @@ TaskResult run_pack(TaskCtx& ctx) {
     };
 
     struct Asset {
-        std::string id, path;
+        std::string id, path, hash;
         bool operator<(const Asset& o) const { return id < o.id; }
     };
     std::vector<Asset> assets;
@@ -235,19 +236,21 @@ TaskResult run_pack(TaskCtx& ctx) {
         if (!j.ok())
             return fail(j.error);
         for (auto& a : j->value("asset_manifest", json::array()))
-            assets.push_back({a.at("id").get<std::string>(), a.at("path").get<std::string>()});
+            assets.push_back({a.at("id").get<std::string>(), a.at("path").get<std::string>(),
+                              a.value("hash", "")});
     }
     std::sort(assets.begin(), assets.end());
 
     std::string out_path = param(*ctx.decl, "out");
     std::string index_path = param(*ctx.decl, "out_index");
 
-    // kpak v1: magic "KPAK1", u32 count, entries (32B id, u64 offset, u64 size), blobs.
-    // The entry id is the FIRST 32 hex chars of the 64-hex BLAKE3 id — exactly
-    // the engine's 128-bit AssetID::ToString() form (the kiln-side
-    // 64-hex id stays in the index/manifest). Header math must match kpak-format.md:
-    // 48 bytes per entry.
-    std::string magic = "KPAK1";
+    // kpak v2: magic "KPAK2" (the magic IS the version - a v1 reader can't
+    // confuse a count for a version field), u32 table_count, u32
+    // table_offset, the 32-byte BLAKE3 build hash of the table bytes, then
+    // the table (36-byte entries: 16-byte AssetID, u32 type, u64 offset,
+    // u64 size) and the blobs. Entry ids are the raw 128-bit AssetID
+    // (High/Low LE); the 64-hex id stays in the index JSON. Header math
+    // must match kpak-format.md.
     auto write_u32 = [](std::string& s, uint32_t v) {
         for (int i = 0; i < 4; ++i)
             s.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
@@ -256,10 +259,41 @@ TaskResult run_pack(TaskCtx& ctx) {
         for (int i = 0; i < 8; ++i)
             s.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
     };
+    auto parse_asset_id = [](const std::string& hex32) -> std::pair<uint64_t, uint64_t> {
+        // The first 32 hex chars of the 64-hex id: High = hex[0..16),
+        // Low = hex[16..32), MSB-first - the engine's AssetID::ToString form.
+        auto parse16 = [](const char* p) {
+            uint64_t v = 0;
+            for (int i = 0; i < 16; ++i) {
+                char c = p[i];
+                uint64_t nib = (c >= '0' && c <= '9') ? (uint64_t)(c - '0')
+                              : (c >= 'a' && c <= 'f') ? (uint64_t)(c - 'a' + 10)
+                              : (c >= 'A' && c <= 'F') ? (uint64_t)(c - 'A' + 10)
+                              : 0;
+                v = (v << 4) | nib;
+            }
+            return v;
+        };
+        return {parse16(hex32.data()), parse16(hex32.data() + 16)};
+    };
+    // The cooked blob's TinyAssetType (the .tinyasset header's u32 at offset
+    // 12); 0 for anything that doesn't parse as one (defensive - the pack is
+    // not exclusively .tinyasset content in principle).
+    auto blob_type = [](const std::string& blob) -> uint32_t {
+        if (blob.size() < 16 || blob.compare(0, 7, "TASSET1") != 0)
+            return 0;
+        uint32_t t = 0;
+        for (int i = 0; i < 4; ++i)
+            t |= (uint32_t)(uint8_t)blob[12 + i] << (8 * i);
+        return t;
+    };
 
-    std::string blob;
-    // magic "KPAK1" (5 bytes) + u32 count (4) + n*48 entry bytes.
-    uint64_t data_start = 9 + assets.size() * 48;
+    constexpr size_t kHeaderSize = 5 + 4 + 4 + 32; // magic + count + table_offset + build hash
+    constexpr size_t kEntrySize = 16 + 4 + 8 + 8;  // id + type + offset + size
+    const size_t table_offset = kHeaderSize;
+    const size_t data_start = table_offset + assets.size() * kEntrySize;
+
+    std::string table;
     uint64_t offset = data_start;
     json index = {{"format", 1}, {"assets", json::array()}};
     std::vector<std::string> blobs;
@@ -267,21 +301,38 @@ TaskResult run_pack(TaskCtx& ctx) {
         auto content = util::read_file(ctx.workspace_root / a.path);
         if (!content.ok())
             return fail(content.error);
+
+        auto [high, low] = parse_asset_id(a.id.substr(0, 32));
+        write_u64(table, high);
+        write_u64(table, low);
+        write_u32(table, blob_type(*content));
+        write_u64(table, offset);
+        write_u64(table, content->size());
+        offset += content->size();
+
+        index["assets"].push_back({{"id", a.id},
+                                   {"path", a.path},
+                                   {"offset", offset - content->size()},
+                                   {"size", content->size()}});
         blobs.push_back(std::move(*content));
     }
+
+    // build_hash = BLAKE3 of the serialized table bytes + each blob's
+    // content hash (the table alone carries ids/types/offsets/sizes, so a
+    // same-size content edit would leave it unchanged - the provider's
+    // per-blob content hashes make ANY asset change change the hash).
+    std::string hashInput = table;
+    for (auto& a : assets)
+        hashInput += a.hash; // 64-hex content hash from the provider manifest
+    const Hash256 build_hash = Hash256::of_bytes(
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(hashInput.data()), hashInput.size()));
+
     std::string out;
-    out += magic;
+    out += "KPAK2";
     write_u32(out, static_cast<uint32_t>(assets.size()));
-    for (size_t i = 0; i < assets.size(); ++i) {
-        out += assets[i].id.substr(0, 32);
-        write_u64(out, offset);
-        write_u64(out, blobs[i].size());
-        offset += blobs[i].size();
-        index["assets"].push_back({{"id", assets[i].id},
-                                   {"path", assets[i].path},
-                                   {"offset", offset - blobs[i].size()},
-                                   {"size", blobs[i].size()}});
-    }
+    write_u32(out, static_cast<uint32_t>(table_offset));
+    out.append(reinterpret_cast<const char*>(build_hash.bytes.data()), 32);
+    out += table;
     for (auto& b : blobs)
         out += b;
     // Atomic outputs (same discipline as the archive rule): write both files
@@ -356,7 +407,7 @@ void register_host() {
     register_rule("provider", 2, run_provider);
     // v2: fixed two kpak layout bugs (32-byte entry ids; 9+n*48 header math)
     // — see decisions.md "Pack & hot-reload pass".
-    register_rule("pack_target", 2, run_pack);
+    register_rule("pack_target", 4, run_pack); // v4: build hash covers the content hashes too
     register_rule("gen_compile_commands", 1, run_compile_commands);
 }
 

@@ -70,7 +70,7 @@ TEST_CASE("K7.1 cook rules produce assets; provider carries the manifest; pack w
     CHECK(index.find("\"assets\"") != std::string::npos);
 }
 
-TEST_CASE("K7.5 kpak layout: 32-byte ids, offsets land exactly on blobs") {
+TEST_CASE("K7.5 kpak v2 layout: 16-byte ids + table, offsets land exactly on blobs") {
     TempDir tmp;
     fs::path tool = tmp.path / "fake_glslc.sh";
     {
@@ -82,8 +82,8 @@ TEST_CASE("K7.5 kpak layout: 32-byte ids, offsets land exactly on blobs") {
     REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
 
     std::string kpak = read_file(tmp.path / ".kiln/out/linux-dev/pack/game.kpak");
-    REQUIRE(kpak.size() >= 9);
-    CHECK(kpak.substr(0, 5) == "KPAK1");
+    REQUIRE(kpak.size() >= 45);
+    CHECK(kpak.substr(0, 5) == "KPAK2");
     auto read_u32 = [&](size_t off) {
         uint32_t v = 0;
         for (int i = 0; i < 4; ++i)
@@ -98,21 +98,34 @@ TEST_CASE("K7.5 kpak layout: 32-byte ids, offsets land exactly on blobs") {
     };
 
     uint32_t count = read_u32(5);
+    uint32_t table_offset = read_u32(9);
     REQUIRE(count == 2);
-    size_t header_size = 9 + (size_t)count * 48;
+    REQUIRE(table_offset == 45);
+    const size_t header_size = 45 + (size_t)count * 36;
     REQUIRE(kpak.size() >= header_size);
+    REQUIRE(kpak.substr(13, 32).size() == 32); // the build hash
 
     // Expected ids: 32-hex prefix of BLAKE3(plugin/relpath).
     std::string id_banner = kiln::Hash256::of_string("content/content/banner.glsl").hex().substr(0, 32);
     std::string id_icon = kiln::Hash256::of_string("content/content/icon.png").hex().substr(0, 32);
 
+    // The table's ids are the RAW 128-bit AssetID: hex(High)+hex(Low) of
+    // the first 16 hex-pair bytes, MSB-first per half.
+    auto raw_id_hex = [&](size_t base) {
+        uint64_t high = read_u64(base);
+        uint64_t low = read_u64(base + 8);
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%016llx%016llx", (unsigned long long)high, (unsigned long long)low);
+        return std::string(buf);
+    };
+
     std::map<std::string, std::pair<uint64_t, uint64_t>> entries;
     uint64_t expect_off = header_size;
     for (uint32_t i = 0; i < count; ++i) {
-        size_t base = 9 + (size_t)i * 48;
-        std::string id = kpak.substr(base, 32);
-        uint64_t off = read_u64(base + 32);
-        uint64_t size = read_u64(base + 40);
+        size_t base = table_offset + (size_t)i * 36;
+        std::string id = raw_id_hex(base);
+        uint64_t off = read_u64(base + 20);
+        uint64_t size = read_u64(base + 28);
         CHECK(off == expect_off);
         CHECK(off + size <= kpak.size());
         expect_off += size;
