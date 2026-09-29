@@ -391,7 +391,8 @@ int spec_plugin(lua_State* L) {
     luaL_checktype(L, 2, LUA_TTABLE);
     validate_fields(L, 2, st,
                     {"enabled_by_default", "supported_platforms", "supported_configs",
-                     "public_deps", "private_deps", "optional_deps", "version"},
+                     "public_deps", "private_deps", "optional_deps", "version",
+                     "reflect_tool"},
                     {"sealed"});
     if (!st->decls.plugin)
         luaL_error(L, "internal: plugin spec without declaration");
@@ -404,6 +405,7 @@ int spec_plugin(lua_State* L) {
     p.optional_deps = get_strvec_field(L, 2, "optional_deps");
     bool present = false;
     p.version = get_string_field(L, 2, "version", false, present);
+    p.reflect_tool = get_string_field(L, 2, "reflect_tool", false, present);
     return 0;
 }
 

@@ -77,6 +77,17 @@ TaskResult run_cook_tinyasset(TaskCtx& ctx) {
         argv.push_back("--stage");
         argv.push_back(stage);
     }
+    // Cook-time lint (strict gate + NDJSON findings append).
+    std::string lint_strict = param(*ctx.decl, "lint_strict", "");
+    if (!lint_strict.empty()) {
+        argv.push_back("--lint-strict");
+        argv.push_back(lint_strict);
+    }
+    std::string lint_out = param(*ctx.decl, "lint_out", "");
+    if (!lint_out.empty()) {
+        argv.push_back("--lint-out");
+        argv.push_back(lint_out);
+    }
     std::string captured;
     int rc = util::run_process(argv, ctx.workspace_root, &captured);
     if (!captured.empty())

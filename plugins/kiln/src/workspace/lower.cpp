@@ -281,6 +281,55 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         pt.interface_task = id;
     }
 
+    // ---- reflection generation ---------------------------------------------
+    // A plugin whose manifest pins reflect_tool (the tinyreflect binary, a
+    // build output like tinycook) gets ONE reflect_gen task scanning the
+    // union of its modules' public headers and emitting
+    // <plugin>.reflection.gen.cpp (+ <plugin>.d.luau) under
+    // .kiln/out/<cfg>/gen/<plugin>/. Every module-with-sources then gains
+    // a synthetic compile of that TU with the module's own params (flavor
+    // defines + PCH), so the generated registration lands in the module's
+    // archive and TE_EDITOR/TE_HEADLESS flow through exactly like
+    // hand-written sources.
+    std::optional<TaskId> reflect_gen_task;
+    if (declset.plugin && !declset.plugin->reflect_tool.empty()) {
+        std::vector<std::string> scan_dirs;
+        for (auto& m : declset.modules)
+            for (auto& d : m.public_includes)
+                scan_dirs.push_back(d);
+        if (scan_dirs.empty())
+            scan_dirs.push_back(util::join_rel(pdir, "include"));
+        scan_dirs = sorted_uniq(std::move(scan_dirs));
+        auto scan_headers = public_headers_of(ctx, scan_dirs);
+
+        std::string gen_dir = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin;
+        std::string gen_cpp = gen_dir + "/" + plugin + ".reflection.gen.cpp";
+        std::string gen_dluau = gen_dir + "/" + plugin + ".d.luau";
+        std::map<std::string, std::string> params;
+        params["tool"] = declset.plugin->reflect_tool;
+        params["plugin"] = plugin;
+        params["out"] = gen_cpp;
+        params["out_dluau"] = gen_dluau;
+        set_indexed(params, "header", scan_headers);
+        set_indexed(params, "strip_prefix", scan_dirs);
+
+        // Same tool_hash fold as the cook lowering: tool upgrades must
+        // regen this rule's output. Paths resolve against the workspace
+        // root, never the caller's cwd.
+        std::string effective = params["tool"];
+        if (fs::path(effective).is_relative())
+            effective = (ctx.ws->root / effective).generic_string();
+        auto th = Hash256::of_file(effective);
+        if (th.ok())
+            params["tool_hash"] = th->hex();
+
+        TaskDecl d = make_task(ctx, "reflect_gen", pdir + "/reflect:" + plugin, params,
+                               scan_headers, {}, {gen_cpp, gen_dluau});
+        auto id = d.id;
+        KILN_TRY(void_result(sched.add(std::move(d))));
+        reflect_gen_task = id;
+    }
+
     // ---- module compiles ----------------------------------------------------
     for (auto& m : declset.modules) {
         if (!passes_filter(m.platforms, m.configs, ctx.ct))
@@ -419,6 +468,47 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             pt.compiles.push_back(id);
             pt.module_compiles[m.name].push_back(id);
             pt.module_objs[m.name].push_back(obj);
+        }
+
+        // Synthetic compile of the generated reflection TU: one per
+        // module-with-sources, the module's own params so
+        // the flavor compiles the same generated text its way. In the
+        // engine's three-flavor scheme exactly one module has sources per
+        // build, so the gen TU compiles exactly once per config.
+        if (reflect_gen_task && !m.sources.empty()) {
+            std::string gen_src = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/" +
+                                  plugin + ".reflection.gen.cpp";
+            std::string gen_obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/" +
+                                  m.name + "/" + plugin + ".reflection.gen.cpp.o";
+            std::map<std::string, std::string> gen_params;
+            gen_params["std"] = m.cpp_std.empty() ? ctx.ws->config.cpp_std : m.cpp_std;
+            gen_params["opt"] = opt_for(ctx.ct);
+            gen_params["debug"] = debug_for(ctx.ct);
+            gen_params["tool"] = cxx;
+            gen_params["out"] = gen_obj;
+            gen_params["depfile"] = gen_obj + ".d";
+            set_indexed(gen_params, "include", sorted_uniq(includes));
+            set_indexed(gen_params, "define", sorted_uniq(defines));
+            set_indexed(gen_params, "sdk_root", sdk_roots);
+            set_indexed(gen_params, "flag", m.flags);
+            std::vector<TaskId> gen_deps = iface_deps;
+            gen_deps.push_back(*reflect_gen_task);
+            if (pch_task) {
+                gen_deps.push_back(*pch_task);
+                gen_params["pch"] = pch_include_path;
+            }
+            // Constraint: the compile rule compiles primary_input, so the
+            // gen TU's task identity is the shared source path — a
+            // reflecting plugin may therefore only have ONE
+            // module-with-sources per config (the engine's three-flavor
+            // scheme satisfies this by construction). The
+            // Presentation-partition output keeps the same constraint.
+            TaskDecl gd = make_task(ctx, "compile_cpp", gen_src, gen_params, {gen_src},
+                                    gen_deps, {gen_obj});
+            auto gid = gd.id;
+            KILN_TRY(void_result(sched.add(std::move(gd))));
+            pt.module_compiles[m.name].push_back(gid);
+            pt.module_objs[m.name].push_back(gen_obj);
         }
     }
 
@@ -596,6 +686,26 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
                 std::string id = Hash256::of_string(plugin + "/" + rel_in).hex();
                 params["asset_id"] = id.substr(0, 32);
             }
+            // The.meta sidecar is folded into params (there is no
+            // optional-declared-input machinery): a sidecar's content hash
+            // participates in the digest, and its ABSENCE is a sentinel -
+            // so editing a sidecar recooks, and creating one later also
+            // recooks. When present, the tool reads it and its id wins over
+            // --asset-id.
+            std::string sidecarPath = (ctx.ws->root / (primary + ".meta")).generic_string();
+            std::error_code sidecarEc;
+            if (fs::is_regular_file(sidecarPath, sidecarEc)) {
+                auto metaHash = Hash256::of_file(sidecarPath);
+                if (metaHash.ok())
+                    params["meta_hash"] = metaHash->hex();
+                else
+                    params["meta_absent"] = "1";
+            } else {
+                params["meta_absent"] = "1";
+            }
+            // Cook-time lint findings (NDJSON append; O_APPEND-safe under
+            // concurrent cook tasks).
+            params["lint_out"] = ".kiln/out/" + cfg_name(ctx.ct) + "/lint/" + plugin + ".json";
         }
         if (!tool.empty()) {
             params["tool"] = tool;

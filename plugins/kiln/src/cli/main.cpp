@@ -113,6 +113,33 @@ int main(int argc, char** argv) {
     test->add_option("--config", t_config, "config override");
     test->add_option("--workspace", t_workspace, "workspace root (default: auto-detect)");
 
+    // ---- smoke ----------------------------------------------------------------------
+    auto* smoke = app.add_subcommand("smoke", "Scheduled detection run");
+    std::string s2_workspace;
+    int s2_jobs = 0;
+    smoke->add_option("-j", s2_jobs, "worker count");
+    smoke->add_option("--workspace", s2_workspace, "workspace root (default: auto-detect)");
+
+    // ---- lint-content ---------------------------------------------------------------
+    auto* lint_content = app.add_subcommand("lint-content", "Lint the content trees' .meta sidecars");
+    std::string lc_workspace, lc_config = "dev";
+    bool lc_strict = false;
+    std::vector<std::string> lc_plugins;
+    lint_content->add_option("plugin", lc_plugins, "content plugin(s) to lint (default: all)");
+    lint_content->add_flag("--strict", lc_strict, "L1/L2 become errors");
+    lint_content->add_option("--config", lc_config, "config dir name for the tinycook tool (default: dev)");
+    lint_content->add_option("--workspace", lc_workspace, "workspace root (default: auto-detect)");
+
+    // ---- mint-content ---------------------------------------------------------------
+    auto* mint_content = app.add_subcommand("mint-content", "Write missing .meta sidecars");
+    std::string mc_workspace, mc_config = "dev";
+    bool mc_dry_run = false;
+    std::vector<std::string> mc_plugins;
+    mint_content->add_option("plugin", mc_plugins, "content plugin(s) to mint (default: all)");
+    mint_content->add_flag("--dry-run", mc_dry_run, "list what would be written");
+    mint_content->add_option("--config", mc_config, "config dir name for the tinycook tool (default: dev)");
+    mint_content->add_option("--workspace", mc_workspace, "workspace root (default: auto-detect)");
+
     // ---- clean ----------------------------------------------------------------------
     auto* clean = app.add_subcommand("clean", "Delete build outputs (and traces)");
     bool c_traces = false;
@@ -220,6 +247,21 @@ int main(int argc, char** argv) {
         } else if (*test) {
             auto r = cmd_test(fs::path(t_workspace), t_target, t_jobs, t_platform,
                               t_config);
+            rc = r.ok() ? *r : 2;
+            if (!r.ok())
+                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
+        } else if (*smoke) {
+            auto r = cmd_smoke(fs::path(s2_workspace), s2_jobs);
+            rc = r.ok() ? *r : 2;
+            if (!r.ok())
+                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
+        } else if (*lint_content) {
+            auto r = cmd_lint_content(fs::path(lc_workspace), lc_plugins, lc_strict, lc_config);
+            rc = r.ok() ? *r : 2;
+            if (!r.ok())
+                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
+        } else if (*mint_content) {
+            auto r = cmd_mint_content(fs::path(mc_workspace), mc_plugins, mc_dry_run, mc_config);
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());

@@ -253,7 +253,7 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
 
     // Host rule: expansion as a memoized task.
     rules::register_host_rule(
-        "expand_plugin", 2, // v2: declset JSON gained module/c_library public_link_flags
+        "expand_plugin", 3, // v3: declset JSON gained plugin reflect_tool; v2: module/c_library public_link_flags
         [&ws, platform = ct.platform, config = ct.config, features = ct.features](
             TaskCtx& ctx) -> TaskResult {
             TaskResult r;

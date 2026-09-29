@@ -22,6 +22,10 @@ struct PluginDecl {
     std::vector<std::string> private_deps;
     std::vector<std::string> optional_deps;
     std::string version; // informational only, NEVER hashed
+    // Reflection codegen: the tinyreflect tool binary path (a build
+    // output, pinned per config like the tinycook tool). Empty = this
+    // plugin generates no reflection TU.
+    std::string reflect_tool;
     std::string file;
     int line = 0;
 };

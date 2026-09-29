@@ -38,6 +38,7 @@ std::string decl_set_to_json(const DeclSet& decls) {
                        {"private_deps", strvec(p.private_deps)},
                        {"optional_deps", strvec(p.optional_deps)},
                        {"version", p.version},
+                       {"reflect_tool", p.reflect_tool},
                        {"file", p.file},
                        {"line", p.line}};
     }
@@ -165,6 +166,7 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
             p.private_deps = to_strvec(v.value("private_deps", json::array()));
             p.optional_deps = to_strvec(v.value("optional_deps", json::array()));
             p.version = v.value("version", "");
+            p.reflect_tool = v.value("reflect_tool", "");
             p.file = v.value("file", "");
             p.line = v.value("line", 0);
             out.plugin = std::move(p);

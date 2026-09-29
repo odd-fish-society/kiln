@@ -12,6 +12,7 @@ export type PluginSpec = {
     private_deps: { string }?,
     optional_deps: { string }?,
     version: string?,
+    reflect_tool: string?,
 }
 
 export type ModuleDeps = {

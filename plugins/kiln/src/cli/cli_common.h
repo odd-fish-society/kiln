@@ -27,5 +27,10 @@ Result<int> cmd_setup_clion(const fs::path& root, const std::string& config);
 Result<int> cmd_clean(const fs::path& root, bool traces);
 Result<int> cmd_test(const fs::path& root, const std::string& target, int jobs,
                      const std::string& platform, const std::string& config);
+Result<int> cmd_smoke(const fs::path& root, int jobs);
+Result<int> cmd_lint_content(const fs::path& root, const std::vector<std::string>& plugins,
+                             bool strict, const std::string& config);
+Result<int> cmd_mint_content(const fs::path& root, const std::vector<std::string>& plugins,
+                             bool dry_run, const std::string& config);
 
 } // namespace kiln

@@ -65,6 +65,7 @@ void register_cookers();
 void register_host();
 void register_checks();
 void register_tinyasset();
+void register_reflect();
 } // namespace builtin
 
 void register_builtin_rules() {
@@ -76,6 +77,7 @@ void register_builtin_rules() {
     builtin::register_host();
     builtin::register_checks();
     builtin::register_tinyasset();
+    builtin::register_reflect();
 }
 
 } // namespace kiln::rules

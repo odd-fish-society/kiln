@@ -204,3 +204,54 @@ TEST_CASE("K7.4 missing tool is a hard error naming the tool") {
     REQUIRE(r.code == 2);
     CHECK(r.out.find("glslc") != std::string::npos);
 }
+
+TEST_CASE("K7.6 reflect_gen: generated TU compiles into modules; header edit regenerates") {
+    TempDir tmp;
+    fs::path tool = tmp.path / "fake_reflect.sh";
+    {
+        std::ofstream f(tool);
+        f << "#!/bin/sh\n"
+             "out=''; dluau='';\n"
+             "while [ $# -gt 0 ]; do\n"
+             "  case \"$1\" in\n"
+             "    --out) out=$2; shift 2;;\n"
+             "    --dluau) dluau=$2; shift 2;;\n"
+             "    *) shift;;\n"
+             "  esac\n"
+             "done\n"
+             "mkdir -p \"$(dirname \"$out\")\"\n"
+             "printf 'int reflect_marker() { return 7; }\\n' > \"$out\"\n"
+             "printf '%s\\n' 'export type Thing = { x: number }' > \"$dluau\"\n";
+    }
+    chmod(tool.c_str(), 0755);
+    write_tree(tmp.path, {
+        {"kiln.workspace.luau", "workspace \"k7\" {\n  strict_globs = true,\n}\n"},
+        {"build/app.target.luau",
+         "target \"app\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
+         "  link = { \"thing/main\" },\n}\n"},
+        {"plugins/thing/plugin.build.luau",
+         "plugin \"thing\" {\n  reflect_tool = \"" + tool.generic_string() + "\",\n}\n"
+         "module \"main\" {\n  sources = glob(\"src/*.cpp\"),\n  public_includes = { \"src\" },\n}\n"},
+        {"plugins/thing/src/main.cpp",
+         "int reflect_marker();\nint main() { return reflect_marker() - 7; }\n"},
+        {"plugins/thing/src/thing.h", "struct Thing { int x; };\n"},
+    });
+
+    auto r = run_kiln(tmp.path, build_args());
+    INFO(r.out);
+    REQUIRE(r.code == 0);
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/gen/thing/thing.reflection.gen.cpp"));
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/gen/thing/thing.d.luau"));
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/bin/app"));
+
+    // A header edit must regenerate the reflection TU (the header set is
+    // the reflect task's declared input) - why-dirty explains it.
+    write_tree(tmp.path, {{"plugins/thing/src/thing.h", "struct Thing { int x; int y; };\n"}});
+    auto r2 = run_kiln(tmp.path, build_args());
+    INFO(r2.out);
+    REQUIRE(r2.code == 0);
+    auto wd = run_kiln(tmp.path, {"why-dirty", "reflect"});
+    CHECK(wd.code == 0);
+    CHECK(wd.out.find("REBUILT") != std::string::npos);
+    CHECK(wd.out.find("thing.h") != std::string::npos);
+}
