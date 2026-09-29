@@ -251,6 +251,34 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
         }
     }
 
+    // Content lint: the strict sidecar gate - any L1–L5/L8 finding is a
+    // smoke finding. The tinycook tool is a dev build output (built_ok
+    // gates it).
+    if (built_ok["dev"]) {
+        checks++;
+        std::printf("kiln smoke: lint-content --strict (dev)\n");
+        std::fflush(stdout);
+        const std::vector<std::pair<std::string, std::string>> contentRoots = {
+            {"engine", (root / "plugins" / "engine" / "engine" / "content").generic_string()},
+            {"game_content", (root / "plugins" / "game" / "game_content" / "content").generic_string()},
+        };
+        for (const auto& [name, contentDir] : contentRoots) {
+            std::string lintOutput;
+            int rc = util::run_process({bin("tinycook", "dev").string(), "--lint", contentDir,
+                                        "--plugin", name, "--strict"},
+                                       root, &lintOutput);
+            if (rc != 0) {
+                json f;
+                f["app"] = name;
+                f["config"] = "dev";
+                f["kind"] = "lint_content";
+                f["message"] = "lint-content --strict failed (" + std::to_string(rc) +
+                               "): " + lintOutput;
+                findings.push_back(std::move(f));
+            }
+        }
+    }
+
     // Write the report: .kiln/out/smoke/<timestamp>/findings.json + the
     // "latest" symlink (a convenience; its failure is not a finding).
     const fs::path runDir = root / ".kiln" / "out" / "smoke" / timestamp_now();
