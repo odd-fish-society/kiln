@@ -304,11 +304,15 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
 
         std::string gen_dir = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin;
         std::string gen_cpp = gen_dir + "/" + plugin + ".reflection.gen.cpp";
+        std::string gen_presentation_cpp = gen_dir + "/" + plugin + ".reflection.presentation.gen.cpp";
         std::string gen_dluau = gen_dir + "/" + plugin + ".d.luau";
         std::map<std::string, std::string> params;
         params["tool"] = declset.plugin->reflect_tool;
         params["plugin"] = plugin;
         params["out"] = gen_cpp;
+        // The Presentation-attributed types land in a SECOND TU the
+        // headless flavor does not compile (Sim/Presentation split).
+        params["out_presentation"] = gen_presentation_cpp;
         params["out_dluau"] = gen_dluau;
         set_indexed(params, "header", scan_headers);
         set_indexed(params, "strip_prefix", scan_dirs);
@@ -324,7 +328,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             params["tool_hash"] = th->hex();
 
         TaskDecl d = make_task(ctx, "reflect_gen", pdir + "/reflect:" + plugin, params,
-                               scan_headers, {}, {gen_cpp, gen_dluau});
+                               scan_headers, {}, {gen_cpp, gen_presentation_cpp, gen_dluau});
         auto id = d.id;
         KILN_TRY(void_result(sched.add(std::move(d))));
         reflect_gen_task = id;
@@ -470,11 +474,14 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             pt.module_objs[m.name].push_back(obj);
         }
 
-        // Synthetic compile of the generated reflection TU: one per
-        // module-with-sources, the module's own params so
-        // the flavor compiles the same generated text its way. In the
+        // Synthetic compile of the generated reflection TUs: one per
+        // module-with-sources, the module's own params
+        // so the flavor compiles the same generated text its way. The Sim
+        // TU compiles into every module-with-sources; the Presentation TU
+        // is SKIPPED by the headless flavor (its defines carry TE_HEADLESS)
+        // - that is the mechanical Sim/Presentation enforcement. In the
         // engine's three-flavor scheme exactly one module has sources per
-        // build, so the gen TU compiles exactly once per config.
+        // build, so each gen TU compiles exactly once per config.
         if (reflect_gen_task && !m.sources.empty()) {
             std::string gen_src = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/" +
                                   plugin + ".reflection.gen.cpp";
@@ -501,14 +508,33 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             // gen TU's task identity is the shared source path — a
             // reflecting plugin may therefore only have ONE
             // module-with-sources per config (the engine's three-flavor
-            // scheme satisfies this by construction). The
-            // Presentation-partition output keeps the same constraint.
+            // scheme satisfies this by construction).
             TaskDecl gd = make_task(ctx, "compile_cpp", gen_src, gen_params, {gen_src},
                                     gen_deps, {gen_obj});
             auto gid = gd.id;
             KILN_TRY(void_result(sched.add(std::move(gd))));
             pt.module_compiles[m.name].push_back(gid);
             pt.module_objs[m.name].push_back(gen_obj);
+
+            // The Presentation TU - compiled by every flavor except
+            // headless (whose defines carry TE_HEADLESS).
+            const bool headless = std::find(defines.begin(), defines.end(),
+                                            std::string("TE_HEADLESS")) != defines.end();
+            if (!headless) {
+                std::string pres_src = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/" +
+                                       plugin + ".reflection.presentation.gen.cpp";
+                std::string pres_obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/" +
+                                       m.name + "/" + plugin + ".reflection.presentation.gen.cpp.o";
+                std::map<std::string, std::string> pres_params = gen_params;
+                pres_params["out"] = pres_obj;
+                pres_params["depfile"] = pres_obj + ".d";
+                TaskDecl pd = make_task(ctx, "compile_cpp", pres_src, pres_params, {pres_src},
+                                        gen_deps, {pres_obj});
+                auto pid = pd.id;
+                KILN_TRY(void_result(sched.add(std::move(pd))));
+                pt.module_compiles[m.name].push_back(pid);
+                pt.module_objs[m.name].push_back(pres_obj);
+            }
         }
     }
 

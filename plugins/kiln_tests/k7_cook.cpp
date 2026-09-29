@@ -211,16 +211,19 @@ TEST_CASE("K7.6 reflect_gen: generated TU compiles into modules; header edit reg
     {
         std::ofstream f(tool);
         f << "#!/bin/sh\n"
-             "out=''; dluau='';\n"
+             "out=''; dluau=''; pres='';\n"
              "while [ $# -gt 0 ]; do\n"
              "  case \"$1\" in\n"
              "    --out) out=$2; shift 2;;\n"
+             "    --out-presentation) pres=$2; shift 2;;\n"
              "    --dluau) dluau=$2; shift 2;;\n"
              "    *) shift;;\n"
              "  esac\n"
              "done\n"
              "mkdir -p \"$(dirname \"$out\")\"\n"
              "printf 'int reflect_marker() { return 7; }\\n' > \"$out\"\n"
+             "mkdir -p \"$(dirname \"$pres\")\"\n"
+             "printf 'int reflect_presentation_marker() { return 7; }\\n' > \"$pres\"\n"
              "printf '%s\\n' 'export type Thing = { x: number }' > \"$dluau\"\n";
     }
     chmod(tool.c_str(), 0755);
@@ -233,7 +236,8 @@ TEST_CASE("K7.6 reflect_gen: generated TU compiles into modules; header edit reg
          "plugin \"thing\" {\n  reflect_tool = \"" + tool.generic_string() + "\",\n}\n"
          "module \"main\" {\n  sources = glob(\"src/*.cpp\"),\n  public_includes = { \"src\" },\n}\n"},
         {"plugins/thing/src/main.cpp",
-         "int reflect_marker();\nint main() { return reflect_marker() - 7; }\n"},
+         "int reflect_marker();\nint reflect_presentation_marker();\n"
+         "int main() { return reflect_marker() + reflect_presentation_marker() - 14; }\n"},
         {"plugins/thing/src/thing.h", "struct Thing { int x; };\n"},
     });
 
@@ -241,6 +245,7 @@ TEST_CASE("K7.6 reflect_gen: generated TU compiles into modules; header edit reg
     INFO(r.out);
     REQUIRE(r.code == 0);
     CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/gen/thing/thing.reflection.gen.cpp"));
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/gen/thing/thing.reflection.presentation.gen.cpp"));
     CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/gen/thing/thing.d.luau"));
     CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/bin/app"));
 
