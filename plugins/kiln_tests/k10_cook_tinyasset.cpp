@@ -62,11 +62,11 @@ TEST_CASE("cook_tinyasset passes the full arg shape to the tool") {
     d.id.config_hash = Hash256::of_string("c");
     d.rule_version = rules::rule_version("cook_tinyasset");
     d.declared_inputs = {"src/test.frag"};
-    d.declared_outputs = {".kiln/out/assets/test.frag.tinyasset"};
+    d.declared_outputs = {".kiln/out/assets/test.frag.ctasset"};
     d.params["tool"] = h.root.generic_string() + "/fake_tinycook.sh";
     d.params["asset_type"] = "shader";
     d.params["source"] = "src/test.frag";
-    d.params["out"] = ".kiln/out/assets/test.frag.tinyasset";
+    d.params["out"] = ".kiln/out/assets/test.frag.ctasset";
     d.params["asset_id"] = "0123456789abcdef0123456789abcdef";
     d.params["stage"] = "frag";
 
@@ -77,7 +77,7 @@ TEST_CASE("cook_tinyasset passes the full arg shape to the tool") {
     CHECK(args.find("--source src/test.frag") != std::string::npos);
     CHECK(args.find("--stage frag") != std::string::npos);
     CHECK(args.find("--asset-id 0123456789abcdef0123456789abcdef") != std::string::npos);
-    CHECK(args.find("--out .kiln/out/assets/test.frag.tinyasset") != std::string::npos);
+    CHECK(args.find("--out .kiln/out/assets/test.frag.ctasset") != std::string::npos);
 }
 
 TEST_CASE("cook_tinyasset: tool build output — tool edit recooks, unrelated edit does not (C1)") {
@@ -126,7 +126,7 @@ TEST_CASE("cook_tinyasset: tool build output — tool edit recooks, unrelated ed
     INFO(r1.out);
     REQUIRE(r1.code == 0);
     CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/bin/cooktool"));
-    REQUIRE(file_exists(tmp.path / ".kiln/out/linux-dev/assets/content/content/test.glsl.tinyasset"));
+    REQUIRE(file_exists(tmp.path / ".kiln/out/linux-dev/assets/content/content/test.glsl.ctasset"));
 
     // Unrelated engine-ish edit (the app module): cook must NOT re-run.
     {
@@ -156,7 +156,7 @@ TEST_CASE("cook_tinyasset: tool build output — tool edit recooks, unrelated ed
     REQUIRE(r3.code == 0);
     CHECK(r3.out.find("] ok plugins/content/content/test.glsl/cook_tinyasset") !=
           std::string::npos);
-    CHECK(read_file(tmp.path / ".kiln/out/linux-dev/assets/content/content/test.glsl.tinyasset") ==
+    CHECK(read_file(tmp.path / ".kiln/out/linux-dev/assets/content/content/test.glsl.ctasset") ==
           "cooked-v2");
 }
 
@@ -203,9 +203,9 @@ TEST_CASE("cook_tinyasset: ../-escaped inputs land under assets/<plugin>/ (D1)")
     REQUIRE(r.code == 0);
 
     // Normalized output path (no ".." component).
-    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/assets/content/shared/shaders/test.vert.tinyasset"));
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/assets/content/shared/shaders/test.vert.ctasset"));
     // The pre-fix escaped location must NOT exist.
-    CHECK(!file_exists(tmp.path / ".kiln/out/linux-dev/shared/shaders/test.vert.tinyasset"));
+    CHECK(!file_exists(tmp.path / ".kiln/out/linux-dev/shared/shaders/test.vert.ctasset"));
 
     // Deterministic AssetID from the resolved plugin-relative path.
     std::string expected_id = Hash256::of_string("content/shared/shaders/test.vert").hex();
@@ -252,8 +252,8 @@ TEST_CASE("cook_tinyasset: multi-input declaration cooks every input") {
     auto r = run_kiln(tmp.path, {"build", "game", "--progress=plain", "--workspace", "."});
     INFO(r.out);
     REQUIRE(r.code == 0);
-    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/assets/content/content/a.vert.tinyasset"));
-    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/assets/content/content/b.vert.tinyasset"));
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/assets/content/content/a.vert.ctasset"));
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/assets/content/content/b.vert.ctasset"));
 
     // Editing only b.vert re-runs exactly b's task.
     {

@@ -276,9 +276,9 @@ TaskResult run_pack(TaskCtx& ctx) {
         };
         return {parse16(hex32.data()), parse16(hex32.data() + 16)};
     };
-    // The cooked blob's TinyAssetType (the .tinyasset header's u32 at offset
+    // The cooked blob's TinyAssetType (the .ctasset header's u32 at offset
     // 12); 0 for anything that doesn't parse as one (defensive - the pack is
-    // not exclusively .tinyasset content in principle).
+    // not exclusively .ctasset content in principle).
     auto blob_type = [](const std::string& blob) -> uint32_t {
         if (blob.size() < 16 || blob.compare(0, 7, "TASSET1") != 0)
             return 0;

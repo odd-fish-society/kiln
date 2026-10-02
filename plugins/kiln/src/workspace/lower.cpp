@@ -654,8 +654,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             ext = ".png";
         else if (c.rule == "cook_tinyasset") {
             // Engine convention keeps the source extension:
-            // "debug_albedo.frag" → "debug_albedo.frag.tinyasset".
-            ext = ".tinyasset";
+            // "debug_albedo.frag" → "debug_albedo.frag.ctasset".
+            ext = ".ctasset";
             append_ext = true;
         } else
             ext = fs::path(primary).extension().generic_string();
