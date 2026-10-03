@@ -203,6 +203,11 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
     run("sandbox", {"--frames", "600"}, "dev");
     run("tinyserver", {"--ticks", "1000"}, "dev");
 
+    // M-D: the two-window standing gate - a torn-out panel window must boot,
+    // run VUID-free, and shut down cleanly on every smoke pass (the
+    // single-window runs above let this class of bug ship silently before).
+    run("tinyeditor", {"--layout", "plugins/engine/engine/content/test/layouts/two-window.json", "--frames", "600"}, "dev");
+
     // Golden-image suite: the sandbox exits 0 on a mismatch, so the result
     // is read from the log, not the exit code. The log is gated on every
     // outcome (a crash that logged a LogCrash line must surface it).
