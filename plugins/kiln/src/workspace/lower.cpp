@@ -39,6 +39,26 @@ bool passes_filter(const std::vector<std::string>& platforms,
     return true;
 }
 
+} // namespace
+
+void apply_exclusions(luau::DeclSet& decls) {
+    auto drop = [](std::vector<std::string>& files,
+                   const std::vector<std::string>& exclude) {
+        if (exclude.empty())
+            return;
+        std::set<std::string> blacklist(exclude.begin(), exclude.end());
+        files.erase(std::remove_if(files.begin(), files.end(),
+                                   [&](const std::string& f) { return blacklist.count(f) != 0; }),
+                    files.end());
+    };
+    for (auto& m : decls.modules)
+        drop(m.sources, m.exclude);
+    for (auto& c : decls.cooks)
+        drop(c.inputs, c.exclude);
+}
+
+namespace {
+
 std::string plugin_dir_of(const LowerCtx& ctx, const std::string& plugin) {
     return util::path_parent(ctx.ws->plugin_manifest_paths.at(plugin));
 }

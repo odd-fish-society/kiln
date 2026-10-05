@@ -284,6 +284,103 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
         }
     }
 
+    // Shipping-shape audit + run gate: build the shipping config, run
+    // `shipping-audit`, then the run gate (sandbox --frames 600 +
+    // tinyserver --ticks 1000, both exit-0 and log-gate-clean; the
+    // final-colour golden is compared against dev's through the
+    // sandbox's --final-only mode below).
+    {
+        const std::string shipping = "shipping";
+        auto dir = config_dir(root, "sandbox", shipping);
+        if (dir.ok()) {
+            cfgdirs[shipping] = *dir;
+            BuildOptions opts;
+            opts.workspace_root = root;
+            opts.target_specs = {"tinycook", "tinyreflect", "sandbox", "tinyserver"};
+            opts.config_override = shipping;
+            opts.jobs = jobs;
+            opts.progress = console::ProgressMode::Plain;
+            console::Renderer renderer(
+                console::Renderer::Options{opts.progress, console::detect_colors().enabled,
+                                           false});
+            auto outcome = run_build(opts, renderer);
+            renderer.teardown_region();
+            renderer.finish();
+            built_ok[shipping] = outcome.ok() && !outcome->failed;
+            if (!built_ok[shipping]) {
+                json f;
+                f["app"] = "kiln";
+                f["config"] = shipping;
+                f["kind"] = "build";
+                f["message"] = outcome.ok() ? "build failed" : outcome.error;
+                findings.push_back(std::move(f));
+            }
+        } else {
+            built_ok[shipping] = false;
+            json f;
+            f["app"] = "kiln";
+            f["config"] = shipping;
+            f["kind"] = "build";
+            f["message"] = dir.error;
+            findings.push_back(std::move(f));
+        }
+
+        if (built_ok[shipping]) {
+            checks++;
+            std::printf("kiln smoke: shipping-audit\n");
+            std::fflush(stdout);
+            auto audit = cmd_shipping_audit(root, shipping, {});
+            if (!audit.ok()) {
+                json f;
+                f["app"] = "kiln";
+                f["config"] = shipping;
+                f["kind"] = "shipping_audit";
+                f["message"] = audit.error;
+                findings.push_back(std::move(f));
+            }
+
+            // The run gate.
+            run("sandbox", {"--frames", "600"}, shipping);
+            run("tinyserver", {"--ticks", "1000"}, shipping);
+
+            // The shipping Final Colour golden (the three debug views do
+            // not exist in shipping, hence --final-only): byte-identical
+            // to dev's final-colour capture.
+            if (built_ok[shipping] && built_ok["dev"]) {
+                checks++;
+                const fs::path goldenDir =
+                    root / "plugins" / "game" / "game_content" / "content" / "golden";
+                std::printf("kiln smoke: sandbox --golden --final-only (shipping)\n");
+                std::fflush(stdout);
+                std::string out;
+                int rc = util::run_process(
+                    {bin("sandbox", shipping).string(), "--golden", goldenDir.string(),
+                     "--final-only"},
+                    root, &out);
+                if (rc != 0) {
+                    json f;
+                    f["app"] = "sandbox";
+                    f["config"] = shipping;
+                    f["kind"] = "exit_code";
+                    f["message"] = "final-only golden run exited with code " +
+                                   std::to_string(rc);
+                    findings.push_back(std::move(f));
+                }
+                auto log = util::read_file(root / "saved" / "logs" / "latest.log");
+                std::string text = log.ok() ? *log : std::string();
+                if (rc == 0 &&
+                    text.find("golden: FINAL COLOUR MATCH") == std::string::npos) {
+                    json f;
+                    f["app"] = "sandbox";
+                    f["config"] = shipping;
+                    f["kind"] = "golden";
+                    f["message"] = "final-only golden did not report FINAL COLOUR MATCH";
+                    findings.push_back(std::move(f));
+                }
+            }
+        }
+    }
+
     // Write the report: .kiln/out/smoke/<timestamp>/findings.json + the
     // "latest" symlink (a convenience; its failure is not a finding).
     const fs::path runDir = root / ".kiln" / "out" / "smoke" / timestamp_now();

@@ -47,6 +47,7 @@ std::string decl_set_to_json(const DeclSet& decls) {
         mods.push_back({{"plugin", m.plugin},
                         {"name", m.name},
                         {"sources", strvec(m.sources)},
+                        {"exclude", strvec(m.exclude)},
                         {"public_includes", strvec(m.public_includes)},
                         {"private_includes", strvec(m.private_includes)},
                         {"public_defines", strvec(m.public_defines)},
@@ -74,6 +75,7 @@ std::string decl_set_to_json(const DeclSet& decls) {
                          {"name", c.name},
                          {"rule", c.rule},
                          {"inputs", strvec(c.inputs)},
+                         {"exclude", strvec(c.exclude)},
                          {"params", params},
                          {"platforms", strvec(c.platforms)},
                          {"configs", strvec(c.configs)},
@@ -176,6 +178,7 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
             m.plugin = v.at("plugin").get<std::string>();
             m.name = v.at("name").get<std::string>();
             m.sources = to_strvec(v.at("sources"));
+            m.exclude = to_strvec(v.value("exclude", json::array()));
             m.public_includes = to_strvec(v.value("public_includes", json::array()));
             m.private_includes = to_strvec(v.value("private_includes", json::array()));
             m.public_defines = to_strvec(v.value("public_defines", json::array()));
@@ -200,6 +203,7 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
             c.name = v.at("name").get<std::string>();
             c.rule = v.at("rule").get<std::string>();
             c.inputs = to_strvec(v.at("inputs"));
+            c.exclude = to_strvec(v.value("exclude", json::array()));
             const json& params = v.value("params", json::object());
             for (auto pit = params.begin(); pit != params.end(); ++pit)
                 c.params[pit.key()] = pit.value().get<std::string>();

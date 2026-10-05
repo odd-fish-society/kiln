@@ -14,10 +14,52 @@ std::string param(const TaskDecl& decl, const std::string& key, std::string def 
     return it == decl.params.end() ? std::move(def) : it->second;
 }
 
-// Naive `#include "..."` scan over GLSL source (recursive, cycle-guarded).
-// The engine's current shaders have NO includes, but the rule
-// records them as dynamic deps for future shaders — digest invalidation must
-// match what the consumer compiler would see.
+// `#include "..."` scan over GLSL source (recursive, cycle-guarded).
+// The resolution order MUST match the tinycook tool's - relative
+// to the INCLUDING file first, then to the plugin's shader root
+// (content/shaders/vulkan). The rule records the
+// closure as dynamic deps - digest invalidation must match what the
+// consumer compiler would see.
+std::string shader_root_of(const fs::path& workspace_root, const fs::path& file) {
+    // plugins/<layer>/<plugin>/<rest> - the shader root is the plugin's
+    // content/shaders/vulkan.
+    std::string rel = file.generic_string();
+    auto parts = [](const std::string& p) {
+        std::vector<std::string> out;
+        size_t start = 0;
+        while (true) {
+            size_t slash = p.find('/', start);
+            if (slash == std::string::npos) {
+                out.push_back(p.substr(start));
+                break;
+            }
+            out.push_back(p.substr(start, slash - start));
+            start = slash + 1;
+        }
+        return out;
+    }(rel);
+    for (size_t i = 0; i + 2 < parts.size(); i++)
+        if (parts[i] == "plugins")
+            return "plugins/" + parts[i + 1] + "/" + parts[i + 2] + "/content/shaders/vulkan";
+    return {};
+}
+
+bool resolve_include(const fs::path& workspace_root, const std::string& include,
+                     const fs::path& includer, std::string& out) {
+    std::vector<std::string> candidates;
+    candidates.push_back(util::join_rel(util::path_parent(includer.generic_string()), include));
+    const std::string root = shader_root_of(workspace_root, includer);
+    if (!root.empty())
+        candidates.push_back(util::join_rel(root, include));
+    for (const std::string& candidate : candidates) {
+        if (fs::is_regular_file(workspace_root / candidate)) {
+            out = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
 void scan_glsl_includes(const fs::path& workspace_root, const fs::path& file,
                         std::set<std::string>& out, int depth) {
     if (depth > 64)
@@ -35,9 +77,8 @@ void scan_glsl_includes(const fs::path& workspace_root, const fs::path& file,
             size_t q2 = content->find('"', q + 1);
             if (q2 != std::string::npos) {
                 std::string inc = content->substr(q + 1, q2 - q - 1);
-                std::string base = util::path_parent(file.generic_string());
-                std::string rel = util::join_rel(base, inc);
-                if (fs::is_regular_file(workspace_root / rel) && !out.count(rel)) {
+                std::string rel;
+                if (resolve_include(workspace_root, inc, file, rel) && !out.count(rel)) {
                     out.insert(rel);
                     scan_glsl_includes(workspace_root, workspace_root / rel, out, depth + 1);
                 }
@@ -88,6 +129,12 @@ TaskResult run_cook_tinyasset(TaskCtx& ctx) {
         argv.push_back("--lint-out");
         argv.push_back(lint_out);
     }
+    // The shader debug-info flag (0 = strip names/line info).
+    std::string debug_info = param(*ctx.decl, "debug_info", "");
+    if (!debug_info.empty()) {
+        argv.push_back("--debug-info");
+        argv.push_back(debug_info);
+    }
     std::string captured;
     int rc = util::run_process(argv, ctx.workspace_root, &captured);
     if (!captured.empty())
@@ -98,8 +145,9 @@ TaskResult run_cook_tinyasset(TaskCtx& ctx) {
         return r;
     }
 
-    // Dynamic deps for future shader includes (none in the engine today).
-    if (asset_type == "shader") {
+    // Dynamic deps for shader includes: a shader and a shaderinclude
+    // both depend on their include closure.
+    if (asset_type == "shader" || asset_type == "shaderinclude") {
         std::set<std::string> includes;
         scan_glsl_includes(ctx.workspace_root, ctx.workspace_root / source, includes, 0);
         for (auto& inc : includes)

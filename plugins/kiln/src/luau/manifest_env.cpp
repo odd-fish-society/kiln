@@ -432,7 +432,7 @@ int spec_module(lua_State* L) {
     EvalState* st = state_from(L);
     luaL_checktype(L, 2, LUA_TTABLE);
     validate_fields(L, 2, st,
-                    {"sources", "public_includes", "private_includes", "public_defines",
+                    {"sources", "exclude", "public_includes", "private_includes", "public_defines",
                      "private_defines", "deps", "platforms", "configs", "cpp_std", "pch",
                      "syslibs", "public_syslibs", "public_link_flags", "flags"},
                     {});
@@ -449,6 +449,14 @@ int spec_module(lua_State* L) {
         luaL_error(L, "module '%s': missing required field 'sources'", m.name.c_str());
     if (!read_fileset(L, -1, st, "sources", m.sources))
         luaL_typeerrorL(L, -1, "sources");
+    lua_pop(L, 1);
+
+    // exclude: FileSet (optional) — paths removed from `sources`.
+    lua_getfield(L, 2, "exclude");
+    if (!lua_isnil(L, -1)) {
+        if (!read_fileset(L, -1, st, "exclude", m.exclude))
+            luaL_typeerrorL(L, -1, "exclude");
+    }
     lua_pop(L, 1);
 
     auto join_inc = [&](std::vector<std::string> raw) {
@@ -594,7 +602,7 @@ int decl_cook(lua_State* L) {
 int spec_cook(lua_State* L) {
     EvalState* st = state_from(L);
     luaL_checktype(L, 2, LUA_TTABLE);
-    validate_fields(L, 2, st, {"rule", "inputs", "params", "platforms", "configs"}, {});
+    validate_fields(L, 2, st, {"rule", "inputs", "exclude", "params", "platforms", "configs"}, {});
     if (st->decls.cooks.empty())
         luaL_error(L, "internal: cook spec without declaration");
     auto& c = st->decls.cooks.back();
@@ -609,6 +617,13 @@ int spec_cook(lua_State* L) {
         luaL_error(L, "cook '%s': missing required field 'inputs'", c.name.c_str());
     if (!read_fileset(L, -1, st, "inputs", c.inputs))
         luaL_typeerrorL(L, -1, "inputs");
+    lua_pop(L, 1);
+    // exclude: FileSet (optional) — paths removed from `inputs`.
+    lua_getfield(L, 2, "exclude");
+    if (!lua_isnil(L, -1)) {
+        if (!read_fileset(L, -1, st, "exclude", c.exclude))
+            luaL_typeerrorL(L, -1, "exclude");
+    }
     lua_pop(L, 1);
     c.params = get_flat_map_field(L, 2, "params");
     c.platforms = get_strvec_field(L, 2, "platforms");

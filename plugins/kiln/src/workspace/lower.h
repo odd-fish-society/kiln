@@ -73,6 +73,12 @@ std::string clib_interface_path(const ConfigTuple& ct, const std::string& plugin
 // Lowers one plugin's DeclSet into tasks. Dep plugins must already be lowered.
 Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& plugin);
 
+// Applies each module/cook's `exclude` list: removes the named paths from
+// the materialized sources/inputs (paths are workspace-relative; a listed
+// path that isn't present is a no-op so a config can exclude a file another
+// config adds).
+void apply_exclusions(luau::DeclSet& decls);
+
 // Target-level tasks: link, pack, compile_commands.
 Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
                                 const luau::TargetDecl& target);

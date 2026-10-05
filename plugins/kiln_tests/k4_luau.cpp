@@ -7,6 +7,7 @@
 #include "core/util.h"
 #include "luau/manifest_env.h"
 #include "test_util.h"
+#include "workspace/lower.h"
 
 using namespace kiln;
 using namespace kiln::testutil;
@@ -345,4 +346,61 @@ TEST_CASE("K4.12 glob results feed the expansion digest (file adds re-expand)") 
     REQUIRE(r2.ok());
     REQUIRE(r2->decls.globs[0].files.size() == 2);
     REQUIRE(luau::decl_set_to_json(r1->decls) != luau::decl_set_to_json(r2->decls));
+}
+
+TEST_CASE("K4.13 exclude: module + cook paths removed after expansion") {
+    WS w;
+    write_tree(w.root, {
+        {"plugins/p/src/a.cpp", ""},
+        {"plugins/p/src/dev_only.cpp", ""},
+        {"plugins/p/content/beep.wav", ""},
+        {"plugins/p/content/dev_preview.wav", ""},
+        {"plugins/p/plugin.build.luau", R"(
+plugin "p" {}
+module "m" {
+    sources = glob("src/*.cpp"),
+    exclude = { "src/dev_only.cpp" },
+}
+cook "beep" {
+    rule = "cook_copy",
+    inputs = glob("content/*.wav"),
+    exclude = { "content/dev_preview.wav" },
+}
+)"},
+    });
+    auto res = luau::evaluate_file(w.root / "plugins/p/plugin.build.luau",
+                                   plugin_opts(w.root, "p"));
+    REQUIRE(res.ok());
+    auto& d = res->decls;
+    REQUIRE(d.modules.size() == 1);
+    std::vector<std::string> srcs{"plugins/p/src/a.cpp", "plugins/p/src/dev_only.cpp"};
+    CHECK(d.modules[0].sources == srcs);
+    std::vector<std::string> ex{"plugins/p/src/dev_only.cpp"};
+    CHECK(d.modules[0].exclude == ex);
+    REQUIRE(d.cooks.size() == 1);
+    std::vector<std::string> inputs{"plugins/p/content/beep.wav", "plugins/p/content/dev_preview.wav"};
+    CHECK(d.cooks[0].inputs == inputs);
+    CHECK(d.cooks[0].exclude == std::vector<std::string>{"plugins/p/content/dev_preview.wav"});
+    // Exclusions are applied at lowering, not eval — verify the helper.
+    apply_exclusions(d);
+    CHECK(d.modules[0].sources == std::vector<std::string>{"plugins/p/src/a.cpp"});
+    CHECK(d.cooks[0].inputs == std::vector<std::string>{"plugins/p/content/beep.wav"});
+
+    // An excluded path that isn't present is a no-op (config may exclude a
+    // file another config adds).
+    apply_exclusions(d); // idempotent second pass
+    CHECK(d.modules[0].sources == std::vector<std::string>{"plugins/p/src/a.cpp"});
+
+    // exclude accepts a glob result too (FileSet symmetry with sources).
+    write_tree(w.root, {
+        {"plugins/p/plugin.build.luau", R"(
+plugin "p" {}
+module "m" { sources = glob("src/*.cpp"), exclude = glob("src/dev_*.cpp") }
+)"},
+    });
+    auto r2 = luau::evaluate_file(w.root / "plugins/p/plugin.build.luau",
+                                  plugin_opts(w.root, "p"));
+    REQUIRE(r2.ok());
+    REQUIRE(r2->decls.modules.size() == 1);
+    CHECK(r2->decls.modules[0].exclude == std::vector<std::string>{"plugins/p/src/dev_only.cpp"});
 }

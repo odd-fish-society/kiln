@@ -113,6 +113,16 @@ int main(int argc, char** argv) {
     test->add_option("--config", t_config, "config override");
     test->add_option("--workspace", t_workspace, "workspace root (default: auto-detect)");
 
+    // ---- shipping-audit ---------------------------------------------------------------
+    auto* shipping_audit = app.add_subcommand(
+        "shipping-audit",
+        "Audit the shipping binaries for stripped dev-only code");
+    std::string sa_config, sa_workspace;
+    std::vector<std::string> sa_targets;
+    shipping_audit->add_option("target", sa_targets, "target(s) to audit (default: sandbox tinyserver)");
+    shipping_audit->add_option("--config", sa_config, "config name (default: shipping)");
+    shipping_audit->add_option("--workspace", sa_workspace, "workspace root (default: auto-detect)");
+
     // ---- smoke ----------------------------------------------------------------------
     auto* smoke = app.add_subcommand("smoke", "Scheduled detection run");
     std::string s2_workspace;
@@ -247,6 +257,11 @@ int main(int argc, char** argv) {
         } else if (*test) {
             auto r = cmd_test(fs::path(t_workspace), t_target, t_jobs, t_platform,
                               t_config);
+            rc = r.ok() ? *r : 2;
+            if (!r.ok())
+                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
+        } else if (*shipping_audit) {
+            auto r = cmd_shipping_audit(fs::path(sa_workspace), sa_config, sa_targets);
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());

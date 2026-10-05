@@ -22,6 +22,7 @@ export type ModuleDeps = {
 
 export type ModuleSpec = {
     sources: FileSet,
+    exclude: FileSet?,
     public_includes: { string }?,
     private_includes: { string }?,
     public_defines: { string }?,
@@ -40,6 +41,7 @@ export type ModuleSpec = {
 export type CookSpec = {
     rule: string,
     inputs: FileSet,
+    exclude: FileSet?,
     params: { [string]: string }?,
     platforms: { string }?,
     configs: { string }?,

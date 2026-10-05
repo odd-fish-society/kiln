@@ -34,6 +34,7 @@ struct ModuleDecl {
     std::string plugin;
     std::string name;
     std::vector<std::string> sources; // materialized files, sorted
+    std::vector<std::string> exclude; // removed from sources (workspace-relative)
     std::vector<std::string> public_includes;
     std::vector<std::string> private_includes;
     std::vector<std::string> public_defines;
@@ -57,6 +58,7 @@ struct CookDecl {
     std::string name;
     std::string rule;
     std::vector<std::string> inputs; // materialized, sorted
+    std::vector<std::string> exclude; // removed from inputs (workspace-relative)
     std::map<std::string, std::string> params; // flat, hashed
     std::vector<std::string> platforms;
     std::vector<std::string> configs;

@@ -362,6 +362,7 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
         luau::DeclSet ds;
         if (!luau::decl_set_from_json(*json_content, ds))
             return Result<void>::fail("corrupt DeclSet artifact: " + declset);
+        apply_exclusions(ds);
         lctx.declsets[plugin] = std::move(ds);
     }
 

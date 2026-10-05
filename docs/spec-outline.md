@@ -419,6 +419,7 @@ plugin(name: string)(spec: {
 
 module(name: string)(spec: {
   sources: FileSet*,                   -- from glob() or explicit {paths}
+  exclude: FileSet?,                   -- removed from sources after expansion (plugin-relative)
   public_includes: {string}?,          -- dirs, plugin-relative; default {"include"}
   private_includes: {string}?,
   public_defines: {string}?, private_defines: {string}?,
@@ -430,6 +431,7 @@ module(name: string)(spec: {
 cook(name: string)(spec: {
   rule: string*,                       -- registered cook rule name
   inputs: FileSet*,
+  exclude: FileSet?,                   -- removed from inputs after expansion (plugin-relative)
   params: {[string]: string}?,         -- flat, hashed
   platforms: {string}?, configs: {string}?,
 })
