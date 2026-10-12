@@ -130,6 +130,18 @@ int main(int argc, char** argv) {
     smoke->add_option("-j", s2_jobs, "worker count");
     smoke->add_option("--workspace", s2_workspace, "workspace root (default: auto-detect)");
 
+    // ---- test-scenes ----------------------------------------------------------------
+    auto* test_scenes = app.add_subcommand(
+        "test-scenes",
+        "Run the committed lighting test maps against their goldens");
+    std::string ts_scene, ts_workspace;
+    bool ts_update = false;
+    int ts_jobs = 0;
+    test_scenes->add_option("scene", ts_scene, "case name (default: all)");
+    test_scenes->add_flag("--update", ts_update, "rewrite the golden PNGs instead of comparing");
+    test_scenes->add_option("-j", ts_jobs, "worker count");
+    test_scenes->add_option("--workspace", ts_workspace, "workspace root (default: auto-detect)");
+
     // ---- lint-content ---------------------------------------------------------------
     auto* lint_content = app.add_subcommand("lint-content", "Lint the content trees' .meta sidecars");
     std::string lc_workspace, lc_config = "dev";
@@ -267,6 +279,11 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
         } else if (*smoke) {
             auto r = cmd_smoke(fs::path(s2_workspace), s2_jobs);
+            rc = r.ok() ? *r : 2;
+            if (!r.ok())
+                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
+        } else if (*test_scenes) {
+            auto r = cmd_test_scenes(fs::path(ts_workspace), ts_scene, ts_update, ts_jobs);
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());

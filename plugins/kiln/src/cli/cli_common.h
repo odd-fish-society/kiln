@@ -1,11 +1,13 @@
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
 #include <string>
 #include <vector>
 
 #include "console/renderer.h"
 #include "core/result.h"
+#include "nlohmann/json.hpp"
 #include "workspace/build.h"
 
 namespace fs = std::filesystem;
@@ -34,5 +36,14 @@ Result<int> cmd_lint_content(const fs::path& root, const std::vector<std::string
                              bool strict, const std::string& config);
 Result<int> cmd_mint_content(const fs::path& root, const std::vector<std::string>& plugins,
                              bool dry_run, const std::string& config);
+// The per-lighting-case test maps. The
+// `scene` argument names one case (empty = all); `--update` rewrites the
+// committed goldens instead of comparing.
+Result<int> cmd_test_scenes(const fs::path& root, const std::string& scene,
+                            bool update, int jobs);
+// The smoke-internal stage (the same cases, compare-only) - declared here
+// so cmd_smoke can call it without rebuilding the run/gate logic.
+void run_test_scenes(const fs::path& root, const fs::path& sandbox_bin,
+                     nlohmann::json& findings, size_t* checks);
 
 } // namespace kiln
