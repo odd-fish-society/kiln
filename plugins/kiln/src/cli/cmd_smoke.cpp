@@ -233,6 +233,36 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
         run_test_scenes(root, bin("sandbox", "dev"), findings, &checks);
     }
 
+    // The editor-vs-game A/B verify - both apps run the Offscreen
+    // render-target capture against the default scene and tinycompare
+    // reports the pixel verdict. 1080p on every pass, 4K on the nightly
+    // (SMOKE_NIGHTLY=1).
+    if (built_ok["dev"]) {
+        const fs::path scene = root / "plugins" / "game" / "game_content" / "content" / "scenes" / "default.tasset";
+        const std::vector<std::string> resolutions =
+            std::getenv("SMOKE_NIGHTLY") ? std::vector<std::string>{"1920x1080", "3840x2160"}
+                                         : std::vector<std::string>{"1920x1080"};
+        const fs::path outDir = root / ".kiln" / "out" / "smoke" / "verify";
+        for (const std::string& res : resolutions) {
+            checks++;
+            std::printf("kiln smoke: verify-render %s (dev)\n", res.c_str());
+            std::fflush(stdout);
+            std::string out;
+            int rc = util::run_process({"sh", (root / "scripts" / "verify-render.sh").string(),
+                                        scene.string(), res, "--out-dir", outDir.string()},
+                                       root, &out);
+            if (rc != 0) {
+                json f;
+                f["app"] = "verify-render";
+                f["config"] = "dev";
+                f["kind"] = rc == 1 ? "ab_divergence" : "verify_error";
+                f["message"] = "verify-render " + res + " exited " + std::to_string(rc) +
+                               (out.empty() ? "" : " (output: " + out + ")");
+                findings.push_back(std::move(f));
+            }
+        }
+    }
+
     // Content lint: the strict sidecar gate - any L1–L5/L8 finding is a
     // smoke finding. The tinycook tool is a dev build output (built_ok
     // gates it).
