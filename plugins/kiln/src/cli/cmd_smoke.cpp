@@ -2,6 +2,7 @@
 #include "cli/run_gate.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 
 #include <algorithm>
@@ -90,61 +91,72 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
     const std::vector<std::string> kApps = {"tinycook", "tinyreflect", "tinyeditor",
                                             "sandbox", "tinyserver", "tinytest"};
     const std::vector<std::string> kConfigs = {"dev", "dev-asan"};
+    // The sanitizer matrix: the concurrency bugs found so far are TSAN
+    // territory and are now fixed - run tinytest under TSAN and UBSAN
+    // too (the headless test targets only; instrumenting the GUI apps
+    // under TSAN is neither cheap nor a stable signal).
+    const std::vector<std::string> kTestConfigs = {"dev-tsan", "dev-ubsan"};
+    const std::vector<std::string> kTestApps = {"tinycook", "tinyreflect", "tinytest"};
 
     json findings = json::array();
     std::map<std::string, std::string> cfgdirs;
     std::map<std::string, bool> built_ok;
 
-    // Build every app in dev and dev-asan (tinycook first in each list).
-    for (const auto& config : kConfigs) {
-        auto dir = config_dir(root, kApps.front(), config);
-        if (!dir.ok()) {
-            json f;
-            f["app"] = "kiln";
-            f["config"] = config;
-            f["kind"] = "build";
-            f["message"] = dir.error;
-            findings.push_back(std::move(f));
-            built_ok[config] = false;
-            continue;
-        }
-        cfgdirs[config] = *dir;
+    // Build every app in dev and dev-asan (tinycook first in each list),
+    // then the headless test tier in dev-tsan and dev-ubsan.
+    auto build_configs = [&](const std::vector<std::string>& apps, const std::vector<std::string>& configs) {
+        for (const auto& config : configs) {
+            auto dir = config_dir(root, apps.front(), config);
+            if (!dir.ok()) {
+                json f;
+                f["app"] = "kiln";
+                f["config"] = config;
+                f["kind"] = "build";
+                f["message"] = dir.error;
+                findings.push_back(std::move(f));
+                built_ok[config] = false;
+                continue;
+            }
+            cfgdirs[config] = *dir;
 
-        BuildOptions opts;
-        opts.workspace_root = root;
-        opts.target_specs = kApps;
-        opts.config_override = config;
-        opts.jobs = jobs;
-        opts.progress = console::ProgressMode::Plain;
+            BuildOptions opts;
+            opts.workspace_root = root;
+            opts.target_specs = apps;
+            opts.config_override = config;
+            opts.jobs = jobs;
+            opts.progress = console::ProgressMode::Plain;
 
-        console::Renderer renderer(
-            console::Renderer::Options{opts.progress, console::detect_colors().enabled,
-                                       false});
-        auto outcome = run_build(opts, renderer);
-        renderer.teardown_region();
-        renderer.finish();
-        if (!outcome.ok()) {
-            json f;
-            f["app"] = "kiln";
-            f["config"] = config;
-            f["kind"] = "build";
-            f["message"] = outcome.error;
-            findings.push_back(std::move(f));
-            built_ok[config] = false;
-            continue;
+            console::Renderer renderer(
+                console::Renderer::Options{opts.progress, console::detect_colors().enabled,
+                                           false});
+            auto outcome = run_build(opts, renderer);
+            renderer.teardown_region();
+            renderer.finish();
+            if (!outcome.ok()) {
+                json f;
+                f["app"] = "kiln";
+                f["config"] = config;
+                f["kind"] = "build";
+                f["message"] = outcome.error;
+                findings.push_back(std::move(f));
+                built_ok[config] = false;
+                continue;
+            }
+            if (outcome->failed) {
+                json f;
+                f["app"] = "kiln";
+                f["config"] = config;
+                f["kind"] = "build";
+                f["message"] = "build failed";
+                findings.push_back(std::move(f));
+                built_ok[config] = false;
+                continue;
+            }
+            built_ok[config] = true;
         }
-        if (outcome->failed) {
-            json f;
-            f["app"] = "kiln";
-            f["config"] = config;
-            f["kind"] = "build";
-            f["message"] = "build failed";
-            findings.push_back(std::move(f));
-            built_ok[config] = false;
-            continue;
-        }
-        built_ok[config] = true;
-    }
+    };
+    build_configs(kApps, kConfigs);
+    build_configs(kTestApps, kTestConfigs);
 
     size_t checks = 0;
 
@@ -160,9 +172,17 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
         run_gated(root, bin(target, config), args, target, config, findings, &checks);
     };
 
-    // Tinytest under both configs (the sanitizer signal lives in the asan run).
+    // Tinytest under both configs (the sanitizer signal lives in the asan run),
+    // plus the TSAN/UBSAN tier (the sanitizer matrix).
+    // The TSAN run skips the fork-based process tests - the fork+signal path
+    // is TSAN-unsafe and hangs the suite under the sanitizer (the
+    // TE_SKIP_PROCESS_TESTS mechanism in SubsystemTests.h).
     run("tinytest", {}, "dev");
     run("tinytest", {}, "dev-asan");
+    setenv("TE_SKIP_PROCESS_TESTS", "1", 1);
+    run("tinytest", {}, "dev-tsan");
+    unsetenv("TE_SKIP_PROCESS_TESTS");
+    run("tinytest", {}, "dev-ubsan");
 
     // Scripted app runs (dev only - the GUI apps are built under dev-asan
     // but not run under ASAN: environment noise and doubled wall time).
