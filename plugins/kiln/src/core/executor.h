@@ -31,13 +31,12 @@ public:
         std::string log;              // buffered task output (flushed to renderer)
         std::string why;              // human-readable reason (for --explain/why-dirty)
         struct WhyRef {
-            std::string kind;         // "input_changed" | "dep_changed" | "params_changed" |
+            std::string kind{};       // "input_changed" | "dep_changed" | "params_changed" |
                                       // "config_changed" | "rule_version" | "first_build" |
                                       // "missing_output" | "upstream_failed" | "error"
-            std::string path;
-            std::string was, now;
-            std::string dep_display;
-            std::string msg;
+            std::string path{}, was{}, now{};
+            std::string dep_display{};
+            std::string msg{};
         };
         WhyRef why_ref;
     };

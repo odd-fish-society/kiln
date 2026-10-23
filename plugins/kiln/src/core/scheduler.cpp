@@ -145,7 +145,7 @@ void Scheduler::worker_loop() {
             cv_.wait(lock, [&] {
                 if (shutdown_)
                     return true;
-                if (cancelled_ || running_ >= options_.jobs)
+                if (cancelled_ || running_ >= (size_t)options_.jobs)
                     return false;
                 return pop_ready_probe_locked();
             });

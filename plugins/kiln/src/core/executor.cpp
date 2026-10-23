@@ -208,7 +208,10 @@ Executor::Result Executor::run_task(const TaskDecl& decl,
         new_trace.inputs.push_back({p, *hv});
     }
 
-    out.log = logbuf->take();
+    // A second `out.log = logbuf->take()` used to sit here: it
+    // re-took the already-drained buffer and overwrote the task's real
+    // log with an empty string - every successful task's diagnostics
+    // (compiler warnings included) were silently dropped.
 
     bool changed =
         !old_trace ||

@@ -417,7 +417,14 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             defines.push_back("KILN_HAS_" + util::to_upper(odep) + "=" +
                               (ctx.declsets.count(odep) ? "1" : "0"));
         defines.push_back("KILN_PLATFORM_" + util::to_upper(ctx.ct.platform) + "=1");
-        defines.push_back("KILN_CONFIG_" + util::to_upper(ctx.ct.config) + "=1");
+        // The config name becomes a macro - the hyphen in
+        // "dev-asan"/"dev-tsan"/... produced an invalid identifier (and a
+        // warning per TU). '-' maps to '_'.
+        {
+            std::string conf = util::to_upper(ctx.ct.config);
+            std::replace(conf.begin(), conf.end(), '-', '_');
+            defines.push_back("KILN_CONFIG_" + conf + "=1");
+        }
         if (ctx.ct.config == "release" || ctx.ct.config == "shipping")
             defines.push_back("NDEBUG=1");
 
@@ -968,7 +975,15 @@ Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
                                           (ctx.declsets.count(odep) ? "1" : "0"));
                     defines.push_back("KILN_PLATFORM_" + util::to_upper(ctx.ct.platform) +
                                       "=1");
-                    defines.push_back("KILN_CONFIG_" + util::to_upper(ctx.ct.config) + "=1");
+                    // The config name becomes a macro - the hyphen in
+                    // "dev-asan"/"dev-tsan"/... produced an invalid
+                    // identifier (and a warning per TU). '-' maps to
+                    // '_'.
+                    {
+                        std::string conf = util::to_upper(ctx.ct.config);
+                        std::replace(conf.begin(), conf.end(), '-', '_');
+                        defines.push_back("KILN_CONFIG_" + conf + "=1");
+                    }
                     nlohmann::json inc_arr = nlohmann::json::array();
                     for (auto& inc : sorted_uniq(includes))
                         inc_arr.push_back(inc);

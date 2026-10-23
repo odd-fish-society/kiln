@@ -56,10 +56,6 @@ std::string pick_platform(const luau::TargetDecl& target, const TargetSpec& spec
     return target.platforms.front();
 }
 
-std::string opt_level_for(const ConfigTuple& ct) {
-    return (ct.config == "release" || ct.config == "shipping") ? "2" : "0";
-}
-
 void write_why_json(const fs::path& root, const std::string& target_name,
                     const ConfigTuple& ct, const Scheduler& sched) {
     json arr = json::array();
