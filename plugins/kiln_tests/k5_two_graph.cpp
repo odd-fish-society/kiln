@@ -356,3 +356,43 @@ TEST_CASE("K5b.1 cross-plugin overlap: game compiles before core's link finishes
     // The expansion-only first wave executes zero compile tasks.
     CHECK(!obs.compile_before_expansions_done);
 }
+
+TEST_CASE("K5c.1 toolchain upgrade: a changed compiler reruns compiles + link") {
+    TempDir tmp;
+    auto files = fixture();
+    // The tools table points cxx at a wrapper around the system compiler;
+    // rewriting the wrapper stands in for a toolchain upgrade (the GCC
+    // 16.1 -> 16.2 stale-PCH incident: the same spelling, new bytes).
+    fs::path cxx = tmp.path / "fake_cxx.sh";
+    auto write_cxx = [&](const char* tag) {
+        std::ofstream f(cxx);
+        f << "#!/bin/sh\n# " << tag << "\nexec c++ \"$@\"\n";
+    };
+    write_cxx("v1");
+    chmod(cxx.c_str(), 0755);
+    files["kiln.workspace.luau"] =
+        "workspace \"k5\" {\n  pools = { link = 1 },\n  strict_globs = true,\n"
+        "  tools = { cxx = \"" +
+        cxx.generic_string() + "\" },\n}\n";
+    write_tree(tmp.path, files);
+
+    auto r1 = run_kiln(tmp.path, build_args());
+    REQUIRE(r1.code == 0);
+    // The settle build (K5.1): depfile discovery reruns core + audio once.
+    REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
+    auto r2 = run_kiln(tmp.path, build_args());
+    REQUIRE(r2.code == 0);
+    CHECK(count_executed(r2.out) == 0);
+
+    write_cxx("v2");
+    auto r3 = run_kiln(tmp.path, build_args());
+    REQUIRE(r3.code == 0);
+    CHECK(executed_compiles(r3.out, "core") == 1);
+    CHECK(executed_compiles(r3.out, "audio") == 1);
+    CHECK(executed_compiles(r3.out, "game") == 1);
+    CHECK(r3.out.find("/link") != std::string::npos);
+
+    auto r4 = run_kiln(tmp.path, build_args());
+    REQUIRE(r4.code == 0);
+    CHECK(count_executed(r4.out) == 0);
+}

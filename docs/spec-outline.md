@@ -656,7 +656,9 @@ directories name the artifact):
   compiler-bootstrap literature). Deliberately NOT called a determinism check: that name
   belongs to §6.5, which tests a different property. On mismatch, bootstrap exits 3 with
   `convergence FAILED: proof-build differs from self-build` and prints a diff summary of
-  section hashes (`readelf -S` + per-section BLAKE3) to localize the nondeterminism.
+  section hashes (`readelf -S` + per-section BLAKE3; sha256 where `b3sum` is not
+  installed) to localize the nondeterminism. Every stage runs on every invocation
+  (each build is incremental); no stage is skipped because its binary already exists.
 
 ### 7a.3 Reproducibility requirements (apply to the `compile_cpp`/`c_library` rules globally)
 

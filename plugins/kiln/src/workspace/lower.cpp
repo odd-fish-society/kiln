@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <set>
 
+#include "core/toolchain.h"
 #include "core/util.h"
 #include "nlohmann/json.hpp"
 #include "rules/registry.h"
@@ -121,6 +122,20 @@ TaskDecl make_task(LowerCtx& ctx, const std::string& rule, const std::string& pr
                    std::map<std::string, std::string> params,
                    std::vector<std::string> inputs, std::vector<TaskId> deps,
                    std::vector<std::string> outputs, std::string pool = "") {
+    // The C/C++ toolchain rules key on the tool's content
+    // identity, not its spelling (a PATH "c++" upgrade must rerun them; the
+    // depfile filter drops every header outside the workspace, so nothing
+    // else would notice). The cook/reflect rules carry their own tool_hash.
+    static const std::set<std::string> kToolchainRules = {"compile_c", "compile_cpp",
+                                                          "compile_pch", "archive", "link"};
+    if (kToolchainRules.count(rule) && params.count("tool")) {
+        const std::string& tool = params.at("tool");
+        auto [it, inserted] = ctx.toolchain_fingerprints.try_emplace(tool);
+        if (inserted)
+            it->second = toolchain_fingerprint(tool, ctx.ws->root, rule != "archive");
+        params["toolchain_hash"] = it->second;
+    }
+
     TaskDecl d;
     d.id.rule = rule;
     d.id.primary_input = primary;

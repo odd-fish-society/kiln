@@ -38,23 +38,26 @@ fail() {
 
 mkdir -p "$BOOT"
 
+# Every stage runs on every invocation: both builds are incremental, so an
+# up-to-date stage costs a no-op build. Skipping a stage because its binary
+# already existed compared a months-old self-build against today's proof-build
+# (a false exit 3, 2026-11-07).
+
 # ---- external-build: CMake (escape hatch, permanent) -------------------------
-if [ ! -x "$BOOT/external-build/kiln" ]; then
-    echo "building kiln with cmake (escape hatch)…"
+echo "building kiln with cmake (escape hatch)…"
+if [ ! -f "$BOOT/cmake-build/CMakeCache.txt" ]; then
     cmake --preset release -S "$ROOT" -B "$BOOT/cmake-build" >/dev/null || fail "external-build cmake configure failed"
-    cmake --build "$BOOT/cmake-build" -j"$JOBS" >/dev/null || fail "external-build cmake build failed"
-    mkdir -p "$BOOT/external-build"
-    cp "$BOOT/cmake-build/kiln" "$BOOT/external-build/kiln" || fail "external-build copy failed"
 fi
+cmake --build "$BOOT/cmake-build" -j"$JOBS" >/dev/null || fail "external-build cmake build failed"
+mkdir -p "$BOOT/external-build"
+cp "$BOOT/cmake-build/kiln" "$BOOT/external-build/kiln" || fail "external-build copy failed"
 echo "== external-build ok: $BOOT/external-build/kiln"
 
 # ---- self-build: external-build/kiln builds the workspace --------------------
-if [ ! -x "$BOOT/self-build/kiln" ]; then
-    echo "building kiln with kiln…"
-    (cd "$ROOT" && "$BOOT/external-build/kiln" build kiln:linux-release --progress=plain) || fail "self-build build failed"
-    mkdir -p "$BOOT/self-build"
-    cp "$ROOT/.kiln/out/linux-release/bin/kiln" "$BOOT/self-build/kiln" || fail "self-build copy failed"
-fi
+echo "building kiln with kiln…"
+(cd "$ROOT" && "$BOOT/external-build/kiln" build kiln:linux-release --progress=plain) || fail "self-build build failed"
+mkdir -p "$BOOT/self-build"
+cp "$ROOT/.kiln/out/linux-release/bin/kiln" "$BOOT/self-build/kiln" || fail "self-build copy failed"
 echo "== self-build ok: $BOOT/self-build/kiln"
 CONFIG_SELF=$(cd "$ROOT" && "$BOOT/external-build/kiln" build kiln:linux-release --print-config-hash) \
     || fail "self-build config-hash resolution failed"
@@ -93,18 +96,31 @@ if cmp -s "$BOOT/self-build/kiln" "$BOOT/proof-build/kiln"; then
 fi
 
 echo "convergence FAILED: proof-build differs from self-build" >&2
-echo "per-section BLAKE3 to localize the nondeterminism:" >&2
-for f in "$BOOT/self-build/kiln" "$BOOT/proof-build/kiln"; do
-    echo "-- $f" >&2
-    readelf -S "$f" 2>/dev/null | awk 'NR>5 && $4 != "" {print $1, $2}' |
-        while read -r idx name; do
-            sec=$(readelf -S --wide "$f" 2>/dev/null |
-                awk -v i="$idx" '$1==i {print $5, $6}')
-            off=$(echo "$sec" | awk '{print $1}')
-            size=$(echo "$sec" | awk '{print $2}')
-            hash=$(dd if="$f" bs=1 skip=$((off)) count=$((size)) 2>/dev/null |
-                sha256sum | cut -c1-16)
-            echo "  section $idx ($name): $hash"
+
+# Per-section hashes of the file bytes, from `readelf -S --wide` (the Off and
+# Size columns are hex). NULL and NOBITS sections (.bss) have no file bytes.
+# BLAKE3 when b3sum is installed (spec §7a.2), sha256 otherwise.
+if command -v b3sum >/dev/null 2>&1; then
+    HASHER=b3sum
+else
+    HASHER=sha256sum
+fi
+section_hashes() {
+    readelf -S --wide "$1" 2>/dev/null |
+        sed -n 's/^ *\[ *[0-9][0-9]*\] *//p' |
+        while read -r name type addr off size rest; do
+            case "$name" in NULL) continue ;; esac
+            [ "$type" = "NOBITS" ] && continue
+            hash=$(tail -c +$((0x$off + 1)) "$1" | head -c $((0x$size)) |
+                $HASHER | cut -c1-16)
+            echo "$name $hash"
         done
-done >&2
+}
+section_hashes "$BOOT/self-build/kiln" >"$BOOT/self-build.sections"
+section_hashes "$BOOT/proof-build/kiln" >"$BOOT/proof-build.sections"
+echo "sections that differ ($HASHER; full lists in $BOOT/{self,proof}-build.sections):" >&2
+diff "$BOOT/self-build.sections" "$BOOT/proof-build.sections" |
+    sed -n 's/^< /  self-build:  /p; s/^> /  proof-build: /p' >&2
+cmp -s "$BOOT/self-build.sections" "$BOOT/proof-build.sections" &&
+    echo "  (no section differs: the headers or the section layout differ)" >&2
 exit 3

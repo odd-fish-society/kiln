@@ -59,6 +59,10 @@ struct LowerCtx {
         std::vector<std::string> deps; // displays
     };
     std::vector<GraphNode> graph_nodes;
+
+    // The toolchain fingerprint per tool spelling, computed
+    // once per lowering (it spawns the driver).
+    std::map<std::string, std::string> toolchain_fingerprints;
 };
 
 std::string declset_path(const ConfigTuple& ct, const std::string& plugin);
