@@ -88,8 +88,10 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
         root = *found;
     }
 
-    const std::vector<std::string> kApps = {"tinycook", "tinyreflect", "tinyeditor",
-                                            "sandbox", "tinyserver", "tinytest"};
+    // Tinycrash is every app's crash watcher (without it a run's crash
+    // leaves only a raw fallback), tinycrashreport its reporter window.
+    const std::vector<std::string> kApps = {"tinycook", "tinyreflect", "tinycrash", "tinycrashreport",
+                                            "tinyeditor", "sandbox", "tinyserver", "tinytest"};
     const std::vector<std::string> kConfigs = {"dev", "dev-asan"};
     // The sanitizer matrix: the concurrency bugs found so far are TSAN
     // territory and are now fixed - run tinytest under TSAN and UBSAN
@@ -238,6 +240,44 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
                 f["config"] = "dev";
                 f["kind"] = "log_gate";
                 f["message"] = line;
+                findings.push_back(std::move(f));
+            }
+        }
+    }
+
+    // Every crash kind, end to end (the editor offscreen, each bundle
+    // checked). Dev only: the shipping build below has no editor;
+    // scripts/crash-test.sh --config linux-shipping covers it by hand.
+    if (built_ok["dev"]) {
+        checks++;
+        std::printf("kiln smoke: crash-test (dev)\n");
+        std::fflush(stdout);
+        std::string out;
+        int rc = util::run_process({"bash", (root / "scripts" / "crash-test.sh").string(), "--config", cfgdirs["dev"]},
+                                   root, &out);
+        if (rc != 0) {
+            bool listed = false;
+            size_t pos = 0;
+            while (pos < out.size()) {
+                size_t eol = out.find('\n', pos);
+                std::string line = out.substr(pos, (eol == std::string::npos ? out.size() : eol) - pos);
+                pos = (eol == std::string::npos) ? out.size() : eol + 1;
+                if (line.rfind("FAIL ", 0) != 0 && line.rfind("crash-test:", 0) != 0)
+                    continue;
+                json f;
+                f["app"] = "tinyeditor";
+                f["config"] = "dev";
+                f["kind"] = "crash_test";
+                f["message"] = line;
+                findings.push_back(std::move(f));
+                listed = true;
+            }
+            if (!listed) {
+                json f;
+                f["app"] = "tinyeditor";
+                f["config"] = "dev";
+                f["kind"] = "crash_test";
+                f["message"] = "crash-test exited with code " + std::to_string(rc);
                 findings.push_back(std::move(f));
             }
         }
