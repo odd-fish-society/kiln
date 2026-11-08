@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <deque>
+#include <optional>
 
 #include "core/digest.h"
 #include "core/util.h"
@@ -37,6 +38,10 @@ Scheduler::~Scheduler() {
 }
 
 Result<size_t> Scheduler::add(TaskDecl decl) {
+    // The GraphGrew event is emitted after the unlock, like TaskFinished: the
+    // sink must never run under mu_.
+    std::optional<Event> grew;
+    std::unique_lock lock(mu_);
     auto th = decl.id.stable_hash();
     auto existing = graph_.find(th);
     if (existing)
@@ -80,7 +85,6 @@ Result<size_t> Scheduler::add(TaskDecl decl) {
         wr.dep_display = failed_dep ? graph_.nodes()[*failed_dep].decl.id.display() : "";
         why_.push_back(std::move(wr));
     } else if (pending == 0 && !upstream_failed) {
-        std::lock_guard lock(mu_);
         ready_.push_back(idx);
     }
     if (sink_) {
@@ -89,8 +93,11 @@ Result<size_t> Scheduler::add(TaskDecl decl) {
         e.id = node.decl.id;
         e.done = static_cast<uint32_t>(done_count(stats_));
         e.total = static_cast<uint32_t>(graph_.size());
-        sink_(std::move(e));
+        grew = std::move(e);
     }
+    lock.unlock();
+    if (grew)
+        sink_(std::move(*grew));
     return Result<size_t>::success(idx);
 }
 
@@ -145,7 +152,7 @@ void Scheduler::worker_loop() {
             cv_.wait(lock, [&] {
                 if (shutdown_)
                     return true;
-                if (cancelled_ || running_ >= (size_t)options_.jobs)
+                if (cancelled_ || !dispatching_ || running_ >= (size_t)options_.jobs)
                     return false;
                 return pop_ready_probe_locked();
             });
@@ -191,6 +198,10 @@ void Scheduler::worker_loop() {
             sink_(std::move(e));
         }
 
+        // Built under the lock: once running_ drops, run() may return and the
+        // caller may add() (reallocating graph_), so nothing after the unlock
+        // may touch node or stats_.
+        std::optional<Event> finished;
         {
             std::lock_guard lock(mu_);
             --running_;
@@ -250,20 +261,23 @@ void Scheduler::worker_loop() {
                         ready_.push_back(dep_idx);
                 }
             }
+
+            if (sink_) {
+                Event e;
+                e.kind = Event::TaskFinished;
+                e.id = node.decl.id;
+                e.state = res.state;
+                e.ms = res.trace ? static_cast<uint64_t>(std::max<int64_t>(0, res.trace->wall_ms))
+                                 : 0;
+                e.done = static_cast<uint32_t>(done_count(stats_));
+                e.total = static_cast<uint32_t>(graph_.size());
+                e.running = static_cast<uint32_t>(running_);
+                finished = std::move(e);
+            }
         }
 
-        if (sink_) {
-            Event e;
-            e.kind = Event::TaskFinished;
-            e.id = node.decl.id;
-            e.state = res.state;
-            e.ms = res.trace ? static_cast<uint64_t>(std::max<int64_t>(0, res.trace->wall_ms))
-                             : 0;
-            e.done = static_cast<uint32_t>(done_count(stats_));
-            e.total = static_cast<uint32_t>(graph_.size());
-            e.running = static_cast<uint32_t>(running_);
-            sink_(std::move(e));
-        }
+        if (finished)
+            sink_(std::move(*finished));
 
         cv_.notify_all();
     }
@@ -275,6 +289,7 @@ Result<void> Scheduler::run() {
     {
         std::lock_guard lock(mu_);
         stats_.total = graph_.size();
+        dispatching_ = true;
         if (workers_.empty()) {
             workers_.reserve(static_cast<size_t>(options_.jobs));
             for (int i = 0; i < options_.jobs; ++i)
@@ -319,6 +334,12 @@ Result<void> Scheduler::run() {
             }
         }
         break;
+    }
+    {
+        // Every break above leaves nothing ready (or cancelled_ set), so no
+        // task can start between the break and this.
+        std::lock_guard lock(mu_);
+        dispatching_ = false;
     }
 
     if (sink_) {

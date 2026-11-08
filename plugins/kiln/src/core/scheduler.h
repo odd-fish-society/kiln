@@ -121,6 +121,11 @@ private:
     std::map<std::string, int> pool_in_flight_;
     size_t running_ = 0;
     bool cancelled_ = false;
+    // Workers start tasks only while run() is draining. The workers outlive a
+    // run (wave 1 -> lowering -> wave 2), and add() between runs queues
+    // ready tasks: a worker that woke during lowering used to start them and
+    // read graph_ while add() reallocated it.
+    bool dispatching_ = false;
     bool shutdown_ = false;
     bool failed_ = false;
     std::vector<std::thread> workers_;
