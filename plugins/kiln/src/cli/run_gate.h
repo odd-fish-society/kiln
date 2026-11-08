@@ -14,8 +14,11 @@ namespace kiln {
 // log is gated even when the run itself only reports through the log,
 // e.g. the golden compares).
 inline bool line_matches_gate(const std::string& line) {
-    static const std::vector<std::string> kTokens = {"error", "VUID", "Assertion",
-                                                     "LogCrash", "VMA"};
+    // "error"/"critical" also match the level tag the engine's file log
+    // carries ("[error]", "[critical]"), so a level-error line trips the gate
+    // whatever its message says.
+    static const std::vector<std::string> kTokens = {"error", "critical", "VUID",
+                                                     "Assertion", "LogCrash", "VMA"};
     if (line.find("submesh slot 5") != std::string::npos)
         return false;
     for (const auto& token : kTokens)
