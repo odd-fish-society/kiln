@@ -323,7 +323,9 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
             cfgdirs[shipping] = *dir;
             BuildOptions opts;
             opts.workspace_root = root;
-            opts.target_specs = {"tinycook", "tinyreflect", "sandbox", "tinyserver"};
+            // The crash watcher ships with the apps, and tinycrashreport is
+            // audited (row A16).
+            opts.target_specs = {"tinycook", "tinyreflect", "tinycrash", "sandbox", "tinyserver", "tinycrashreport"};
             opts.config_override = shipping;
             opts.jobs = jobs;
             opts.progress = console::ProgressMode::Plain;

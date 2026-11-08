@@ -115,6 +115,13 @@ const std::vector<CheckDef>& checks() {
         {"A13", "asserts compiled out, TE_FATAL machinery present", {}, {"destroying an invalid/stale RHI", "maxPushConstantsSize is below", "mesh_unlit.vert's push constant doesn't match"}, {}, {"sandbox", "tinyserver"}, ""},
         {"A14", "no .tasset reader symbols", {"TassetDocument", "ReadTasset", "DecookTasset", "WriteTasset"}, {}, {}, {"sandbox", "tinyserver"}, ""},
         {"A15", "no Preview-flagged cvars in Runtime/Server registries", {"Preview"}, {}, {}, {"sandbox", "tinyserver"}, "the Preview cvar flag has not landed"},
+        // The TE_TOOL subset build stays a subset (a Wisp tool links no renderer
+        // stack, no asset manager, no importers).
+        {"A16", "tinycrashreport: no renderer/asset-manager/importer symbols (the TE_TOOL subset)",
+         {"VulkanRenderer3D", "VulkanRenderer2D", "Renderer3D::", "Renderer2D::", "DebugBackend", "AssetManager",
+          "AssetRegistry", "TinyAssetCooker", "CgltfImporter", "FbxImporter", "MeshOptimizer", "SceneSerializer",
+          "TextureCache"},
+         {}, {}, {"tinycrashreport"}, ""},
     };
     return kChecks;
 }
@@ -191,7 +198,7 @@ Result<std::vector<ExceptionRow>> load_exceptions(const fs::path& root) {
 Result<int> cmd_shipping_audit(const fs::path& root, const std::string& config,
                                const std::vector<std::string>& targets) {
     std::vector<std::string> auditTargets = targets.empty()
-                                                ? std::vector<std::string>{"sandbox", "tinyserver"}
+                                                ? std::vector<std::string>{"sandbox", "tinyserver", "tinycrashreport"}
                                                 : targets;
 
     // The config dir name (the `shipping` config builds into linux-shipping).
@@ -383,7 +390,7 @@ Result<int> cmd_shipping_audit(const fs::path& root, const std::string& config,
 
     // ---- report -----------------------------------------------------------------
     std::printf("shipping-audit: %s (%s)\n", outDir.c_str(),
-                auditTargets.empty() ? "sandbox tinyserver" : "targets");
+                auditTargets.empty() ? "sandbox tinyserver tinycrashreport" : "targets");
     std::printf("  bin\n");
     for (const CheckDef& c : checks())
         if (!c.requiresNote.empty())
