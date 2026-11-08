@@ -4,6 +4,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -35,6 +36,9 @@ public:
     void note(std::string line); // informational line above the progress region
     void finish();               // drain queue, tear down region
     // Clears the pinned region (always call on exit — never leave a dead bar).
+    // This and print_summary run ON the consumer thread (blocking until done),
+    // or inline once finish() has joined it: the thread owns stdout and the
+    // region/failure state, and the main thread printing alongside it raced.
     void teardown_region();
     // Final summary line(s): "✓ N tasks, M cached, T" or "✗ K failed:" + list.
     void print_summary(uint64_t done, uint64_t cached, uint64_t failed,
@@ -54,8 +58,13 @@ private:
         bool note = false;
         std::string note_text;
         bool shutdown = false;
+        std::function<void()> fn; // run_on_consumer
+        uint64_t fn_ticket = 0;
     };
 
+    void run_on_consumer(std::function<void()> fn);
+    void print_summary_now(uint64_t done, uint64_t cached, uint64_t failed,
+                           uint64_t skipped, uint64_t elapsed_ms);
     void consume(Item&& item);
     void handle_event(const Event& e);
     void scroll_line(std::string line);
@@ -80,6 +89,11 @@ private:
     std::deque<Item> queue_;
     std::thread thread_;
     bool shutdown_requested_ = false;
+    // run_on_consumer tickets, under mu_. Items run FIFO, so fn_done_ is the
+    // last completed ticket; the consumer loop records it (it holds mu_ there).
+    std::condition_variable fn_done_cv_;
+    uint64_t fn_issued_ = 0;
+    uint64_t fn_done_ = 0;
 
     // Fancy state.
     std::vector<std::string> scroll_;       // ring buffer of scroll lines

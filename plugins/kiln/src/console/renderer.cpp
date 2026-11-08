@@ -74,9 +74,14 @@ Renderer::Renderer(Options opts) : opts_(std::move(opts)), colors_(detect_colors
                             break;
                         }
                         // Unlock while consuming so pushes can keep arriving.
+                        const uint64_t ticket = item.fn_ticket;
                         lock.unlock();
                         consume(std::move(item));
                         lock.lock();
+                        if (ticket) {
+                            fn_done_ = ticket;
+                            fn_done_cv_.notify_all();
+                        }
                     }
                 }
                 if (shutdown_now) {
@@ -84,8 +89,14 @@ Renderer::Renderer(Options opts) : opts_(std::move(opts)), colors_(detect_colors
                     while (!queue_.empty()) {
                         Item leftover = std::move(queue_.front());
                         queue_.pop_front();
-                        if (!leftover.shutdown)
-                            consume(std::move(leftover));
+                        if (leftover.shutdown)
+                            continue;
+                        const uint64_t ticket = leftover.fn_ticket;
+                        consume(std::move(leftover));
+                        if (ticket) {
+                            fn_done_ = ticket;
+                            fn_done_cv_.notify_all();
+                        }
                     }
                     if (dirty_) {
                         // Flush the final state, still honoring the ≥33 ms
@@ -145,14 +156,36 @@ void Renderer::finish() {
         thread_.join();
 }
 
+void Renderer::run_on_consumer(std::function<void()> fn) {
+    if (!thread_.joinable() || std::this_thread::get_id() == thread_.get_id()) {
+        fn();
+        return;
+    }
+    std::unique_lock lock(mu_);
+    Item item;
+    item.fn = std::move(fn);
+    item.fn_ticket = ++fn_issued_;
+    const uint64_t ticket = item.fn_ticket;
+    queue_.push_back(std::move(item));
+    cv_.notify_all();
+    fn_done_cv_.wait(lock, [&] { return fn_done_ >= ticket; });
+}
+
 void Renderer::teardown_region() {
-    clear_region();
-    torn_down_ = true;
-    std::fflush(stdout);
+    run_on_consumer([this] {
+        clear_region();
+        torn_down_ = true;
+        std::fflush(stdout);
+    });
 }
 
 void Renderer::print_summary(uint64_t done, uint64_t cached, uint64_t failed,
                              uint64_t skipped, uint64_t elapsed_ms) {
+    run_on_consumer([=, this] { print_summary_now(done, cached, failed, skipped, elapsed_ms); });
+}
+
+void Renderer::print_summary_now(uint64_t done, uint64_t cached, uint64_t failed,
+                                 uint64_t skipped, uint64_t elapsed_ms) {
     if (failed == 0) {
         std::string line = (utf8_ ? "✓ " : "ok ") + std::to_string(done) + " tasks, " +
                            std::to_string(cached) + " cached";
@@ -335,6 +368,10 @@ void Renderer::repaint() {
 void Renderer::consume(Item&& item) {
     if (item.shutdown)
         return;
+    if (item.fn) {
+        item.fn(); // the caller records fn_ticket under mu_ (it may hold it now)
+        return;
+    }
     if (item.note) {
         if (opts_.mode == ProgressMode::Fancy) {
             scroll_line(std::move(item.note_text));
