@@ -102,7 +102,7 @@ const std::vector<CheckDef>& checks() {
     static const std::vector<CheckDef> kChecks = {
         {"A1", "no profiler capture symbols", {"::Tetrace", "FlightRecorder", "ProfilerExport"}, {}, {}, {"sandbox", "tinyserver"}, ""},
         {"A2", "no GpuFrameDebugInfo symbols", {"GpuFrameDebugInfo"}, {}, {}, {"sandbox"}, ""},
-        {"A3", "no debug-pass symbols", {"VulkanRenderer3D::RecordDebug", "VulkanRenderer3D::SubmitDebug", "RendererDebug::SubmitDebug", "VulkanRenderer3D::AddDebugPasses", "s_DebugViewPipeline", "s_DebugOutlineMaskPipeline", "s_DebugOutlineCompositePipeline", "s_DebugOverlayPipeline", "s_DebugWorldPipeline", "s_DebugNormalsPipeline", "s_DebugAlbedoPipeline"}, {}, {}, {"sandbox"}, ""},
+        {"A3", "no debug-pass symbols", {"VulkanRenderer3D::RecordDebug", "VulkanRenderer3D::SubmitDebug", "RendererDebug::SubmitDebug", "VulkanRenderer3D::AddDebugPasses", "VulkanRenderer3D::DebugBackend"}, {}, {}, {"sandbox"}, ""},
         {"A4", "no validation-layer machinery", {"DebugMessenger", "CreateDebugMessenger", "BufferValidationMessage"}, {"VK_LAYER_KHRONOS_validation", "VK_EXT_debug_utils"}, {}, {"sandbox"}, ""},
         {"A5", "no WidgetReflector symbols", {"WidgetReflector"}, {}, {}, {"sandbox"}, ""},
         {"A6", "no glslang symbols", {"glslang", "GlslangToSpv", "TShader"}, {}, {}, {"sandbox", "tinyserver"}, ""},
