@@ -195,7 +195,30 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
     // M-D: the two-window standing gate - a torn-out panel window must boot,
     // run VUID-free, and shut down cleanly on every smoke pass (the
     // single-window runs above let this class of bug ship silently before).
-    run("tinyeditor", {"--layout", "plugins/engine/engine/content/test/layouts/two-window.json", "--frames", "600"}, "dev");
+    // The layout now holds a real torn-out window (it held only the main
+    // one, so the gate opened no secondary), the run is `--display-mode
+    // hidden` (the real swapchain path with no window on screen - the
+    // secondary window inherits the mode), and the gate checks that the
+    // second window context came up.
+    run("tinyeditor", {"--display-mode", "hidden", "--layout", "plugins/engine/engine/content/test/layouts/two-window.json", "--frames", "600"}, "dev");
+    if (built_ok["dev"]) {
+        checks++;
+        auto log = util::read_file(root / "saved" / "logs" / "latest.log");
+        const std::string text = log.ok() ? *log : std::string();
+        size_t contexts = 0;
+        for (size_t at = text.find("Vulkan Context Initialised"); at != std::string::npos;
+             at = text.find("Vulkan Context Initialised", at + 1))
+            contexts++;
+        if (contexts < 2) {
+            json f;
+            f["app"] = "tinyeditor";
+            f["config"] = "dev";
+            f["kind"] = "two_window";
+            f["message"] = "the two-window run initialised " + std::to_string(contexts) +
+                           " window context(s); the layout's torn-out window never opened";
+            findings.push_back(std::move(f));
+        }
+    }
 
     // Golden-image suite: the sandbox exits 0 on a mismatch, so the result
     // is read from the log, not the exit code. The log is gated on every
