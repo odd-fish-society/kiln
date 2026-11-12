@@ -306,6 +306,69 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
         }
     }
 
+    // The RHI self-test as a gate (the Retiring-slot / retire-queue /
+    // pipeline-cache rules it checks were only verified when someone ran it
+    // by hand). Offscreen; the sandbox exits 1 on a FAIL verdict, and both
+    // verdict lines must say PASS.
+    if (built_ok["dev"]) {
+        std::printf("kiln smoke: sandbox --rhi-selftest (dev)\n");
+        std::fflush(stdout);
+        run_gated(root, bin("sandbox", "dev"), {"--rhi-selftest", "--display-mode", "offscreen"}, "sandbox",
+                  "dev", findings, &checks);
+        auto log = util::read_file(root / "saved" / "logs" / "latest.log");
+        const std::string text = log.ok() ? *log : std::string();
+        for (const char* verdict : {"RHI SELFTEST: PASS", "RHI SELFTEST PIPELINE CACHE: PASS"}) {
+            if (text.find(verdict) == std::string::npos) {
+                json f;
+                f["app"] = "sandbox";
+                f["config"] = "dev";
+                f["kind"] = "rhi_selftest";
+                f["message"] = std::string("the self-test log has no '") + verdict + "' line";
+                findings.push_back(std::move(f));
+            }
+        }
+    }
+
+    // The global-state guard - every writable symbol of the linked dev
+    // binaries must match a row of build/global-state.allow.txt, and
+    // every row must match something.
+    if (built_ok["dev"]) {
+        checks++;
+        std::printf("kiln smoke: global-state-audit (dev)\n");
+        std::fflush(stdout);
+        std::string out;
+        int rc = util::run_process({"python3", (root / "scripts" / "global-state-audit.py").string(), "--config",
+                                    cfgdirs["dev"]},
+                                   root, &out);
+        if (rc != 0) {
+            bool listed = false;
+            size_t pos = 0;
+            while (pos < out.size()) {
+                size_t eol = out.find('\n', pos);
+                std::string line = out.substr(pos, (eol == std::string::npos ? out.size() : eol) - pos);
+                pos = (eol == std::string::npos) ? out.size() : eol + 1;
+                if (line.rfind("FAIL ", 0) != 0)
+                    continue;
+                json f;
+                f["app"] = "global-state-audit";
+                f["config"] = "dev";
+                f["kind"] = "global_state";
+                f["message"] = line;
+                findings.push_back(std::move(f));
+                listed = true;
+            }
+            if (!listed) {
+                json f;
+                f["app"] = "global-state-audit";
+                f["config"] = "dev";
+                f["kind"] = "global_state";
+                f["message"] = "global-state-audit exited with code " + std::to_string(rc) +
+                               (out.empty() ? "" : " (output: " + out + ")");
+                findings.push_back(std::move(f));
+            }
+        }
+    }
+
     // The per-lighting-case test maps (the 90-degree camera orbit + each
     // committed golden set) - the regression net for the map-wall occlusion
     // / camera-relative class of lighting bug. The sandbox binary is

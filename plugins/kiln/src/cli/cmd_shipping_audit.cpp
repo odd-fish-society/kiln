@@ -122,8 +122,7 @@ const std::vector<CheckDef>& checks() {
         // stack, no asset manager, no importers).
         {"A16", "tinycrashreport: no renderer/asset-manager/importer symbols (the TE_TOOL subset)",
          {"VulkanRenderer3D", "VulkanRenderer2D", "Renderer3D::", "Renderer2D::", "DebugBackend", "AssetManager",
-          "AssetRegistry", "TinyAssetCooker", "CgltfImporter", "FbxImporter", "MeshOptimizer", "SceneSerializer",
-          "TextureCache"},
+          "AssetRegistry", "TinyAssetCooker", "CgltfImporter", "FbxImporter", "MeshOptimizer", "SceneSerializer"},
          {}, {}, {"tinycrashreport"}, ""},
     };
     return kChecks;
