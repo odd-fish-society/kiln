@@ -23,14 +23,16 @@ std::vector<std::string> indexed_params(const TaskDecl& decl, const std::string&
     return out;
 }
 
-// reflect_gen: drives the tinyreflect build tool
-// over a plugin's header set, emitting <plugin>.reflection.gen.cpp (the
-// Sim/value types - compiled into every module-with-sources) plus
-// <plugin>.reflection.presentation.gen.cpp (Presentation-attributed types,
-// compiled into every NON-headless module-with-sources) plus
-// <plugin>.d.luau. The tool is a
-// build output of the `tinycook` target (built earlier in the same `kiln
-// build a b c...` invocation); tool_hash regenerates on tool changes.
+// reflect_gen: drives the tinyreflect build tool over a plugin's
+// header set, emitting <plugin>.reflection.gen.cpp (the Sim/value
+// types - compiled into every module-with-sources) plus
+// <plugin>.reflection.presentation.gen.cpp (Presentation-attributed
+// types - compiled into every NON-headless module-with-sources) plus
+// <plugin>.script.gen.cpp (the Luau bindings of the Script-marked Sim
+// surface - compiled into every module-with-sources) plus
+// <plugin>.d.luau. The tool is a build output of the `tinycook` target
+// (built earlier in the same `kiln build a b c...` invocation);
+// tool_hash regenerates on tool changes.
 TaskResult run_reflect_gen(TaskCtx& ctx) {
     TaskResult r;
     std::string tool = param(*ctx.decl, "tool");
@@ -38,6 +40,7 @@ TaskResult run_reflect_gen(TaskCtx& ctx) {
     std::string out = param(*ctx.decl, "out");
     std::string out_dluau = param(*ctx.decl, "out_dluau");
     std::string out_presentation = param(*ctx.decl, "out_presentation");
+    std::string out_script = param(*ctx.decl, "out_script");
     if (tool.empty() || plugin.empty() || out.empty() || out_dluau.empty()) {
         r.error = "reflect_gen: missing tool/plugin/out/out_dluau params";
         return r;
@@ -51,6 +54,10 @@ TaskResult run_reflect_gen(TaskCtx& ctx) {
     if (!out_presentation.empty()) {
         argv.push_back("--out-presentation");
         argv.push_back(out_presentation);
+    }
+    if (!out_script.empty()) {
+        argv.push_back("--out-script");
+        argv.push_back(out_script);
     }
     for (auto& prefix : indexed_params(*ctx.decl, "strip_prefix"))
         argv.push_back("--strip-prefix=" + prefix);
@@ -91,6 +98,13 @@ TaskResult run_reflect_gen(TaskCtx& ctx) {
             return r;
         }
         r.outputs.push_back(out_presentation);
+    }
+    if (!out_script.empty()) {
+        if (!fs::is_regular_file(ctx.workspace_root / out_script)) {
+            r.error = "reflect_gen: tool did not produce " + out_script;
+            return r;
+        }
+        r.outputs.push_back(out_script);
     }
     return r;
 }

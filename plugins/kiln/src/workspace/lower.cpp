@@ -340,6 +340,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         std::string gen_dir = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin;
         std::string gen_cpp = gen_dir + "/" + plugin + ".reflection.gen.cpp";
         std::string gen_presentation_cpp = gen_dir + "/" + plugin + ".reflection.presentation.gen.cpp";
+        std::string gen_script_cpp = gen_dir + "/" + plugin + ".script.gen.cpp";
         std::string gen_dluau = gen_dir + "/" + plugin + ".d.luau";
         std::map<std::string, std::string> params;
         params["tool"] = declset.plugin->reflect_tool;
@@ -348,6 +349,9 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         // The Presentation-attributed types land in a SECOND TU the
         // headless flavor does not compile (Sim/Presentation split).
         params["out_presentation"] = gen_presentation_cpp;
+        // The Luau bindings of the Script-marked Sim surface - a THIRD
+        // TU, compiled by every flavor (headless too).
+        params["out_script"] = gen_script_cpp;
         params["out_dluau"] = gen_dluau;
         set_indexed(params, "header", scan_headers);
         set_indexed(params, "strip_prefix", scan_dirs);
@@ -363,7 +367,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             params["tool_hash"] = th->hex();
 
         TaskDecl d = make_task(ctx, "reflect_gen", pdir + "/reflect:" + plugin, params,
-                               scan_headers, {}, {gen_cpp, gen_presentation_cpp, gen_dluau});
+                               scan_headers, {}, {gen_cpp, gen_presentation_cpp, gen_script_cpp, gen_dluau});
         auto id = d.id;
         KILN_TRY(void_result(sched.add(std::move(d))));
         reflect_gen_task = id;
@@ -557,6 +561,24 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             KILN_TRY(void_result(sched.add(std::move(gd))));
             pt.module_compiles[m.name].push_back(gid);
             pt.module_objs[m.name].push_back(gen_obj);
+
+            // The script-binding TU - every flavor (it binds only
+            // non-Presentation types).
+            {
+                std::string script_src = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/" +
+                                         plugin + ".script.gen.cpp";
+                std::string script_obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/" +
+                                         m.name + "/" + plugin + ".script.gen.cpp.o";
+                std::map<std::string, std::string> script_params = gen_params;
+                script_params["out"] = script_obj;
+                script_params["depfile"] = script_obj + ".d";
+                TaskDecl sd = make_task(ctx, "compile_cpp", script_src, script_params, {script_src},
+                                        gen_deps, {script_obj});
+                auto sid = sd.id;
+                KILN_TRY(void_result(sched.add(std::move(sd))));
+                pt.module_compiles[m.name].push_back(sid);
+                pt.module_objs[m.name].push_back(script_obj);
+            }
 
             // The Presentation TU - compiled by every flavor except
             // headless (whose defines carry TE_HEADLESS).
