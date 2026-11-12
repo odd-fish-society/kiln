@@ -125,6 +125,10 @@ const std::vector<CheckDef>& checks() {
           "AssetRegistry", "TinyAssetCooker", "CgltfImporter", "FbxImporter", "MeshOptimizer", "SceneSerializer",
           "TextureCache"},
          {}, {}, {"tinycrashreport"}, ""},
+        // Scripts arrive as cooked bytecode - the runtime links the Luau
+        // VM only, never the compiler (the A6 rule for shaders, applied
+        // to Luau).
+        {"A17", "no Luau compiler symbols", {"luau_compile", "Luau::compile", "Luau::BytecodeBuilder", "Luau::Parser"}, {}, {}, {"sandbox", "tinyserver"}, ""},
     };
     return kChecks;
 }
