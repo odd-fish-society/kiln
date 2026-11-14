@@ -308,6 +308,44 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
         }
     }
 
+    // Tinyserver + a sandbox client over real localhost UDP, two processes
+    // (each with its own --log-file), plus the unreachable-server exit
+    // code. Every FAIL line is a finding.
+    if (built_ok["dev"]) {
+        checks++;
+        std::printf("kiln smoke: net-test (dev)\n");
+        std::fflush(stdout);
+        std::string out;
+        int rc = util::run_process({"bash", (root / "scripts" / "net-test.sh").string(), "--config", cfgdirs["dev"]},
+                                   root, &out);
+        if (rc != 0) {
+            bool listed = false;
+            size_t pos = 0;
+            while (pos < out.size()) {
+                size_t eol = out.find('\n', pos);
+                std::string line = out.substr(pos, (eol == std::string::npos ? out.size() : eol) - pos);
+                pos = (eol == std::string::npos) ? out.size() : eol + 1;
+                if (line.rfind("FAIL ", 0) != 0)
+                    continue;
+                json f;
+                f["app"] = "sandbox";
+                f["config"] = "dev";
+                f["kind"] = "net_test";
+                f["message"] = line;
+                findings.push_back(std::move(f));
+                listed = true;
+            }
+            if (!listed) {
+                json f;
+                f["app"] = "sandbox";
+                f["config"] = "dev";
+                f["kind"] = "net_test";
+                f["message"] = "net-test exited with code " + std::to_string(rc);
+                findings.push_back(std::move(f));
+            }
+        }
+    }
+
     // The RHI self-test as a gate (the Retiring-slot / retire-queue /
     // pipeline-cache rules it checks were only verified when someone ran it
     // by hand). Offscreen; the sandbox exits 1 on a FAIL verdict, and both
