@@ -90,8 +90,10 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
 
     // Tinycrash is every app's crash watcher (without it a run's crash
     // leaves only a raw fallback), tinycrashreport its reporter window.
+    // Tinyscriptcheck type-checks the content scripts.
     const std::vector<std::string> kApps = {"tinycook", "tinyreflect", "tinycrash", "tinycrashreport",
-                                            "tinyeditor", "sandbox", "tinyserver", "tinytest"};
+                                            "tinyeditor", "sandbox", "tinyserver", "tinytest",
+                                            "tinyscriptcheck"};
     const std::vector<std::string> kConfigs = {"dev", "dev-asan"};
     // The sanitizer matrix: the concurrency bugs found so far are TSAN
     // territory and are now fixed - run tinytest under TSAN and UBSAN
@@ -434,6 +436,31 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
                                "): " + lintOutput;
                 findings.push_back(std::move(f));
             }
+        }
+    }
+
+    // Script check: every content script type-checks against the
+    // generated script surface (engine.d.luau) - an unknown global, a
+    // wrong argument, a missing require or an unknown cvar is a finding.
+    // Nonstrict unless a script opts into --!strict.
+    if (built_ok["dev"]) {
+        checks++;
+        std::printf("kiln smoke: tinyscriptcheck (dev)\n");
+        std::fflush(stdout);
+        const fs::path defs = root / ".kiln" / "out" / cfgdirs["dev"] / "gen" / "engine" / "engine.d.luau";
+        std::string out;
+        int rc = util::run_process({bin("tinyscriptcheck", "dev").string(), "--workspace", root.string(),
+                                    "--defs", defs.string(),
+                                    (root / "plugins" / "engine" / "engine" / "content").string(),
+                                    (root / "plugins" / "game" / "game_content" / "content").string()},
+                                   root, &out);
+        if (rc != 0) {
+            json f;
+            f["app"] = "tinyscriptcheck";
+            f["config"] = "dev";
+            f["kind"] = "script_check";
+            f["message"] = "tinyscriptcheck exited " + std::to_string(rc) + (out.empty() ? "" : ": " + out);
+            findings.push_back(std::move(f));
         }
     }
 
