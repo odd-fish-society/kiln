@@ -81,6 +81,11 @@ struct CLibraryDecl {
     std::vector<std::string> public_syslibs;  // propagate to dependents' links
     std::vector<std::string> public_link_flags; // extra link-flag tokens, propagated (KILN-3 analog)
     std::vector<std::string> flags;           // extra compile-flag tokens (KILN-1)
+    // .proto files a proto_gen task turns into .pb.cc/.pb.h with
+    // proto_tool (a protoc build output); the .pb.cc compile into this
+    // library, the gen dir joins its private includes.
+    std::vector<std::string> proto_sources;
+    std::string proto_tool;
     std::string file;
     int line = 0;
 };

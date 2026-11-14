@@ -66,6 +66,7 @@ void register_host();
 void register_checks();
 void register_tinyasset();
 void register_reflect();
+void register_proto();
 } // namespace builtin
 
 void register_builtin_rules() {
@@ -78,6 +79,7 @@ void register_builtin_rules() {
     builtin::register_checks();
     builtin::register_tinyasset();
     builtin::register_reflect();
+    builtin::register_proto();
 }
 
 } // namespace kiln::rules

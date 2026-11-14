@@ -91,7 +91,7 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
     // Tinycrash is every app's crash watcher (without it a run's crash
     // leaves only a raw fallback), tinycrashreport its reporter window.
     // Tinyscriptcheck type-checks the content scripts.
-    const std::vector<std::string> kApps = {"tinycook", "tinyreflect", "tinycrash", "tinycrashreport",
+    const std::vector<std::string> kApps = {"tinycook", "tinyreflect", "protoc", "tinycrash", "tinycrashreport",
                                             "tinyeditor", "sandbox", "tinyserver", "tinytest",
                                             "tinyscriptcheck"};
     const std::vector<std::string> kConfigs = {"dev", "dev-asan"};
@@ -100,7 +100,7 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
     // too (the headless test targets only; instrumenting the GUI apps
     // under TSAN is neither cheap nor a stable signal).
     const std::vector<std::string> kTestConfigs = {"dev-tsan", "dev-ubsan"};
-    const std::vector<std::string> kTestApps = {"tinycook", "tinyreflect", "tinytest"};
+    const std::vector<std::string> kTestApps = {"tinycook", "tinyreflect", "protoc", "tinytest"};
 
     json findings = json::array();
     std::map<std::string, std::string> cfgdirs;
@@ -478,7 +478,7 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
             opts.workspace_root = root;
             // The crash watcher ships with the apps, and tinycrashreport is
             // audited (row A16).
-            opts.target_specs = {"tinycook", "tinyreflect", "tinycrash", "sandbox", "tinyserver", "tinycrashreport"};
+            opts.target_specs = {"tinycook", "tinyreflect", "protoc", "tinycrash", "sandbox", "tinyserver", "tinycrashreport"};
             opts.config_override = shipping;
             opts.jobs = jobs;
             opts.progress = console::ProgressMode::Plain;

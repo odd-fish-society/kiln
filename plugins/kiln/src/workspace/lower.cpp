@@ -608,7 +608,49 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             continue;
         std::vector<TaskId> clib_compiles;
         std::vector<std::string> clib_objs;
-        for (auto& src : c.sources) {
+
+        // ---- protobuf generation --------------------------------------------
+        // A c_library with proto_sources gets ONE proto_gen task running its
+        // proto_tool over all of them (a library's protos import each other)
+        // into .kiln/out/<cfg>/gen/<plugin>/proto/<clib>/; each .pb.cc then
+        // compiles below with the library's own params, and the gen dir
+        // joins its private includes (the .pb.h stay private).
+        std::vector<std::string> proto_ccs;
+        std::optional<TaskId> proto_gen_task;
+        std::string proto_gen_dir;
+        if (!c.proto_sources.empty()) {
+            proto_gen_dir = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/proto/" + c.name;
+            std::vector<std::string> proto_paths;
+            std::vector<std::string> outputs;
+            for (auto& proto : c.proto_sources) {
+                proto_paths.push_back(fs::path(proto).parent_path().generic_string());
+                std::string stem = proto_gen_dir + "/" + fs::path(proto).stem().generic_string();
+                outputs.push_back(stem + ".pb.cc");
+                outputs.push_back(stem + ".pb.h");
+                proto_ccs.push_back(stem + ".pb.cc");
+            }
+            std::map<std::string, std::string> params;
+            params["tool"] = c.proto_tool;
+            params["out_dir"] = proto_gen_dir;
+            set_indexed(params, "proto", c.proto_sources);
+            set_indexed(params, "proto_path", sorted_uniq(proto_paths));
+            set_indexed(params, "output", outputs);
+            std::string effective = c.proto_tool;
+            if (fs::path(effective).is_relative())
+                effective = (ctx.ws->root / effective).generic_string();
+            auto th = Hash256::of_file(effective);
+            if (th.ok())
+                params["tool_hash"] = th->hex();
+            TaskDecl d = make_task(ctx, "proto_gen", pdir + "/proto:" + c.name, params,
+                                   c.proto_sources, {}, outputs);
+            proto_gen_task = d.id;
+            KILN_TRY(void_result(sched.add(std::move(d))));
+        }
+
+        std::vector<std::string> clib_sources = c.sources;
+        for (auto& cc : proto_ccs)
+            clib_sources.push_back(cc);
+        for (auto& src : clib_sources) {
             // Headers appear in vendor file lists (premake `files` for IDE
             // visibility) but are never compiled.
             auto ext = fs::path(src).extension().generic_string();
@@ -629,12 +671,19 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             std::vector<std::string> incs = c.includes;
             for (auto& p : c.public_includes)
                 incs.push_back(p);
+            if (!proto_gen_dir.empty())
+                incs.push_back(proto_gen_dir);
             set_indexed(params, "include", sorted_uniq(incs));
             set_indexed(params, "define", sorted_uniq(c.defines));
             set_indexed(params, "flag", c.flags);
+            // Every TU of a proto library may include a generated .pb.h, so
+            // all of them wait for the generation, not only the .pb.cc.
+            std::vector<TaskId> compile_deps;
+            if (proto_gen_task)
+                compile_deps.push_back(*proto_gen_task);
             TaskDecl d =
-                make_task(ctx, is_c ? "compile_c" : "compile_cpp", src, params, {src}, {},
-                          {obj});
+                make_task(ctx, is_c ? "compile_c" : "compile_cpp", src, params, {src},
+                          compile_deps, {obj});
             auto id = d.id;
             KILN_TRY(void_result(sched.add(std::move(d))));
             clib_compiles.push_back(id);

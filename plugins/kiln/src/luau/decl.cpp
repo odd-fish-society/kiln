@@ -99,6 +99,8 @@ std::string decl_set_to_json(const DeclSet& decls) {
                          {"public_syslibs", strvec(c.public_syslibs)},
                          {"public_link_flags", strvec(c.public_link_flags)},
                          {"flags", strvec(c.flags)},
+                         {"proto_sources", strvec(c.proto_sources)},
+                         {"proto_tool", c.proto_tool},
                          {"file", c.file},
                          {"line", c.line}});
     }
@@ -229,6 +231,8 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
             c.public_syslibs = to_strvec(v.value("public_syslibs", json::array()));
             c.public_link_flags = to_strvec(v.value("public_link_flags", json::array()));
             c.flags = to_strvec(v.value("flags", json::array()));
+            c.proto_sources = to_strvec(v.value("proto_sources", json::array()));
+            c.proto_tool = v.value("proto_tool", "");
             c.file = v.value("file", "");
             c.line = v.value("line", 0);
             out.c_libraries.push_back(std::move(c));

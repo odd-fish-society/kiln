@@ -137,7 +137,7 @@ Result<int> cmd_test_scenes(const fs::path& root_in, const std::string& scene,
 
     BuildOptions opts;
     opts.workspace_root = root;
-    opts.target_specs = {"tinycook", "tinyreflect", "sandbox"};
+    opts.target_specs = {"tinycook", "tinyreflect", "protoc", "sandbox"};
     opts.config_override = "dev";
     opts.jobs = jobs;
     opts.progress = console::ProgressMode::Plain;

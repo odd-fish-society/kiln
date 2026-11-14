@@ -60,6 +60,10 @@ export type CLibrarySpec = {
     public_syslibs: { string }?,
     public_link_flags: { string }?,
     flags: { string }?,
+    -- .proto files compiled to .pb.cc/.pb.h by proto_tool (a protoc build
+    -- output) before this library's compiles; required together.
+    proto_sources: FileSet?,
+    proto_tool: string?,
 }
 
 export type TargetSpec = {

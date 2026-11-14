@@ -65,7 +65,7 @@ Result<BinaryCapture> capture_binary(const fs::path& bin) {
     c.path = bin.string();
     if (!fs::is_regular_file(bin))
         return Result<BinaryCapture>::fail("binary not found: " + bin.string() +
-                                           " (build it: `kiln build tinycook tinyreflect <target>:linux-shipping`)");
+                                           " (build it: `kiln build tinycook tinyreflect protoc <target>:linux-shipping`)");
 
     std::string nm_out;
     int rc = util::run_process({"nm", "-C", bin.string()}, fs::path(), &nm_out);
