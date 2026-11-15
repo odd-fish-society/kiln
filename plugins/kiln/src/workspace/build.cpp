@@ -230,11 +230,88 @@ std::vector<std::string> expansion_deps(const luau::PluginDecl& pdecl,
     return {out.begin(), out.end()};
 }
 
+// The workspace targets producing the tool binaries this target's enabled
+// plugins pin (reflect_tool, proto_tool, a cook's `tool` param): a pinned
+// `.kiln/out/<platform>-<config>/bin/<name>` is target <name>'s link output
+// in that config. Tools outside .kiln/out (PATH, the workspace `tools` table,
+// a test's fake script) name no target and are left to the missing-tool error.
+std::vector<TargetSpec> tool_targets(const Workspace& ws, const ResolutionResult& r) {
+    std::set<std::string> paths;
+    for (auto& plugin : r.order) {
+        auto it = r.exps.find(plugin);
+        if (it == r.exps.end())
+            continue;
+        auto& ds = it->second.decls;
+        if (ds.plugin && !ds.plugin->reflect_tool.empty())
+            paths.insert(ds.plugin->reflect_tool);
+        for (auto& c : ds.c_libraries)
+            if (!c.proto_tool.empty())
+                paths.insert(c.proto_tool);
+        for (auto& c : ds.cooks) {
+            auto t = c.params.find("tool");
+            if (t != c.params.end() && !t->second.empty())
+                paths.insert(t->second);
+        }
+    }
+    std::vector<TargetSpec> out;
+    std::set<std::string> seen;
+    for (auto& p : paths) {
+        fs::path path(p);
+        if (path.is_absolute()) {
+            auto rel = path.lexically_relative(ws.root);
+            if (rel.empty() || *rel.begin() == "..")
+                continue;
+            path = rel;
+        }
+        std::vector<std::string> parts;
+        for (auto& c : path.lexically_normal())
+            parts.push_back(c.generic_string());
+        if (parts.size() != 5 || parts[0] != ".kiln" || parts[1] != "out" || parts[3] != "bin")
+            continue;
+        auto dash = parts[2].find('-');
+        if (dash == std::string::npos || ws.targets.find(parts[4]) == ws.targets.end())
+            continue;
+        if (!seen.insert(parts[4] + ":" + parts[2]).second)
+            continue;
+        out.push_back(TargetSpec{parts[4], parts[2].substr(0, dash), parts[2].substr(dash + 1)});
+    }
+    return out;
+}
+
 Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
-                       const Workspace& ws, const TargetSpec& spec, BuildOutcome& outcome) {
+                       const Workspace& ws, const TargetSpec& spec, BuildOutcome& outcome,
+                       std::vector<std::string>& building) {
     auto rres = resolve_one(opts, ws, spec);
     if (!rres.ok())
         return Result<void>::fail(rres.error);
+
+    // Tool targets build first, in this invocation, before this target's
+    // lowering folds their binaries' tool_hash - so `kiln build tinyeditor`
+    // alone works and a pull that changed tinycook/tinyreflect/protoc
+    // sources never cooks with the stale binary (supersedes the "sequencing
+    // is by target order" decision, kiln/docs/decisions.md "Cooking pass").
+    std::string self_key = rres->target.name + ":" + rres->ct.name();
+    // Requested after an earlier target already pulled it in as a tool.
+    if (std::find(outcome.built.begin(), outcome.built.end(), self_key) != outcome.built.end())
+        return Result<void>::success();
+    building.push_back(self_key);
+    for (auto& tool : tool_targets(ws, *rres)) {
+        if (tool.name == rres->target.name)
+            continue;
+        std::string key = tool.name + ":" + tool.platform + "-" + tool.config;
+        if (std::find(outcome.built.begin(), outcome.built.end(), key) != outcome.built.end())
+            continue;
+        if (std::find(building.begin(), building.end(), key) != building.end())
+            return Result<void>::fail("tool cycle: target '" + self_key + "' needs tool target '" +
+                                      key + "', which is already building");
+        bool failed_before = outcome.failed;
+        KILN_TRY(build_one(opts, renderer, ws, tool, outcome, building));
+        if (outcome.failed && !failed_before)
+            return Result<void>::fail("tool target '" + key + "' failed to build; '" + self_key +
+                                      "' needs it");
+    }
+    building.pop_back();
+
     auto& target = rres->target;
     auto& ct = rres->ct;
     auto& exps = rres->exps;
@@ -385,6 +462,15 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
     for (auto& w : sched.why())
         outcome.why.push_back(w);
     outcome.built.push_back(target.name + ":" + ct.name());
+
+    // Companions: the binaries this target launches at run time (a stale
+    // one next to a fresh app is a runtime mismatch, not a build error).
+    for (auto& name : target.companions) {
+        if (ws.targets.find(name) == ws.targets.end())
+            return Result<void>::fail("target '" + target.name + "': unknown companion '" + name + "'");
+        KILN_TRY(build_one(opts, renderer, ws, TargetSpec{name, ct.platform, ct.config}, outcome,
+                           building));
+    }
     return Result<void>::success();
 }
 
@@ -426,8 +512,9 @@ Result<BuildOutcome> run_build(const BuildOptions& opts, console::Renderer& rend
     }
 
     BuildOutcome outcome;
+    std::vector<std::string> building;
     for (auto& spec : specs) {
-        auto r = build_one(opts, renderer, *ws, spec, outcome);
+        auto r = build_one(opts, renderer, *ws, spec, outcome, building);
         if (!r.ok())
             return Result<BuildOutcome>::fail(r.error);
     }

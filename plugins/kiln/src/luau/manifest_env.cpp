@@ -662,7 +662,7 @@ int spec_target(lua_State* L) {
     luaL_checktype(L, 2, LUA_TTABLE);
     validate_fields(L, 2, st,
                     {"platforms", "default_config", "enable_plugins", "disable_plugins",
-                     "features", "link", "syslibs", "link_flags"},
+                     "features", "link", "syslibs", "link_flags", "companions"},
                     {});
     if (!st->decls.target)
         luaL_error(L, "internal: target spec without declaration");
@@ -678,6 +678,7 @@ int spec_target(lua_State* L) {
     t.link = get_strvec_field(L, 2, "link");
     t.syslibs = get_strvec_field(L, 2, "syslibs");
     t.link_flags = get_strvec_field(L, 2, "link_flags");
+    t.companions = get_strvec_field(L, 2, "companions");
     return 0;
 }
 

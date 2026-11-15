@@ -75,6 +75,7 @@ export type TargetSpec = {
     link: { string }?,
     syslibs: { string }?,
     link_flags: { string }?,
+    companions: { string }?,
 }
 
 export type PluginRootSpec = {

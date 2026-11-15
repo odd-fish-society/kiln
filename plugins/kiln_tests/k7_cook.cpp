@@ -369,3 +369,113 @@ TEST_CASE("K7.8 proto_sources without proto_tool is a manifest error") {
     CHECK(r.code != 0);
     CHECK(r.out.find("proto_sources needs proto_tool") != std::string::npos);
 }
+
+TEST_CASE("K7.9 a tool pinned at a target's bin output builds that target first, and rebuilds it when stale") {
+    TempDir tmp;
+    // The protoc is a real build output (target "genproto"), pinned by path like
+    // the engine pins tinycook/tinyreflect/protoc; `kiln build app` alone must
+    // build it first, and a tool source edit must rebuild it before regenerating.
+    auto tool_src = [](int v) {
+        return "#include <cstdio>\n#include <string>\n"
+               "int main(int argc, char** argv) {\n"
+               "  std::string out;\n"
+               "  for (int i = 1; i < argc; ++i) {\n"
+               "    std::string a = argv[i];\n"
+               "    if (a.rfind(\"--cpp_out=\", 0) == 0) { out = a.substr(10); continue; }\n"
+               "    if (a.rfind(\"--\", 0) == 0) continue;\n"
+               "    std::string stem = a.substr(a.find_last_of('/') + 1);\n"
+               "    stem = stem.substr(0, stem.size() - 6);\n"
+               "    FILE* h = std::fopen((out + \"/\" + stem + \".pb.h\").c_str(), \"w\");\n"
+               "    std::fprintf(h, \"int proto_%s();\\n\", stem.c_str());\n"
+               "    std::fclose(h);\n"
+               "    FILE* c = std::fopen((out + \"/\" + stem + \".pb.cc\").c_str(), \"w\");\n"
+               "    std::fprintf(c, \"int proto_%s() { return " + std::to_string(v) + "; }\\n\", stem.c_str());\n"
+               "    std::fclose(c);\n"
+               "  }\n"
+               "  return 0;\n"
+               "}\n";
+    };
+    write_tree(tmp.path, {
+        {"kiln.workspace.luau", "workspace \"k7\" {\n  strict_globs = true,\n}\n"},
+        {"build/genproto.target.luau",
+         "target \"genproto\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
+         "  enable_plugins = { \"gen\" },\n  link = { \"gen/main\" },\n}\n"},
+        {"build/app.target.luau",
+         "target \"app\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
+         "  enable_plugins = { \"thing\" },\n  link = { \"thing/main\" },\n}\n"},
+        {"plugins/gen/plugin.build.luau",
+         "plugin \"gen\" { enabled_by_default = false }\n"
+         "module \"main\" {\n  sources = glob(\"src/*.cpp\"),\n}\n"},
+        {"plugins/gen/src/main.cpp", tool_src(1)},
+        {"plugins/thing/plugin.build.luau",
+         "plugin \"thing\" { enabled_by_default = false }\n"
+         "c_library \"msgs\" {\n  sources = { \"lib/uses.cpp\" },\n"
+         "  proto_sources = { \"proto/hello.proto\" },\n"
+         "  proto_tool = \".kiln/out/\" .. config.platform .. \"-\" .. config.config .. \"/bin/genproto\",\n"
+         "  public_includes = { \"lib\" },\n}\n"
+         "module \"main\" {\n  sources = glob(\"src/*.cpp\"),\n"
+         "  deps = { public = { \"thing/msgs\" } },\n}\n"},
+        {"plugins/thing/proto/hello.proto", "syntax = \"proto2\";\n"},
+        {"plugins/thing/lib/uses.cpp", "#include \"hello.pb.h\"\nint uses() { return proto_hello(); }\n"},
+        {"plugins/thing/lib/uses.h", "int uses();\n"},
+        {"plugins/thing/src/main.cpp", "#include \"uses.h\"\nint main() { return uses(); }\n"},
+    });
+    const std::vector<std::string> build_app = {"build", "app", "--progress=plain", "--workspace", "."};
+    const fs::path pb_cc = tmp.path / ".kiln/out/linux-dev/gen/thing/proto/msgs/hello.pb.cc";
+
+    auto r = run_kiln(tmp.path, build_app);
+    INFO(r.out);
+    REQUIRE(r.code == 0);
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/bin/genproto"));
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/bin/app"));
+    CHECK(read_file(pb_cc).find("return 1;") != std::string::npos);
+
+    // A tool source edit (the "pulled a protoc change" case): the same
+    // `kiln build app` relinks the tool, then regenerates with the new one.
+    write_tree(tmp.path, {{"plugins/gen/src/main.cpp", tool_src(2)}});
+    auto r2 = run_kiln(tmp.path, build_app);
+    INFO(r2.out);
+    REQUIRE(r2.code == 0);
+    CHECK(read_file(pb_cc).find("return 2;") != std::string::npos);
+
+    // Naming the tool target too builds it once, not twice.
+    auto r3 = run_kiln(tmp.path, {"build", "app", "genproto", "--progress=plain", "--workspace", "."});
+    INFO(r3.out);
+    REQUIRE(r3.code == 0);
+}
+
+TEST_CASE("K7.10 companions build with their target in its config; an unknown companion is an error") {
+    TempDir tmp;
+    auto tree = [](const std::string& companions) -> std::map<std::string, std::string> {
+        return {
+            {"kiln.workspace.luau", "workspace \"k7\" {\n  strict_globs = true,\n}\n"},
+            {"build/helper.target.luau",
+             "target \"helper\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
+             "  enable_plugins = { \"helper\" },\n  link = { \"helper/main\" },\n}\n"},
+            {"build/app.target.luau",
+             "target \"app\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
+             "  enable_plugins = { \"app\" },\n  link = { \"app/main\" },\n  companions = " +
+                 companions + ",\n}\n"},
+            {"plugins/helper/plugin.build.luau",
+             "plugin \"helper\" { enabled_by_default = false }\n"
+             "module \"main\" {\n  sources = glob(\"src/*.cpp\"),\n}\n"},
+            {"plugins/helper/src/main.cpp", "int main() { return 0; }\n"},
+            {"plugins/app/plugin.build.luau",
+             "plugin \"app\" { enabled_by_default = false }\n"
+             "module \"main\" {\n  sources = glob(\"src/*.cpp\"),\n}\n"},
+            {"plugins/app/src/main.cpp", "int main() { return 0; }\n"},
+        };
+    };
+    write_tree(tmp.path, tree("{ \"helper\" }"));
+    auto r = run_kiln(tmp.path, {"build", "app:linux-release", "--progress=plain", "--workspace", "."});
+    INFO(r.out);
+    REQUIRE(r.code == 0);
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-release/bin/app"));
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-release/bin/helper"));
+    CHECK_FALSE(file_exists(tmp.path / ".kiln/out/linux-dev/bin/helper"));
+
+    write_tree(tmp.path, tree("{ \"nope\" }"));
+    auto r2 = run_kiln(tmp.path, {"build", "app", "--progress=plain", "--workspace", "."});
+    CHECK(r2.code != 0);
+    CHECK(r2.out.find("unknown companion 'nope'") != std::string::npos);
+}

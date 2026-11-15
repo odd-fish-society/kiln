@@ -100,6 +100,9 @@ struct TargetDecl {
     std::vector<std::string> link;    // root modules "plugin/module"
     std::vector<std::string> syslibs; // extra -l libs on this target's link (KILN-3)
     std::vector<std::string> link_flags; // indexed multi-token link flags (KILN-3)
+    // Targets whose binaries this one launches at run time (a crash watcher,
+    // a reporter): built after it, in the same platform-config, whenever it is.
+    std::vector<std::string> companions;
     std::string file;
     int line = 0;
 };

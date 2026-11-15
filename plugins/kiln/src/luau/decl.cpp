@@ -119,6 +119,7 @@ std::string decl_set_to_json(const DeclSet& decls) {
                        {"link", strvec(t.link)},
                        {"syslibs", strvec(t.syslibs)},
                        {"link_flags", strvec(t.link_flags)},
+                       {"companions", strvec(t.companions)},
                        {"file", t.file},
                        {"line", t.line}};
     }
@@ -251,6 +252,7 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
             t.link = to_strvec(v.value("link", json::array()));
             t.syslibs = to_strvec(v.value("syslibs", json::array()));
             t.link_flags = to_strvec(v.value("link_flags", json::array()));
+            t.companions = to_strvec(v.value("companions", json::array()));
             t.file = v.value("file", "");
             t.line = v.value("line", 0);
             out.target = std::move(t);

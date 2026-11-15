@@ -217,6 +217,16 @@ choices logged, MUST deviations fixed: none remain):
   Having cook tasks depend on the tool's link task is not
   expressible (one link per target): sequencing is by target order, enforced
   by `tool_hash` + a hard missing-tool error.
+  **Superseded (tool targets):** relying on the user's target
+  order broke every entry point that named only a product (`kiln build
+  tinyeditor`, a CLion config, a script missing `protoc`). `build_one` now
+  scans the enabled plugins' pinned tools after resolution (the in-process
+  Pass A expansions, so before any task runs) and builds each target whose
+  bin output a tool path names, first, in the path's config: the
+  dependency is still between targets, not tasks, so one link per target
+  stands, and the consumer's lowering still folds the fresh binary's
+  `tool_hash`. Targets also gained `companions` (binaries an app launches at
+  run time, built after it in its config). Tests: K7.9, K7.10.
 - Engine plugins are opt-in (`enabled_by_default = false` + target
   `enable_plugins`): Kiln's enable lists ADD to defaults, they don't restrict,
   so opt-in is the house pattern for per-target plugin sets.
