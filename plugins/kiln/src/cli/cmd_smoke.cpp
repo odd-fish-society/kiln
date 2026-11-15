@@ -90,10 +90,11 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
 
     // Tinycrash is every app's crash watcher (without it a run's crash
     // leaves only a raw fallback), tinycrashreport its reporter window.
-    // Tinyscriptcheck type-checks the content scripts.
+    // Tinyscriptcheck type-checks the content scripts. Tinysignal is
+    // net-test's P2P relay.
     const std::vector<std::string> kApps = {"tinycook", "tinyreflect", "protoc", "tinycrash", "tinycrashreport",
                                             "tinyeditor", "sandbox", "tinyserver", "tinytest",
-                                            "tinyscriptcheck"};
+                                            "tinyscriptcheck", "tinysignal"};
     const std::vector<std::string> kConfigs = {"dev", "dev-asan"};
     // The sanitizer matrix: the concurrency bugs found so far are TSAN
     // territory and are now fixed - run tinytest under TSAN and UBSAN
@@ -308,9 +309,10 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
         }
     }
 
-    // Tinyserver + a sandbox client over real localhost UDP, two processes
-    // (each with its own --log-file), plus the unreachable-server exit
-    // code. Every FAIL line is a finding.
+    // tinyserver + a sandbox client over real localhost UDP, two
+    // processes (each with its own --log-file), plus the unreachable-server
+    // exit code and the P2P pass (tinysignal + a join by identity over
+    // ICE). Every FAIL line is a finding.
     if (built_ok["dev"]) {
         checks++;
         std::printf("kiln smoke: net-test (dev)\n");
