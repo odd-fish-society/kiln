@@ -128,6 +128,9 @@ const std::vector<CheckDef>& checks() {
         // VM only, never the compiler (the A6 rule for shaders, applied
         // to Luau).
         {"A17", "no Luau compiler symbols", {"luau_compile", "Luau::compile", "Luau::BytecodeBuilder", "Luau::Parser"}, {}, {}, {"sandbox", "tinyserver"}, ""},
+        // The language service (scriptlang, Luau's analysis) is the
+        // editor's and the tools' - never a runtime's.
+        {"A18", "no Luau analysis / language-service symbols", {"Luau::Frontend", "Luau::TypeChecker", "Luau::autocomplete", "scriptlang::"}, {}, {}, {"sandbox", "tinyserver"}, ""},
     };
     return kChecks;
 }
