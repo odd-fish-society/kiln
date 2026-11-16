@@ -404,3 +404,93 @@ module "m" { sources = glob("src/*.cpp"), exclude = glob("src/dev_*.cpp") }
     REQUIRE(r2->decls.modules.size() == 1);
     CHECK(r2->decls.modules[0].exclude == std::vector<std::string>{"plugins/p/src/dev_only.cpp"});
 }
+
+// A.cluau manifest is translated, then evaluated as today.
+TEST_CASE("K4.14 cluau manifests: the same declarations as the Luau form, deterministic, line-true errors") {
+    WS w;
+    const std::string luau_src = R"(-- a plugin
+plugin "p" { public_deps = { "core" } }
+local d = require "build/defaults"
+local fast = config.config ~= "dev" and not (config.platform == "windows")
+module "m" {
+    sources = glob("src/*.cpp"),
+    cpp_std = d.std,
+    private_defines = fast and { "FAST=1" } or {},
+}
+)";
+    const std::string cluau_src = R"(// a plugin
+plugin "p" { public_deps = { "core" } }
+let d = require "build/defaults"
+const fast = config.config != "dev" && !(config.platform == "windows")
+module "m" {
+    sources = glob("src/*.cpp"),
+    cpp_std = d.std,
+    private_defines = if (fast) { "FAST=1" } else {},
+}
+)";
+    write_tree(w.root, {
+        {"build/defaults.cluau", "const std = \"c++20\"\nreturn { std = std }\n"},
+        {"plugins/p/src/a.cpp", ""},
+        {"plugins/p/plugin.build.luau", luau_src},
+    });
+    auto o = plugin_opts(w.root, "p");
+    o.config = "release";
+    auto from_luau = luau::evaluate_file(w.root / "plugins/p/plugin.build.luau", o);
+    REQUIRE(from_luau.ok());
+    fs::remove(w.root / "plugins/p/plugin.build.luau");
+    write_tree(w.root, {{"plugins/p/plugin.build.cluau", cluau_src}});
+    auto a = luau::evaluate_file(w.root / "plugins/p/plugin.build.cluau", o);
+    auto b = luau::evaluate_file(w.root / "plugins/p/plugin.build.cluau", o);
+    REQUIRE(a.ok());
+    REQUIRE(b.ok());
+    std::string ja = luau::decl_set_to_json(a->decls);
+    CHECK(ja == luau::decl_set_to_json(b->decls)); // the determinism canary
+    for (size_t at = ja.find("plugin.build.cluau"); at != std::string::npos; at = ja.find("plugin.build.cluau", at))
+        ja.replace(at, 18, "plugin.build.luau");
+    CHECK(ja == luau::decl_set_to_json(from_luau->decls));
+    REQUIRE(a->decls.modules.size() == 1);
+    CHECK(a->decls.modules[0].cpp_std == "c++20");
+    REQUIRE(a->decls.required_files.size() == 1);
+    CHECK(a->decls.required_files[0] == "build/defaults.cluau");
+
+    // A translation error names the cluau file and line; manifests stay declarations.
+    write_tree(w.root, {{"plugins/p/plugin.build.cluau", "plugin \"p\" {}\n\nif x then end\n"}});
+    auto bad = luau::evaluate_file(w.root / "plugins/p/plugin.build.cluau", o);
+    REQUIRE(!bad.ok());
+    CHECK(bad.error.find("plugins/p/plugin.build.cluau:3:") != std::string::npos);
+    write_tree(w.root, {{"plugins/p/plugin.build.cluau", "plugin \"p\" {}\nfunction f() { }\n"}});
+    auto fn = luau::evaluate_file(w.root / "plugins/p/plugin.build.cluau", o);
+    REQUIRE(!fn.ok());
+    CHECK(fn.error.find("manifests are declarations") != std::string::npos);
+    // A Luau runtime error keeps the cluau line (the translation keeps lines).
+    write_tree(w.root, {{"plugins/p/plugin.build.cluau", "plugin \"p\" {}\n\nmodule \"m\" { sourcez = {} }\n"}});
+    auto field = luau::evaluate_file(w.root / "plugins/p/plugin.build.cluau", o);
+    REQUIRE(!field.ok());
+    CHECK(field.error.find(":3") != std::string::npos);
+}
+
+TEST_CASE("K4.15 cluau manifests: one manifest per role, one module per require name") {
+    WS w;
+    write_tree(w.root, {
+        {"kiln.workspace.luau", "workspace \"w\" {}\n"},
+        {"plugins/p/plugin.build.luau", "plugin \"p\" {}\n"},
+        {"plugins/p/plugin.build.cluau", "plugin \"p\" {}\n"},
+    });
+    auto ws = load_workspace(w.root);
+    REQUIRE(!ws.ok());
+    CHECK(ws.error.find("one manifest per role") != std::string::npos);
+
+    fs::remove(w.root / "plugins/p/plugin.build.luau");
+    fs::remove(w.root / "kiln.workspace.luau");
+    write_tree(w.root, {{"kiln.workspace.cluau", "workspace \"w\" {}\n"}});
+    auto cws = load_workspace(w.root);
+    REQUIRE(cws.ok());
+    CHECK(cws->workspace_file == "kiln.workspace.cluau");
+    CHECK(cws->plugin_manifest_paths.at("p") == "plugins/p/plugin.build.cluau");
+
+    write_tree(w.root, {{"build/x.luau", "return 1\n"}, {"build/x.cluau", "return 1\n"},
+                        {"plugins/p/plugin.build.cluau", "plugin \"p\" {}\nlet x = require \"build/x\"\n"}});
+    auto both = luau::evaluate_file(w.root / "plugins/p/plugin.build.cluau", plugin_opts(w.root, "p"));
+    REQUIRE(!both.ok());
+    CHECK(both.error.find("one per module") != std::string::npos);
+}

@@ -476,3 +476,26 @@ choices logged, MUST deviations fixed: none remain):
   mentions updated in lockstep: otherwise the acceptance grep still hits
   the old name and the dir would fall out of `.gitignore`. Historical docs
   (prior decisions entries) stay as written.
+
+## cluau manifests
+
+- Kiln reads `.cluau` manifests next to `.luau` ones (spec §6.7): the
+  vendored translator (`plugins/cluau`, a submodule of
+  github.com/Aosiee/cluau, no dependencies) runs in `manifest_env` before
+  the AST lint and the compile, in manifest mode, so the restrictions are
+  the translator's errors and then the lint's as before. The external
+  (CMake) build compiles the translator too, so even the escape hatch reads
+  cluau manifests.
+- The translator version is an expansion-task param (the digest), not a
+  rule-version bump: only a translator change re-expands.
+- Discovery is one helper (`find_manifest(dir, stem)`): one manifest per
+  role per directory, both names an error. Workspace records which
+  workspace file it read (the expansion's declared input).
+- Kiln's own ten manifests were converted with `cluau convert --verify`;
+  the bootstrap converges and every DeclSet is identical to the Luau
+  form's (file names aside).
+- The boundary lint skips the vendored cluau checkout (another project's
+  tree, whose README names its hosts); Kiln's own files beside it are
+  scanned.
+- Deferred: `kiln check` (cluau_check with an `any`-free
+  `types/build.d.luau`) - the typed manifest check is a separate step.

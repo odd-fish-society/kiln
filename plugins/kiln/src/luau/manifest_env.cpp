@@ -4,6 +4,7 @@
 #include <functional>
 #include <set>
 
+#include "cluau/cluau.h"
 #include "core/util.h"
 #include "lua.h"
 #include "lualib.h"
@@ -14,6 +15,30 @@
 namespace kiln::luau {
 
 namespace {
+
+// A.cluau manifest (or required helper) is translated to Luau in manifest
+// mode (no function / while / do-while / class) before the lint and the
+// compile. The translation keeps every line on its line, so every later
+// file:line diagnostic points at the cluau source unmapped.
+Result<std::string> manifest_luau(const std::string& bytes, const std::string& display) {
+    if (!cluau::IsCluauPath(display))
+        return Result<std::string>::success(bytes);
+    cluau::TranslateOptions options;
+    options.Manifest = true;
+    cluau::TranslateResult r = cluau::Translate(bytes, options);
+    std::string errors;
+    for (auto& d : r.Diagnostics) {
+        if (d.Warning)
+            continue;
+        if (!errors.empty())
+            errors += "\n";
+        errors += display + ":" + std::to_string(d.At.Begin.Line + 1) + ":" + std::to_string(d.At.Begin.Col + 1) +
+                  ": " + d.Message;
+    }
+    if (!errors.empty())
+        return Result<std::string>::fail(errors);
+    return Result<std::string>::success(std::move(r.Luau));
+}
 
 constexpr int kMaxRequireDepth = 32;
 
@@ -323,8 +348,14 @@ int require_impl(lua_State* L) {
             if (c == "..")
                 luaL_error(L, "require: '%s' escapes the workspace (no '..' allowed)", name);
     }
-    if (rel.find('.') == std::string::npos)
-        rel += ".luau";
+    if (rel.find('.') == std::string::npos) {
+        // `require "build/x"` is build/x.luau or build/x.cluau (both is an error).
+        const bool luau = fs::is_regular_file(st->opts.workspace_root / (rel + ".luau"));
+        const bool cluau = fs::is_regular_file(st->opts.workspace_root / (rel + ".cluau"));
+        if (luau && cluau)
+            luaL_error(L, "require: '%s' is both %s.luau and %s.cluau (one per module)", name, rel.c_str(), rel.c_str());
+        rel += cluau ? ".cluau" : ".luau";
+    }
 
     fs::path abs = st->opts.workspace_root / rel;
     if (!fs::is_regular_file(abs))
@@ -339,9 +370,12 @@ int require_impl(lua_State* L) {
     }
     lua_pop(L, 1);
 
-    auto content = util::read_file(abs);
+    auto raw = util::read_file(abs);
+    if (!raw.ok())
+        luaL_error(L, "require: %s", raw.error.c_str());
+    auto content = manifest_luau(*raw, rel);
     if (!content.ok())
-        luaL_error(L, "require: %s", content.error.c_str());
+        luaL_error(L, "%s", content.error.c_str());
     st->required_files.insert(rel);
     if (st->require_depth >= kMaxRequireDepth)
         luaL_error(L, "require: nesting too deep (cycle or >%d levels)", kMaxRequireDepth);
@@ -828,7 +862,10 @@ void install_api(lua_State* L, EvalState* st);
 } // namespace
 
 Result<EvalOutput> evaluate_file(const fs::path& file, const ManifestEnvOptions& opts) {
-    auto content = util::read_file(file);
+    auto raw = util::read_file(file);
+    if (!raw.ok())
+        return Result<EvalOutput>::fail(raw.error);
+    auto content = manifest_luau(*raw, util::norm(fs::relative(file, opts.workspace_root).generic_string()));
     if (!content.ok())
         return Result<EvalOutput>::fail(content.error);
 

@@ -107,6 +107,12 @@ TEST_CASE("boundary lint: no engine references under plugins/skills") {
                 std::string fn = it->path().filename().generic_string();
                 if (fn.rfind(".boundary_", 0) == 0 || fn == "boundary_lint.cpp")
                     continue;
+                // The vendored cluau checkout is another project's tree (its
+                // README names the hosts it was written for); Kiln's own
+                // plugin manifest beside it is still scanned.
+                std::string rel = it->path().lexically_relative(repo_root()).generic_string();
+                if (rel.rfind("plugins/cluau/cluau/", 0) == 0)
+                    continue;
                 auto violation = check_file(it->path());
                 std::string vmsg = violation.value_or("");
                 INFO(vmsg);

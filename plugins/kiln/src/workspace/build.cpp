@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <set>
 
+#include "cluau/cluau.h"
 #include "core/util.h"
 #include "luau/decl.h"
 #include "nlohmann/json.hpp"
@@ -390,7 +391,7 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
         d.id.config_hash = ct.hash();
         d.rule_version = rules::rule_version("expand_plugin");
         d.declared_inputs = exp.input_files;
-        d.declared_inputs.push_back("kiln.workspace.luau");
+        d.declared_inputs.push_back(ws.workspace_file);
         std::sort(d.declared_inputs.begin(), d.declared_inputs.end());
         d.declared_inputs.erase(
             std::unique(d.declared_inputs.begin(), d.declared_inputs.end()),
@@ -405,6 +406,9 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
         d.declared_outputs = {declset};
         d.params["plugin"] = plugin;
         d.params["out"] = declset;
+        // A translator change re-expands every manifest (a .cluau one is
+        // translated before it is evaluated).
+        d.params["cluau"] = cluau::Version();
         for (size_t i = 0; i < exp.decls.globs.size(); ++i) {
             char key[32];
             snprintf(key, sizeof(key), "glob.%04zu", i);
@@ -445,6 +449,7 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
         if (!lr.ok())
             return Result<void>::fail(std::move(lr.error));
     }
+    KILN_TRY(lower_script_checks(sched, lctx));
     KILN_TRY(lower_target_tasks(sched, lctx, target));
 
     // ---- wave 2: actions -----------------------------------------------------

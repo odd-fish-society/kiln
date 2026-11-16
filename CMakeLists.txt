@@ -43,6 +43,13 @@ add_library(sqlite3 STATIC plugins/sqlite/sqlite3.c)
 target_include_directories(sqlite3 PUBLIC plugins/sqlite)
 target_compile_definitions(sqlite3 PRIVATE SQLITE_THREADSAFE=1 SQLITE_DQS=0)
 
+# ---- cluau: the.cluau manifest translator (no deps) -------
+file(GLOB CLUAU_SOURCES CONFIGURE_DEPENDS plugins/cluau/cluau/src/translate/*.cpp)
+add_library(cluau STATIC ${CLUAU_SOURCES})
+target_include_directories(cluau PUBLIC plugins/cluau/cluau/include
+  PRIVATE plugins/cluau/cluau/src/translate)
+target_compile_features(cluau PRIVATE cxx_std_17)
+
 # ---- third_party: header-only ----------------------------------------------
 add_library(kiln_headers INTERFACE)
 target_include_directories(kiln_headers INTERFACE
@@ -56,7 +63,7 @@ file(GLOB_RECURSE KILN_CORE_SOURCES CONFIGURE_DEPENDS
 add_library(kiln_core STATIC ${KILN_CORE_SOURCES})
 target_include_directories(kiln_core PUBLIC plugins/kiln/src)
 target_link_libraries(kiln_core PUBLIC
-  blake3 sqlite3 kiln_headers
+  blake3 sqlite3 kiln_headers cluau
   Luau.Ast Luau.Compiler Luau.VM Luau.Analysis Luau.Config Luau.EqSat)
 find_package(Threads REQUIRED)
 target_link_libraries(kiln_core PUBLIC Threads::Threads)

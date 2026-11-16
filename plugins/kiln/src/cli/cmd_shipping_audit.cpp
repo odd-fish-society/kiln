@@ -253,12 +253,14 @@ Result<int> cmd_shipping_audit(const fs::path& root, const std::string& config,
     // The lint gating (A12) - the committed cook manifests gate lint_strict
     // on the shipping config.
     std::vector<std::string> lintManifests = {
-        "plugins/engine/engine/plugin.build.luau",
-        "plugins/game/game_content/plugin.build.luau",
+        "plugins/engine/engine/plugin.build",
+        "plugins/game/game_content/plugin.build",
     };
     bool lintGated = true;
     for (const std::string& m : lintManifests) {
-        auto text = util::read_file(root / m);
+        std::error_code ec;
+        const std::string ext = fs::is_regular_file(root / (m + ".cluau"), ec) ? ".cluau" : ".luau";
+        auto text = util::read_file(root / (m + ext));
         if (!text.ok() || text->find("lint_strict") == std::string::npos ||
             (text->find("\"shipping\"") == std::string::npos && text->find("'shipping'") == std::string::npos)) {
             lintGated = false;

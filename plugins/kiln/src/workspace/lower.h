@@ -37,6 +37,8 @@ struct LowerCtx {
         std::vector<TaskId> archives;      // all module archive task ids
         std::optional<TaskId> interface_task;
         std::optional<TaskId> provider;
+        std::optional<TaskId> reflect_gen; // the plugin's reflect_gen task, when it has one
+        std::string reflect_dluau;         // its <plugin>.d.luau output
         std::map<std::string, std::vector<TaskId>> clib_compiles;
         std::map<std::string, TaskId> clib_archive;
         std::map<std::string, TaskId> clib_interface;
@@ -76,6 +78,12 @@ std::string clib_interface_path(const ConfigTuple& ct, const std::string& plugin
 
 // Lowers one plugin's DeclSet into tasks. Dep plugins must already be lowered.
 Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& plugin);
+
+// Lowers every enabled plugin's `check_scripts` declarations, after
+// all plugins: a check depends on another plugin's reflect_gen
+// task (its `defs` param names the plugins whose .d.luau it loads), which a
+// plugin with no dependency on that plugin cannot see while it is lowered.
+Result<void> lower_script_checks(Scheduler& sched, LowerCtx& ctx);
 
 // Applies each module/cook's `exclude` list: removes the named paths from
 // the materialized sources/inputs (paths are workspace-relative; a listed

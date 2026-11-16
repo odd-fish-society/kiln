@@ -1,5 +1,5 @@
--- SQLite amalgamation (vendored). One plugin per vendored library (spec
--- §7a.1): sources inside the plugin dir beside the c_library decl.
+// SQLite amalgamation (vendored). One plugin per vendored library (spec
+// §7a.1): sources inside the plugin dir beside the c_library decl.
 
 plugin "sqlite" {}
 

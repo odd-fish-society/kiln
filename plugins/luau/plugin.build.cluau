@@ -1,8 +1,8 @@
--- Luau (vendored; upstream as a git checkout inside the plugin dir at luau/
--- — the extraction story registers it as a submodule there). One plugin per
--- vendored library (spec §7a.1): the six c_libraries below are Luau's
--- internal build granularity (Ast/Compiler/Config/EqSat/Analysis/VM), all
--- hosting Luau sources, not separate libraries.
+// Luau (vendored; upstream as a git checkout inside the plugin dir at luau/
+// — the extraction story registers it as a submodule there). One plugin per
+// vendored library (spec §7a.1): the six c_libraries below are Luau's
+// internal build granularity (Ast/Compiler/Config/EqSat/Analysis/VM), all
+// hosting Luau sources, not separate libraries.
 
 plugin "luau" {}
 

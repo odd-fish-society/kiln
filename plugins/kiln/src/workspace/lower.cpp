@@ -199,6 +199,53 @@ std::string clib_interface_path(const ConfigTuple& ct, const std::string& plugin
     return ".kiln/graph/" + ct.name() + "/" + plugin + ".clib-" + clib + ".interface.json";
 }
 
+Result<void> lower_script_checks(Scheduler& sched, LowerCtx& ctx) {
+    for (auto& [plugin, declset] : ctx.declsets) {
+        for (auto& c : declset.cooks) {
+            if (c.rule != "check_scripts" || !passes_filter(c.platforms, c.configs, ctx.ct))
+                continue;
+            std::string site = c.file + ":" + std::to_string(c.line);
+            if (c.inputs.empty())
+                continue; // nothing to check (a glob matching no scripts yet)
+            std::map<std::string, std::string> params = c.params;
+            std::vector<TaskId> deps;
+            std::vector<std::string> defs;
+            std::string names = params["defs"];
+            params.erase("defs");
+            for (size_t at = 0; at < names.size();) {
+                size_t comma = names.find(',', at);
+                std::string name = names.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+                at = comma == std::string::npos ? names.size() : comma + 1;
+                if (name.empty())
+                    continue;
+                auto pit = ctx.tasks.find(name);
+                if (pit == ctx.tasks.end() || !pit->second.reflect_gen)
+                    return Result<void>::fail(site + ": check_scripts '" + c.name + "': plugin '" + name +
+                                              "' has no reflect_gen task in this target (is it enabled, "
+                                              "with a reflect_tool?)");
+                deps.push_back(*pit->second.reflect_gen);
+                defs.push_back(pit->second.reflect_dluau);
+            }
+            std::string out = ".kiln/out/" + cfg_name(ctx.ct) + "/check/" + plugin + "/" + c.name + ".txt";
+            params["out"] = out;
+            set_indexed(params, "def", defs);
+            set_indexed(params, "input", c.inputs);
+            if (params.count("tool")) {
+                std::string effective = params["tool"];
+                if (fs::path(effective).is_relative())
+                    effective = (ctx.ws->root / effective).generic_string();
+                auto th = Hash256::of_file(effective);
+                if (th.ok())
+                    params["tool_hash"] = th->hex();
+            }
+            TaskDecl d = make_task(ctx, c.rule, plugin_dir_of(ctx, plugin) + "/check:" + c.name, params,
+                                   c.inputs, deps, {out});
+            KILN_TRY(void_result(sched.add(std::move(d))));
+        }
+    }
+    return Result<void>::success();
+}
+
 Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& plugin) {
     auto it = ctx.declsets.find(plugin);
     if (it == ctx.declsets.end())
@@ -371,6 +418,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         auto id = d.id;
         KILN_TRY(void_result(sched.add(std::move(d))));
         reflect_gen_task = id;
+        pt.reflect_gen = id;
+        pt.reflect_dluau = gen_dluau;
     }
 
     // ---- module compiles ----------------------------------------------------
@@ -756,6 +805,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
     for (auto& c : declset.cooks) {
         if (!passes_filter(c.platforms, c.configs, ctx.ct))
             continue;
+        if (c.rule == "check_scripts")
+            continue; // whole-tree, lowered after every plugin (lower_script_checks)
         for (auto& primary : c.inputs) {
         std::string ext;
         bool append_ext = false;

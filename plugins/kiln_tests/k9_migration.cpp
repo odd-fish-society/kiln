@@ -268,3 +268,50 @@ TEST_CASE("KILN-2/3 manifest fields round-trip through the DeclSet JSON") {
     CHECK(tres->decls.target->syslibs == std::vector<std::string>{"X11"});
     CHECK(tres->decls.target->link_flags == std::vector<std::string>{"-rdynamic"});
 }
+
+TEST_CASE("check_scripts passes the defs and every script, fails on the checker's errors") {
+    RuleHarness h;
+    // The fake checker records its argv and fails when a script says so.
+    write_tree(h.root, {{"gen/engine.d.luau", "declare x: number\n"},
+                        {"scripts/a.cluau", "class A { }\n"},
+                        {"scripts/b.luau", "return {}\n"},
+                        {"fake_check.sh",
+                         "#!/bin/sh\necho \"$@\" > args.txt\n"
+                         "if grep -q BAD scripts/a.cluau; then echo 'a.cluau(1,1): TypeError: bad'; exit 1; fi\n"
+                         "echo 'tinyscriptcheck: 2 script(s), 0 error(s), 0 warning(s)'\n"}});
+    chmod((h.root / "fake_check.sh").c_str(), 0755);
+
+    auto make_decl = [&]() {
+        TaskDecl d;
+        d.id.rule = "check_scripts";
+        d.id.primary_input = "scripts/check:scripts";
+        d.id.config_hash = Hash256::of_string("c");
+        d.rule_version = rules::rule_version("check_scripts");
+        d.declared_inputs = {"scripts/a.cluau", "scripts/b.luau"};
+        d.declared_outputs = {".kiln/out/check/scripts.txt"};
+        d.params["tool"] = h.root.generic_string() + "/fake_check.sh";
+        d.params["out"] = ".kiln/out/check/scripts.txt";
+        d.params["def.0"] = "gen/engine.d.luau";
+        d.params["input.0"] = "scripts/a.cluau";
+        d.params["input.1"] = "scripts/b.luau";
+        return d;
+    };
+
+    auto ok = h.run(make_decl());
+    REQUIRE(ok.state == TaskState::Succeeded);
+    auto args = util::read_file(h.root / "args.txt");
+    REQUIRE(args.ok());
+    CHECK(args->find("--workspace " + h.root.generic_string()) != std::string::npos);
+    CHECK(args->find("--defs " + h.root.generic_string() + "/gen/engine.d.luau") != std::string::npos);
+    CHECK(args->find("scripts/a.cluau") != std::string::npos);
+    CHECK(args->find("scripts/b.luau") != std::string::npos);
+    auto stamp = util::read_file(h.root / ".kiln/out/check/scripts.txt");
+    REQUIRE(stamp.ok());
+    CHECK(stamp->find("0 error(s)") != std::string::npos);
+
+    // A checker error fails the task, carrying the report.
+    write_tree(h.root, {{"scripts/a.cluau", "class A { } // BAD\n"}});
+    auto fail = h.run(make_decl());
+    REQUIRE(fail.state == TaskState::Failed);
+    CHECK(fail.why.find("TypeError: bad") != std::string::npos);
+}

@@ -503,6 +503,22 @@ required (removed: prior revisions asked for it; the mitigations above supersede
 Ship complete luau-lsp typedefs for §6.2 in `types/build.d.luau` + a `.luaurc` template
 for the workspace. Keep in lockstep with the C++ API (a test greps exported names).
 
+### 6.7 cluau manifests (amendment)
+
+Every manifest role may be written in cluau (C-syntax-flavoured Luau, the
+vendored `plugins/cluau` translator): `kiln.workspace.cluau`,
+`build/*.target.cluau`, `plugins/<name>/plugin.build.cluau` and required
+helpers `build/<name>.cluau`. One manifest per role per directory (both
+names is an error), and `require "build/x"` finds `x.cluau` or `x.luau`
+(both is an error). A `.cluau` file is translated in manifest mode (no
+`function` / `while` / `do { } while` / `class`) before the §6.2 AST lint
+and the compile; the translation keeps every line on its line, so every
+`file:line` diagnostic points at the cluau source unmapped. The
+expansion task's params carry the translator version, so a translator
+change re-expands every manifest; the determinism canary covers cluau
+fixtures (K4.14). The `.luau` names stay readable. Kiln's own manifests
+are cluau.
+
 **Acceptance:** fixture plugin builds end-to-end from a manifest; comment edit in
 manifest re-expands but zero tasks run; `require`d helper edit re-expands; AST
 restriction errors fire; canary passes.

@@ -17,11 +17,23 @@ std::string host_platform() {
 #endif
 }
 
+Result<std::string> find_manifest(const fs::path& dir, const std::string& stem) {
+    std::error_code ec;
+    const bool luau = fs::is_regular_file(dir / (stem + ".luau"), ec);
+    const bool cluau = fs::is_regular_file(dir / (stem + ".cluau"), ec);
+    if (luau && cluau)
+        return Result<std::string>::fail(util::norm(dir.generic_string()) + ": both " + stem + ".luau and " +
+                                         stem + ".cluau - one manifest per role");
+    return Result<std::string>::success(luau ? stem + ".luau" : cluau ? stem + ".cluau" : "");
+}
+
 Result<fs::path> find_workspace_root(const fs::path& start) {
     fs::path dir = fs::absolute(start);
-    std::error_code ec;
     for (;;) {
-        if (fs::is_regular_file(dir / "kiln.workspace.luau", ec))
+        auto file = find_manifest(dir, "kiln.workspace");
+        if (!file.ok())
+            return Result<fs::path>::fail(file.error);
+        if (!file->empty())
             return Result<fs::path>::success(dir);
         auto parent = dir.parent_path();
         if (parent == dir)
@@ -35,12 +47,16 @@ Result<fs::path> find_workspace_root(const fs::path& start) {
 
 Result<Workspace> load_workspace(const fs::path& root) {
     std::error_code ec;
-    if (!fs::is_regular_file(root / "kiln.workspace.luau", ec))
+    auto workspace_file = find_manifest(root, "kiln.workspace");
+    if (!workspace_file.ok())
+        return Result<Workspace>::fail(workspace_file.error);
+    if (workspace_file->empty())
         return Result<Workspace>::fail("no kiln.workspace.luau in " +
                                        root.generic_string());
 
     Workspace ws;
     ws.root = fs::absolute(root);
+    ws.workspace_file = *workspace_file;
     ws.config.plugin_roots = {{"plugins", ""}}; // back-compat default (spec §0)
 
     // Workspace file.
@@ -48,9 +64,9 @@ Result<Workspace> load_workspace(const fs::path& root) {
     wopts.workspace_root = ws.root;
     wopts.manifest_dir = ws.root;
     wopts.kind = luau::FileKind::Workspace;
-    auto wres = luau::evaluate_file(ws.root / "kiln.workspace.luau", wopts);
+    auto wres = luau::evaluate_file(ws.root / ws.workspace_file, wopts);
     if (!wres.ok())
-        return Result<Workspace>::fail("kiln.workspace.luau: " + wres.error);
+        return Result<Workspace>::fail(ws.workspace_file + ": " + wres.error);
     if (wres->decls.workspace) {
         auto& w = *wres->decls.workspace;
         ws.config.name = w.name;
@@ -128,10 +144,13 @@ Result<Workspace> load_workspace(const fs::path& root) {
         if (!dirs.ok())
             continue; // missing root directory is legal (zero plugins)
         for (auto& d : *dirs) {
-            if (fs::is_regular_file(d / "plugin.build.luau", ec)) {
+            auto manifest = find_manifest(d, "plugin.build");
+            if (!manifest.ok())
+                return Result<Workspace>::fail(manifest.error);
+            if (!manifest->empty()) {
                 std::string name = d.filename().generic_string();
                 std::string manifest_rel = util::norm(
-                    fs::relative(d / "plugin.build.luau", ws.root).generic_string());
+                    fs::relative(d / *manifest, ws.root).generic_string());
                 auto [it, inserted] =
                     ws.plugin_manifest_paths.try_emplace(name, manifest_rel);
                 if (!inserted)
@@ -155,11 +174,17 @@ Result<Workspace> load_workspace(const fs::path& root) {
     if (fs::is_directory(build_dir, ec)) {
         std::vector<fs::path> files;
         for (auto& e : fs::directory_iterator(build_dir, ec)) {
-            if (e.is_regular_file(ec) && e.path().extension() == ".luau" &&
+            if (e.is_regular_file(ec) && (e.path().extension() == ".luau" || e.path().extension() == ".cluau") &&
                 e.path().filename().generic_string().find(".target.") != std::string::npos)
                 files.push_back(e.path());
         }
         std::sort(files.begin(), files.end());
+        for (auto& f : files) {
+            const std::string stem = f.filename().generic_string().substr(0, f.filename().generic_string().rfind('.'));
+            auto one = find_manifest(build_dir, stem);
+            if (!one.ok())
+                return Result<Workspace>::fail(one.error);
+        }
         for (auto& f : files) {
             auto tres = luau::evaluate_file(f, topts);
             if (!tres.ok())

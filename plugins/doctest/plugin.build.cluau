@@ -1,0 +1,11 @@
+// doctest (vendored, header-only; the external-build CMake test binary consumes
+// it — nothing in the kiln build graph links it). One plugin per vendored library
+// (spec §7a.1): the tree lives inside the plugin dir beside the decl.
+
+plugin "doctest" {}
+
+c_library "doctest" {
+    sources = {},
+    public_includes = { "." },
+    cpp_std = "c++17",
+}
