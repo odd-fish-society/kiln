@@ -142,6 +142,12 @@ int main(int argc, char** argv) {
     test_scenes->add_option("-j", ts_jobs, "worker count");
     test_scenes->add_option("--workspace", ts_workspace, "workspace root (default: auto-detect)");
 
+    // ---- check ----------------------------------------------------------------------
+    auto* check = app.add_subcommand("check", "Type-check the manifests against types/build.d.luau (cluau's strict rules for .cluau)");
+    std::string ck_workspace, ck_defs;
+    check->add_option("--defs", ck_defs, "the manifest definitions (default: types/build.d.luau)");
+    check->add_option("--workspace", ck_workspace, "workspace root (default: auto-detect)");
+
     // ---- lint-content ---------------------------------------------------------------
     auto* lint_content = app.add_subcommand("lint-content", "Lint the content trees' .meta sidecars");
     std::string lc_workspace, lc_config = "dev";
@@ -284,6 +290,11 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
         } else if (*test_scenes) {
             auto r = cmd_test_scenes(fs::path(ts_workspace), ts_scene, ts_update, ts_jobs);
+            rc = r.ok() ? *r : 2;
+            if (!r.ok())
+                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
+        } else if (*check) {
+            auto r = cmd_check(fs::path(ck_workspace), ck_defs);
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());

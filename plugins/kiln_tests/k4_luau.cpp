@@ -1,6 +1,7 @@
 // K4 tests (spec §6): Luau embedding, manifest env, determinism canary.
 #include "doctest.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 
@@ -493,4 +494,43 @@ TEST_CASE("K4.15 cluau manifests: one manifest per role, one module per require 
     auto both = luau::evaluate_file(w.root / "plugins/p/plugin.build.cluau", plugin_opts(w.root, "p"));
     REQUIRE(!both.ok());
     CHECK(both.error.find("one per module") != std::string::npos);
+}
+
+// `kiln check` - the manifests typed against types/build.d.luau.
+#include "luau/manifest_check.h"
+
+TEST_CASE("K4.16 kiln check: typed manifests, typed requires, cluau's strict rules, cluau lines") {
+    WS w;
+    auto defs = util::read_file(fs::path(KILN_SOURCE_DIR) / "types/build.d.luau");
+    REQUIRE(defs.ok());
+    write_tree(w.root, {
+        {"build/defaults.cluau", "const std = \"c++20\"\nreturn { std = std, flags = { \"-g\" } }\n"},
+        {"plugins/good/plugin.build.cluau",
+         "plugin \"good\" {}\n"
+         "let d = require \"build/defaults\"\n"
+         "module \"m\" { sources = { glob(\"src/*.cpp\"), \"extra.cpp\" }, cpp_std = d.std, flags = d.flags }\n"},
+        {"plugins/bad/plugin.build.cluau",
+         "plugin \"bad\" {}\n"
+         "let d = require \"build/defaults\"\n"
+         "module \"m\" { sources = {}, cpp_std = 20 }\n"
+         "module \"n\" { sourcez = {} }\n"
+         "const loose: any = d.missing\n"},
+        {"plugins/legacy/plugin.build.luau", "plugin \"legacy\" {}\nlocal x: any = 1\nmodule \"m\" { sources = {} }\n"},
+    });
+    auto r = luau::check_manifests(w.root,
+                                   {"build/defaults.cluau", "plugins/good/plugin.build.cluau",
+                                    "plugins/bad/plugin.build.cluau", "plugins/legacy/plugin.build.luau"},
+                                   *defs);
+    REQUIRE(r.ok());
+    auto has = [&](const std::string& file, int line, const std::string& code) {
+        return std::any_of(r->begin(), r->end(), [&](const luau::CheckFinding& f) {
+            return f.file == file && f.line == line && f.code == code;
+        });
+    };
+    for (auto& f : *r)
+        CHECK_MESSAGE(f.file == "plugins/bad/plugin.build.cluau", f.file << ":" << f.line << " " << f.code << " " << f.message);
+    CHECK(has("plugins/bad/plugin.build.cluau", 3, "TypeError")); // cpp_std is a string
+    CHECK(has("plugins/bad/plugin.build.cluau", 4, "TypeError")); // no field `sourcez` (and `sources` is required)
+    CHECK(has("plugins/bad/plugin.build.cluau", 5, "TypeError")); // the helper has no `missing`
+    CHECK(has("plugins/bad/plugin.build.cluau", 5, "NoAny"));     // cluau's strict rules
 }

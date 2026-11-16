@@ -502,6 +502,11 @@ required (removed: prior revisions asked for it; the mitigations above supersede
 
 Ship complete luau-lsp typedefs for §6.2 in `types/build.d.luau` + a `.luaurc` template
 for the workspace. Keep in lockstep with the C++ API (a test greps exported names).
+`kiln check` (§6.7) loads them for every manifest, so they are real Luau definitions
+(`declare x: T`, never `declare const`), `any`-free, and describe what the evaluator
+accepts: a FileSet nests (`{ [number]: string | FileSet }`), a string list is
+`{ string? }` (a nil entry is skipped), and `require` is Luau's own (declaring it would
+replace the built-in the checker types a resolved require through).
 
 ### 6.7 cluau manifests (amendment)
 
@@ -517,7 +522,12 @@ and the compile; the translation keeps every line on its line, so every
 expansion task's params carry the translator version, so a translator
 change re-expands every manifest; the determinism canary covers cluau
 fixtures (K4.14). The `.luau` names stay readable. Kiln's own manifests
-are cluau.
+are cluau. `kiln check` type-checks every manifest role against §6.6's
+definitions before anything evaluates it: `.cluau` in strict mode plus
+cluau's strict rules (`cluau_check`, vendored beside the translator),
+`.luau` nonstrict; `require "build/x"` resolves to the helper module so its
+type flows on; diagnostics are on the cluau lines (K4.16). `kiln smoke`
+runs it.
 
 **Acceptance:** fixture plugin builds end-to-end from a manifest; comment edit in
 manifest re-expands but zero tasks run; `require`d helper edit re-expands; AST

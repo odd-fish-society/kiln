@@ -49,6 +49,12 @@ add_library(cluau STATIC ${CLUAU_SOURCES})
 target_include_directories(cluau PUBLIC plugins/cluau/cluau/include
   PRIVATE plugins/cluau/cluau/src/translate)
 target_compile_features(cluau PRIVATE cxx_std_17)
+# cluau_check: the strict rules over Luau's analysis (`kiln check`).
+file(GLOB CLUAU_CHECK_SOURCES CONFIGURE_DEPENDS plugins/cluau/cluau/src/check/*.cpp)
+add_library(cluau_check STATIC ${CLUAU_CHECK_SOURCES})
+target_include_directories(cluau_check PUBLIC plugins/cluau/cluau/include)
+target_link_libraries(cluau_check PUBLIC Luau.Analysis)
+target_compile_features(cluau_check PRIVATE cxx_std_17)
 
 # ---- third_party: header-only ----------------------------------------------
 add_library(kiln_headers INTERFACE)
@@ -63,7 +69,7 @@ file(GLOB_RECURSE KILN_CORE_SOURCES CONFIGURE_DEPENDS
 add_library(kiln_core STATIC ${KILN_CORE_SOURCES})
 target_include_directories(kiln_core PUBLIC plugins/kiln/src)
 target_link_libraries(kiln_core PUBLIC
-  blake3 sqlite3 kiln_headers cluau
+  blake3 sqlite3 kiln_headers cluau cluau_check
   Luau.Ast Luau.Compiler Luau.VM Luau.Analysis Luau.Config Luau.EqSat)
 find_package(Threads REQUIRED)
 target_link_libraries(kiln_core PUBLIC Threads::Threads)

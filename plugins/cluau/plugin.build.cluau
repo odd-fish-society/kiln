@@ -11,3 +11,17 @@ c_library "cluau" {
     public_includes = { "cluau/include" },
     cpp_std = "c++17",
 }
+
+// cluau_check: the strict rules over Luau's analysis (`kiln check`), built
+// against the luau plugin's headers.
+const lu = "../luau/luau/"
+c_library "cluau_check" {
+    sources = glob("cluau/src/check/*.cpp"),
+    includes = {
+        "cluau/include",
+        lu .. "Analysis/include", lu .. "Ast/include", lu .. "Common/include",
+        lu .. "EqSat/include", lu .. "Config/include",
+    },
+    public_includes = { "cluau/include" },
+    cpp_std = "c++17",
+}

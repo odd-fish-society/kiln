@@ -497,5 +497,14 @@ choices logged, MUST deviations fixed: none remain):
 - The boundary lint skips the vendored cluau checkout (another project's
   tree, whose README names its hosts); Kiln's own files beside it are
   scanned.
-- Deferred: `kiln check` (cluau_check with an `any`-free
-  `types/build.d.luau`) - the typed manifest check is a separate step.
+- `kiln check` (cluau_check with an `any`-free `types/build.d.luau`): a
+  Luau Frontend in-process, strict for `.cluau` (plus cluau_check, built
+  beside the translator), nonstrict for `.luau`, `require "build/x"`
+  resolved to the helper. Loading build.d.luau for real showed it had
+  never been valid Luau (`declare const`); it now is, and it was made to
+  match the evaluator (recursive FileSet, `{ string? }` lists, no
+  `require` declaration - declaring it hides Luau's built-in). The old
+  solver types a list literal from its first entry, so a string list with
+  a trailing optional entry needs an annotated local; the engine
+  workspace's define lists were hoisted into `const x: { string? }`
+  (DeclSets unchanged). A smoke step.

@@ -494,12 +494,43 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
                                     (root / "plugins" / "engine" / "engine" / "content").string(),
                                     (root / "plugins" / "game" / "game_content" / "content").string()},
                                    root, &out);
+        // The per-plugin gate results (each plugin's check_scripts
+        // stamp ends with its allow-any exemption count).
+        std::error_code ec;
+        for (auto& plugin : fs::directory_iterator(root / ".kiln" / "out" / cfgdirs["dev"] / "check", ec))
+            for (auto& stamp : fs::directory_iterator(plugin.path(), ec)) {
+                auto text = util::read_file(stamp.path());
+                if (text.ok() && !text->empty()) {
+                    std::string last = *text;
+                    while (!last.empty() && last.back() == '\n')
+                        last.pop_back();
+                    last = last.substr(last.rfind('\n') == std::string::npos ? 0 : last.rfind('\n') + 1);
+                    std::printf("  %s: %s\n", plugin.path().filename().string().c_str(), last.c_str());
+                }
+            }
         if (rc != 0) {
             json f;
             f["app"] = "tinyscriptcheck";
             f["config"] = "dev";
             f["kind"] = "script_check";
             f["message"] = "tinyscriptcheck exited " + std::to_string(rc) + (out.empty() ? "" : ": " + out);
+            findings.push_back(std::move(f));
+        }
+    }
+
+    // `kiln check` - every manifest typed against types/build.d.luau
+    // (cluau's strict rules for .cluau manifests). Runs in-process: it
+    // needs no build.
+    {
+        checks++;
+        std::printf("kiln smoke: kiln check\n");
+        std::fflush(stdout);
+        auto rc = cmd_check(root, "");
+        if (!rc.ok() || *rc != 0) {
+            json f;
+            f["app"] = "kiln check";
+            f["kind"] = "manifest_check";
+            f["message"] = rc.ok() ? std::string("kiln check found manifest errors (run `kiln check`)") : rc.error;
             findings.push_back(std::move(f));
         }
     }

@@ -32,6 +32,9 @@ Result<int> cmd_test(const fs::path& root, const std::string& target, int jobs,
 Result<int> cmd_smoke(const fs::path& root, int jobs);
 Result<int> cmd_shipping_audit(const fs::path& root, const std::string& config,
                               const std::vector<std::string>& targets);
+// Type-check the manifests (types/build.d.luau, cluau's strict rules for
+// .cluau manifests); 1 when any error.
+Result<int> cmd_check(const fs::path& root, const std::string& defs);
 Result<int> cmd_lint_content(const fs::path& root, const std::vector<std::string>& plugins,
                              bool strict, const std::string& config);
 Result<int> cmd_mint_content(const fs::path& root, const std::vector<std::string>& plugins,

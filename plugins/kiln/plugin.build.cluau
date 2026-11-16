@@ -26,6 +26,7 @@ module "luau" {
         "luau/luau_config",
         "luau/luau_eqsat",
         "cluau/cluau",
+        "cluau/cluau_check",
     } },
     cpp_std = "c++20",
 }
