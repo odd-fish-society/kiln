@@ -28,6 +28,10 @@ struct LowerCtx {
     std::map<std::string, std::string> target_files; // target name → rel path
     std::map<std::string, EffectiveInterface> effective; // per plugin
     std::vector<TaskId> expansion_tasks; // added by the driver, deps for cc task
+    // A tool binary's content hash (the tool_hash param), hashed once per
+    // lowering: every cook task names its tool, and rehashing a 40+ MB
+    // binary per task made lowering dominate a no-op build.
+    std::map<std::string, std::string> tool_hashes; // absolute path → hex ("" = unreadable)
 
     struct PluginTasks {
         std::vector<TaskId> compiles;      // module compiles (all modules)
@@ -67,6 +71,12 @@ struct LowerCtx {
     std::map<std::string, std::string> toolchain_fingerprints;
 };
 
+// A plugin's graph files (its DeclSet, interface, provider, clib
+// interfaces) live per configuration VARIANT: the DeclSet depends on the
+// target's features and enabled plugins, so two targets sharing one path
+// rewrote each other's files on every multi-target build.
+// `.kiln/graph/<platform-config>/<first 10 hex of ConfigTuple::hash()>`.
+std::string graph_dir(const ConfigTuple& ct);
 std::string declset_path(const ConfigTuple& ct, const std::string& plugin);
 std::string interface_path(const ConfigTuple& ct, const std::string& plugin);
 std::string provider_path(const ConfigTuple& ct, const std::string& plugin);

@@ -41,6 +41,10 @@ std::string normalize(const std::string& s);
 // Counts "[n/n] ok" lines (executed tasks) in plain-mode build output.
 int count_executed(const std::string& out);
 int count_cached(const std::string& out);
+// A plugin graph file (`content.provider.json`, ...) of one platform-config:
+// it lives in the configuration variant's folder,
+// .kiln/graph/<platform-config>/<variant>/ (the single match; empty if none).
+fs::path graph_file(const fs::path& root, const std::string& platform_config, const std::string& file);
 int count_failed(const std::string& out);
 
 // Minimal fixture workspace: core + app plugins, one target, one shader cook.

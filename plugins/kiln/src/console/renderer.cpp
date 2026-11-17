@@ -430,6 +430,9 @@ void Renderer::handle_event(const Event& e) {
                 for (auto& line : split_lines(log))
                     print_plain(colors_.red("  | " + line));
             }
+        } else if (e.state == TaskState::SkippedUpToDate && !opts_.verbose) {
+            // A cached task did no work: the counters and the summary carry
+            // it (--verbose lists them).
         } else {
             if (opts_.mode == ProgressMode::Fancy) {
                 std::string line = std::string("[") + status + "] " + e.id.display();

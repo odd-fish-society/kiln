@@ -294,14 +294,19 @@ Result<int> cmd_daemon(const BuildOptions& opts, console::Renderer& renderer) {
                     last_ms);
                 hot.broadcast({{"event", "build"},
                                {"status", outcome->failed ? "fail" : "ok"}});
-                // Asset events: read providers' asset manifests.
+                // Asset events: read providers' asset manifests
+                // (.kiln/graph/<platform-config>/<variant>/*.provider.json).
                 try {
                     fs::path graph_dir = root / ".kiln/graph";
                     std::error_code ec;
-                    for (auto& e : fs::directory_iterator(graph_dir, ec)) {
-                        if (!e.is_directory(ec))
-                            continue;
-                        for (auto& f : fs::directory_iterator(e.path(), ec)) {
+                    std::vector<fs::path> variants;
+                    for (auto& e : fs::directory_iterator(graph_dir, ec))
+                        if (e.is_directory(ec))
+                            for (auto& v : fs::directory_iterator(e.path(), ec))
+                                if (v.is_directory(ec))
+                                    variants.push_back(v.path());
+                    for (const fs::path& variant : variants) {
+                        for (auto& f : fs::directory_iterator(variant, ec)) {
                             if (f.path().extension() != ".json" ||
                                 f.path().filename().generic_string().find(".provider.") ==
                                     std::string::npos)

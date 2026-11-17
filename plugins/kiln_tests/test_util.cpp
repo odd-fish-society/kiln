@@ -131,6 +131,14 @@ int count_cached(const std::string& out) {
     }
     return n;
 }
+fs::path graph_file(const fs::path& root, const std::string& platform_config, const std::string& file) {
+    std::error_code ec;
+    for (auto& v : fs::directory_iterator(root / ".kiln/graph" / platform_config, ec))
+        if (v.is_directory(ec) && fs::exists(v.path() / file, ec))
+            return v.path() / file;
+    return {};
+}
+
 int count_failed(const std::string& out) {
     int n = 0;
     size_t pos = 0;

@@ -61,7 +61,7 @@ TEST_CASE("K7.1 cook rules produce assets; provider carries the manifest; pack w
     CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/pack/game.kpak.json"));
 
     // Provider JSON carries the asset manifest.
-    auto provider = read_file(tmp.path / ".kiln/graph/linux-dev/content.provider.json");
+    auto provider = read_file(graph_file(tmp.path, "linux-dev", "content.provider.json"));
     CHECK(provider.find("banner.spv") != std::string::npos);
     CHECK(provider.find("icon.png") != std::string::npos);
 

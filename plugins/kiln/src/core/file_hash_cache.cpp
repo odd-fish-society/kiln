@@ -41,14 +41,30 @@ Result<void> FileHashCache::open() {
          "CREATE TABLE IF NOT EXISTS file_hash ("
          " path TEXT PRIMARY KEY, mtime_ns INTEGER NOT NULL, size INTEGER NOT NULL,"
          " hash BLOB NOT NULL CHECK(length(hash)=32));");
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(as_db(db_), "SELECT mtime_ns, size, hash FROM file_hash WHERE path=?1",
+                           -1, &stmt, nullptr) == SQLITE_OK)
+        select_ = stmt;
+    stmt = nullptr;
+    if (sqlite3_prepare_v2(as_db(db_),
+                           "INSERT OR REPLACE INTO file_hash(path, mtime_ns, size, hash)"
+                           " VALUES(?1,?2,?3,?4)",
+                           -1, &stmt, nullptr) == SQLITE_OK)
+        insert_ = stmt;
     return Result<void>::success();
 }
 
 void FileHashCache::close() {
+    std::lock_guard lock(db_mu_);
+    sqlite3_finalize(static_cast<sqlite3_stmt*>(select_));
+    sqlite3_finalize(static_cast<sqlite3_stmt*>(insert_));
+    select_ = insert_ = nullptr;
     if (db_) {
         sqlite3_close(as_db(db_));
         db_ = nullptr;
     }
+    std::unique_lock memo(memo_mu_);
+    memo_.clear();
 }
 
 Result<FileHashCache::StatInfo> FileHashCache::stat_file(const fs::path& p) {
@@ -69,40 +85,49 @@ Result<Hash256> FileHashCache::hash_locked(const fs::path& abs_path, const std::
     auto st = stat_file(abs_path);
     if (!st.ok())
         return Result<Hash256>::fail("cannot hash '" + key + "': " + st.error);
-    // Cache hit on (mtime, size).
-    sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(as_db(db_),
-                           "SELECT mtime_ns, size, hash FROM file_hash WHERE path=?1", -1,
-                           &stmt, nullptr) == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_STATIC);
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            int64_t mtime = sqlite3_column_int64(stmt, 0);
-            int64_t size = sqlite3_column_int64(stmt, 1);
-            if (mtime == st->mtime_ns && size == st->size) {
+    {
+        std::shared_lock memo(memo_mu_);
+        auto it = memo_.find(key);
+        if (it != memo_.end() && it->second.mtime_ns == st->mtime_ns && it->second.size == st->size)
+            return Result<Hash256>::success(it->second.hash);
+    }
+    auto remember = [&](const Hash256& h) {
+        std::unique_lock memo(memo_mu_);
+        memo_[key] = Entry{st->mtime_ns, st->size, h};
+    };
+    // Cache hit on (mtime, size) in the persisted table.
+    if (cacheable) {
+        std::lock_guard lock(db_mu_);
+        if (auto* stmt = static_cast<sqlite3_stmt*>(select_)) {
+            sqlite3_reset(stmt);
+            sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int64(stmt, 0) == st->mtime_ns &&
+                sqlite3_column_int64(stmt, 1) == st->size) {
                 Hash256 h;
                 std::memcpy(h.bytes.data(), sqlite3_column_blob(stmt, 2), 32);
-                sqlite3_finalize(stmt);
+                sqlite3_reset(stmt);
+                remember(h);
                 return Result<Hash256>::success(h);
             }
+            sqlite3_reset(stmt);
         }
-        sqlite3_finalize(stmt);
     }
     auto hv = Hash256::of_file(abs_path);
     if (!hv.ok())
         return Result<Hash256>::fail("cannot hash '" + key + "': " + hv.error);
     if (cacheable) {
-        if (sqlite3_prepare_v2(as_db(db_),
-                               "INSERT OR REPLACE INTO file_hash(path, mtime_ns, size, hash)"
-                               " VALUES(?1,?2,?3,?4)",
-                               -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_STATIC);
+        std::lock_guard lock(db_mu_);
+        if (auto* stmt = static_cast<sqlite3_stmt*>(insert_)) {
+            sqlite3_reset(stmt);
+            sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_int64(stmt, 2, st->mtime_ns);
             sqlite3_bind_int64(stmt, 3, st->size);
-            sqlite3_bind_blob(stmt, 4, hv->bytes.data(), 32, SQLITE_STATIC);
+            sqlite3_bind_blob(stmt, 4, hv->bytes.data(), 32, SQLITE_TRANSIENT);
             sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
+            sqlite3_reset(stmt);
         }
     }
+    remember(*hv);
     return hv;
 }
 

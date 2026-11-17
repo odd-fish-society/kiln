@@ -82,6 +82,7 @@ TEST_CASE("K6.2 toggling devtools off→on rebuilds only what references it") {
     auto r = run_kiln(tmp.path, [&] {
         auto a = build_args();
         a.push_back("--enable-plugin=devtools");
+        a.push_back("--verbose"); // ran() counts cached lines too
         return a;
     }());
     REQUIRE(r.code == 0);
@@ -90,7 +91,11 @@ TEST_CASE("K6.2 toggling devtools off→on rebuilds only what references it") {
     CHECK(ran(r.out, "plugins/app") > 0);
 
     // Disable again: devtools work disappears; only app recompiles.
-    auto r2 = run_kiln(tmp.path, build_args());
+    auto r2 = run_kiln(tmp.path, [&] {
+        auto a = build_args();
+        a.push_back("--verbose");
+        return a;
+    }());
     REQUIRE(r2.code == 0);
     CHECK(ran(r2.out, "plugins/app") > 0);
     CHECK(ran(r2.out, "plugins/devtools") == 0);

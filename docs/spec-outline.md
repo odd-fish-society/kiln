@@ -542,7 +542,7 @@ manifest path, config_hash = the ConfigTuple. Inputs: manifest + required files 
 result hashes + **dep plugins' DeclSets** (their expansion outputs: NOT their provider
 records, and NOT anything requiring dep compilation; the include dirs and defines that
 lowering needs are all present in dep DeclSets). Output: a serialized
-**DeclSet** JSON at `.kiln/graph/<config>/<plugin>.json`: the normalized declaration
+**DeclSet** JSON at `.kiln/graph/<config>/<variant>/<plugin>.declset.json` (variant = the ConfigTuple hash prefix): the normalized declaration
 set (all specs resolved, globs materialized, module deps name-resolved). The action
 graph for that plugin is generated FROM the DeclSet by C++ rule lowering (deterministic;
 lowering code version is a rule_version).

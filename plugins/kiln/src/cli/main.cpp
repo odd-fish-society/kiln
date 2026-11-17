@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
     std::string platform, config;
     std::vector<std::string> features_raw, enable_plugins, disable_plugins;
     std::string progress_str;
-    bool fail_fast = false, explain = false, print_config_hash = false;
+    bool fail_fast = false, explain = false, print_config_hash = false, verbose = false;
     fs::path workspace;
     build->add_option("target", targets, "target[:platform-config] (repeatable)");
     build->add_option("-j", jobs, "worker count");
@@ -52,6 +52,7 @@ int main(int argc, char** argv) {
     build->add_option("--workspace", workspace, "workspace root (default: auto-detect)");
     build->add_flag("--fail-fast", fail_fast, "cancel outstanding work on first failure");
     build->add_flag("--explain", explain, "print the rebuild reason for every executed task");
+    build->add_flag("--verbose", verbose, "also list the cached (up-to-date) tasks");
     build->add_flag("--print-config-hash", print_config_hash,
                     "print the resolved ConfigTuple hash per target and exit (no build)");
 
@@ -215,7 +216,7 @@ int main(int argc, char** argv) {
 
             console::Renderer renderer(
                 console::Renderer::Options{opts.progress, console::detect_colors().enabled,
-                                           false});
+                                           verbose});
             auto r = cmd_build(opts, renderer);
             renderer.finish();
             rc = r.ok() ? *r : 2;

@@ -42,6 +42,33 @@ owns; they remain here only as a trail of what changed.
   periodic poll (50 ms) serves only SIGWINCH + plain-mode heartbeats.
 - `--progress=none` still prints the final summary and failures (never the
   per-task lines).
+- A cached task prints no line (fancy or plain) unless `kiln build
+  --verbose`: a no-op build of a large workspace scrolled thousands of
+  `cached` lines, each with the task's original duration, and read as a full
+  rebuild. The counters and the summary carry the cached count.
+
+## No-op build cost (2026-11-16)
+
+- Lowering hashes each tool binary once (`LowerCtx::tool_hashes`); it used
+  to hash the tool for every task that names it, and a 42 MB cook tool
+  behind ~150 cook tasks was ~6 s of every no-op graph (the TinyEngine
+  workspace's `scripts/build.sh` no-op went 27 s -> 7 s).
+- `FileHashCache` answers a (path, mtime, size) it has seen this run from
+  memory (still one `stat` per lookup, so an edit always falls through),
+  and prepares its two statements once; the workers no longer serialize on
+  the one SQLite connection for every header input.
+- A plugin's graph files (DeclSet, interface, provider, clib interfaces)
+  live per configuration variant, `.kiln/graph/<platform-config>/<first 10
+  hex of ConfigTuple::hash()>/` (`graph_dir`): a plugin whose DeclSet
+  depends on the target's features (an engine built in editor / game /
+  tool / server flavors) shared one path across targets, and a
+  multi-target build rewrote it in each graph (~2-3 s of the 7 s no-op
+  above). This retires the "shared config NAME" quirk logged under the
+  migration notes below. Moving the files changed every dependent task's
+  digest (an output summary carries the output's path), so the first build
+  of each config after the change recompiled everything once. The daemon
+  reads providers from the variant folders only (a stale pre-change file
+  one level up is never broadcast). `graph.json` stays per config name.
 
 ## Dynamic dependencies
 
@@ -345,7 +372,8 @@ choices logged, MUST deviations fixed: none remain):
   shared per-name serialized artifacts (declset/graph/why JSONs) with the
   last-built target's. Building is correct (each target reads what its own
   wave wrote); only the per-name artifacts are last-writer-wins. Logged, not
-  yet fixed (would need name() to include a feature signature).
+  yet fixed (would need name() to include a feature signature). *Fixed
+  2026-11-16 for the per-plugin graph files (see "No-op build cost").*
 - `c_library`/`module` gained a `flags` field (indexed compile-flag tokens);
   `sources` tables accept nested tables (conditionals producing sublists).
 - Sandbox's link line now receives NFD's GTK3 `public_syslibs` (dropped by

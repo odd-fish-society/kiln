@@ -96,7 +96,8 @@ TEST_CASE("K5.2 edit core .cpp ⇒ dependents relink, never recompile") {
                         std::ios::app);
         f << "// touch impl\n";
     }
-    auto r = run_kiln(tmp.path, build_args());
+    // --verbose: the link line may be a cached one (an unchanged archive).
+    auto r = run_kiln(tmp.path, [] { auto a = build_args(); a.push_back("--verbose"); return a; }());
     REQUIRE(r.code == 0);
     // Core recompiles + re-archives; dependents relink but do NOT recompile.
     CHECK(count_executed(r.out) > 0);
@@ -395,4 +396,49 @@ TEST_CASE("K5c.1 toolchain upgrade: a changed compiler reruns compiles + link") 
     auto r4 = run_kiln(tmp.path, build_args());
     REQUIRE(r4.code == 0);
     CHECK(count_executed(r4.out) == 0);
+}
+
+TEST_CASE("K5.10 two targets with different features keep their own graph files (a no-op reruns none)") {
+    // A plugin whose DeclSet depends on a target feature, linked by two
+    // targets: each configuration variant owns its graph files, so building
+    // both twice reruns none of the plugin's expansion / interface / provider
+    // tasks (they used to rewrite one shared path in turn).
+    TempDir tmp;
+    auto files = fixture();
+    files["build/tool.target.luau"] =
+        "target \"tool\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
+        "  features = { flavor = \"tool\" },\n  link = { \"game/main\" },\n}\n";
+    files["plugins/core/plugin.build.luau"] =
+        "plugin \"core\" {}\nmodule \"core\" {\n  sources = glob(\"src/*.cpp\"),\n"
+        "  public_includes = { \"include\" },\n"
+        "  public_defines = { config.features.flavor == \"tool\" and \"CORE_TOOL=1\" or \"CORE_GAME=1\" },\n}\n";
+    write_tree(tmp.path, files);
+    auto args = [] {
+        auto a = build_args();
+        a.push_back("game");
+        a.push_back("tool");
+        return a;
+    }();
+    REQUIRE(run_kiln(tmp.path, args).code == 0);
+    REQUIRE(run_kiln(tmp.path, args).code == 0); // settle dep discovery
+    auto r = run_kiln(tmp.path, args);
+    INFO(r.out);
+    REQUIRE(r.code == 0);
+    auto ran = [&](const std::string& needle) {
+        size_t n = 0, pos = 0;
+        while ((pos = r.out.find("] ok " + needle, pos)) != std::string::npos) {
+            ++n;
+            ++pos;
+        }
+        return n;
+    };
+    CHECK(ran("plugins/core/") == 0);
+    CHECK(ran("plugins/audio/") == 0);
+    // Two variants, each with its own core DeclSet.
+    std::error_code ec;
+    int declsets = 0;
+    for (auto& v : fs::directory_iterator(tmp.path / ".kiln/graph/linux-dev", ec))
+        if (fs::exists(v.path() / "core.declset.json", ec))
+            ++declsets;
+    CHECK(declsets == 2);
 }

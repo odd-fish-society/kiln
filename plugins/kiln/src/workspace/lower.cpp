@@ -60,6 +60,21 @@ void apply_exclusions(luau::DeclSet& decls) {
 
 namespace {
 
+// The tool_hash param of a task whose `tool` (workspace-relative or
+// absolute) runs it, memoised in the lowering context.
+void set_tool_hash(LowerCtx& ctx, std::map<std::string, std::string>& params, const std::string& tool) {
+    std::string effective = tool;
+    if (fs::path(effective).is_relative())
+        effective = (ctx.ws->root / effective).generic_string();
+    auto it = ctx.tool_hashes.find(effective);
+    if (it == ctx.tool_hashes.end()) {
+        auto th = Hash256::of_file(effective);
+        it = ctx.tool_hashes.emplace(effective, th.ok() ? th->hex() : std::string()).first;
+    }
+    if (!it->second.empty())
+        params["tool_hash"] = it->second;
+}
+
 std::string plugin_dir_of(const LowerCtx& ctx, const std::string& plugin) {
     return util::path_parent(ctx.ws->plugin_manifest_paths.at(plugin));
 }
@@ -198,14 +213,17 @@ std::string debug_for(const ConfigTuple& ct) {
 
 } // namespace
 
+std::string graph_dir(const ConfigTuple& ct) {
+    return ".kiln/graph/" + ct.name() + "/" + ct.hash().hex().substr(0, 10);
+}
 std::string declset_path(const ConfigTuple& ct, const std::string& plugin) {
-    return ".kiln/graph/" + ct.name() + "/" + plugin + ".declset.json";
+    return graph_dir(ct) + "/" + plugin + ".declset.json";
 }
 std::string interface_path(const ConfigTuple& ct, const std::string& plugin) {
-    return ".kiln/graph/" + ct.name() + "/" + plugin + ".interface.json";
+    return graph_dir(ct) + "/" + plugin + ".interface.json";
 }
 std::string provider_path(const ConfigTuple& ct, const std::string& plugin) {
-    return ".kiln/graph/" + ct.name() + "/" + plugin + ".provider.json";
+    return graph_dir(ct) + "/" + plugin + ".provider.json";
 }
 std::string archive_path(const ConfigTuple& ct, const std::string& plugin) {
     return ".kiln/out/" + ct.name() + "/lib/" + plugin + "/lib" + plugin + ".a";
@@ -216,7 +234,7 @@ std::string clib_archive_path(const ConfigTuple& ct, const std::string& plugin,
 }
 std::string clib_interface_path(const ConfigTuple& ct, const std::string& plugin,
                                 const std::string& clib) {
-    return ".kiln/graph/" + ct.name() + "/" + plugin + ".clib-" + clib + ".interface.json";
+    return graph_dir(ct) + "/" + plugin + ".clib-" + clib + ".interface.json";
 }
 
 Result<void> lower_script_checks(Scheduler& sched, LowerCtx& ctx) {
@@ -250,14 +268,8 @@ Result<void> lower_script_checks(Scheduler& sched, LowerCtx& ctx) {
             params["out"] = out;
             set_indexed(params, "def", defs);
             set_indexed(params, "input", c.inputs);
-            if (params.count("tool")) {
-                std::string effective = params["tool"];
-                if (fs::path(effective).is_relative())
-                    effective = (ctx.ws->root / effective).generic_string();
-                auto th = Hash256::of_file(effective);
-                if (th.ok())
-                    params["tool_hash"] = th->hex();
-            }
+            if (params.count("tool"))
+                set_tool_hash(ctx, params, params["tool"]);
             TaskDecl d = make_task(ctx, c.rule, plugin_dir_of(ctx, plugin) + "/check:" + c.name, params,
                                    c.inputs, deps, {out});
             KILN_TRY(void_result(sched.add(std::move(d))));
@@ -426,12 +438,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         // Same tool_hash fold as the cook lowering: tool upgrades must
         // regen this rule's output. Paths resolve against the workspace
         // root, never the caller's cwd.
-        std::string effective = params["tool"];
-        if (fs::path(effective).is_relative())
-            effective = (ctx.ws->root / effective).generic_string();
-        auto th = Hash256::of_file(effective);
-        if (th.ok())
-            params["tool_hash"] = th->hex();
+        set_tool_hash(ctx, params, params["tool"]);
 
         TaskDecl d = make_task(ctx, "reflect_gen", pdir + "/reflect:" + plugin, params,
                                scan_headers, {}, {gen_cpp, gen_presentation_cpp, gen_script_cpp, gen_dluau});
@@ -704,12 +711,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             set_indexed(params, "proto", c.proto_sources);
             set_indexed(params, "proto_path", sorted_uniq(proto_paths));
             set_indexed(params, "output", outputs);
-            std::string effective = c.proto_tool;
-            if (fs::path(effective).is_relative())
-                effective = (ctx.ws->root / effective).generic_string();
-            auto th = Hash256::of_file(effective);
-            if (th.ok())
-                params["tool_hash"] = th->hex();
+            set_tool_hash(ctx, params, c.proto_tool);
             TaskDecl d = make_task(ctx, "proto_gen", pdir + "/proto:" + c.name, params,
                                    c.proto_sources, {}, outputs);
             proto_gen_task = d.id;
@@ -924,14 +926,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         // paths (build outputs like the tinycook binary): upgrading the tool
         // must recook exactly this rule's tasks. Paths resolve against
         // the workspace root — never the caller's cwd.
-        if (params.count("tool")) {
-            std::string effective = params["tool"];
-            if (fs::path(effective).is_relative())
-                effective = (ctx.ws->root / effective).generic_string();
-            auto th = Hash256::of_file(effective);
-            if (th.ok())
-                params["tool_hash"] = th->hex();
-        }
+        if (params.count("tool"))
+            set_tool_hash(ctx, params, params["tool"]);
 
         std::vector<std::string> outputs = {out};
         if (!metrics_out.empty())

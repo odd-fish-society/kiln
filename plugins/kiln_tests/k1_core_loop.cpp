@@ -189,3 +189,36 @@ TEST_CASE("F3 link argv passes --build-id explicitly (spec §7a.3)") {
     REQUIRE(!argv.empty());
     REQUIRE(argv[0] == "c++");
 }
+
+TEST_CASE("file hash cache: a file rewritten mid-run hashes anew; an unchanged one answers from memory") {
+    // The in-process memo answers a (path, mtime, size) it has seen; any stat
+    // change (a task rewrote its output, an edit) must fall through to a
+    // fresh hash, the same contract as the persisted table.
+    TempDir tmp;
+    fs::path root = tmp.path / "ws";
+    fs::create_directories(root);
+    FileHashCache cache{root / ".kiln/hashcache.sqlite"};
+    REQUIRE(cache.open().ok());
+    write_tree(root, {{"a.txt", "first"}});
+    auto first = cache.hash_of(root, "a.txt");
+    REQUIRE(first.ok());
+    CHECK(*first == Hash256::of_string("first"));
+
+    // Same size, new content, a different mtime: a new hash.
+    write_tree(root, {{"a.txt", "secnd"}});
+    fs::last_write_time(root / "a.txt", fs::file_time_type::clock::now() + std::chrono::seconds(5));
+    auto second = cache.hash_of(root, "a.txt");
+    REQUIRE(second.ok());
+    CHECK(*second == Hash256::of_string("secnd"));
+
+    // Unchanged: the same answer, from memory and from a reopened cache.
+    CHECK(*cache.hash_of(root, "a.txt") == *second);
+    cache.close();
+    FileHashCache reopened{root / ".kiln/hashcache.sqlite"};
+    REQUIRE(reopened.open().ok());
+    CHECK(*reopened.hash_of(root, "a.txt") == *second);
+
+    // A missing file is an error, never a stale memo.
+    fs::remove(root / "a.txt");
+    CHECK(!reopened.hash_of(root, "a.txt").ok());
+}
