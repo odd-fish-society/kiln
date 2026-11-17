@@ -267,3 +267,52 @@ TEST_CASE("cook_tinyasset: multi-input declaration cooks every input") {
     CHECK(r2.out.find("] ok plugins/content/content/a.vert/cook_tinyasset") ==
           std::string::npos);
 }
+
+TEST_CASE("cook_tinyasset: a .tasset source is packed under its document's own id") {
+    TempDir tmp;
+    // A .tasset document carries its identity in its header and the cooked
+    // asset keeps it, so the provider manifest (and the pack built from it)
+    // must list the document id, not the path-derived one. A document
+    // without a valid id keeps the path-derived id.
+    write_tree(tmp.path, {
+        {"kiln.workspace.luau", "workspace \"doc\" { strict_globs = true }\n"},
+        {"build/game.target.luau",
+         "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
+         "  enable_plugins = { \"content\", \"app\" },\n  link = { \"app/main\" },\n}\n"},
+        {"plugins/content/plugin.build.luau",
+         "plugin \"content\" { enabled_by_default = false }\n"
+         "cook \"scenes\" {\n  rule = \"cook_tinyasset\",\n"
+         "  inputs = glob(\"content/*.tasset\"),\n  params = {\n"
+         "    tool = \"./fake_tinycook.sh\",\n"
+         "    asset_type = \"scene\",\n  },\n}\n"},
+        {"plugins/app/plugin.build.luau",
+         "plugin \"app\" { enabled_by_default = false, public_deps = { \"content\" } }\n"
+         "module \"main\" { sources = glob(\"src/*.cpp\") }\n"},
+        {"plugins/app/src/main.cpp", "int main() { return 0; }\n"},
+        {"plugins/content/content/level.tasset",
+         "{\n  \"tasset\": 1,\n  \"asset\": { \"id\": \"0123456789abcdef0123456789abcdef\", \"type\": \"Scene\" },\n"
+         "  \"payload\": { \"entities\": {} }\n}\n"},
+        {"plugins/content/content/noid.tasset", "{ \"tasset\": 1, \"payload\": {} }\n"},
+        {"fake_tinycook.sh",
+         "#!/bin/sh\n"
+         "src=\"\"; out=\"\"; prev=\"\"\n"
+         "for a in \"$@\"; do\n"
+         "  if [ \"$prev\" = \"--source\" ]; then src=\"$a\"; fi\n"
+         "  if [ \"$prev\" = \"--out\" ]; then out=\"$a\"; fi\n"
+         "  prev=\"$a\"\n"
+         "done\n"
+         "mkdir -p \"$(dirname \"$out\")\"\n"
+         "cp \"$src\" \"$out\"\n"},
+    });
+    chmod((tmp.path / "fake_tinycook.sh").c_str(), 0755);
+
+    auto r = run_kiln(tmp.path, {"build", "game", "--progress=plain", "--workspace", "."});
+    INFO(r.out);
+    REQUIRE(r.code == 0);
+
+    std::string provider = read_file(tmp.path / ".kiln/graph/linux-dev/content.provider.json");
+    INFO(provider);
+    CHECK(provider.find("\"0123456789abcdef0123456789abcdef\"") != std::string::npos);
+    CHECK(provider.find(Hash256::of_string("content/content/level.tasset").hex()) == std::string::npos);
+    CHECK(provider.find(Hash256::of_string("content/content/noid.tasset").hex()) != std::string::npos);
+}

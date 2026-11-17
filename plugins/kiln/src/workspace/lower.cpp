@@ -169,6 +169,26 @@ std::string obj_path(const std::string& src, const std::string& pdir) {
     return rel + ".o";
 }
 
+// A .tasset source document names its own identity (`"asset": {"id": ...}`,
+// 32 lowercase hex) and its cooked asset carries that id, so the pack indexes
+// it under the document's id rather than the path-derived one. Empty when
+// the file has none (the caller keeps the path-derived id).
+std::string tasset_document_id(const fs::path& file) {
+    auto text = util::read_file(file);
+    if (!text.ok())
+        return {};
+    auto doc = nlohmann::json::parse(*text, nullptr, /*allow_exceptions=*/false, /*ignore_comments=*/true);
+    if (!doc.is_object() || !doc.contains("asset") || !doc["asset"].is_object())
+        return {};
+    const auto& id = doc["asset"].value("id", nlohmann::json());
+    if (!id.is_string())
+        return {};
+    std::string hex = id.get<std::string>();
+    if (hex.size() != 32 || hex.find_first_not_of("0123456789abcdef") != std::string::npos)
+        return {};
+    return hex;
+}
+
 std::string opt_for(const ConfigTuple& ct) {
     return (ct.config == "release" || ct.config == "shipping") ? "2" : "0";
 }
@@ -926,6 +946,10 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             pt.cook_outputs.push_back(o);
 
         std::string asset_id = Hash256::of_string(plugin + "/" + rel_in).hex();
+        if (c.rule == "cook_tinyasset" && fs::path(primary).extension() == ".tasset") {
+            if (std::string document_id = tasset_document_id(ctx.ws->root / primary); !document_id.empty())
+                asset_id = document_id;
+        }
         pt.cook_assets.push_back(asset_id + "=" + out);
         }
     }
