@@ -43,6 +43,10 @@ public:
 
     std::optional<Trace> get(const Hash256& task_hash);
     Result<void> put(const Trace& trace);
+    // Every trace of `rule`, with task_hash, task_display and outputs only
+    // (the dead-output prune's input).
+    std::vector<Trace> traces_of_rule(const std::string& rule);
+    void erase(const Hash256& task_hash);
     void clear_all();
     int64_t count();
 

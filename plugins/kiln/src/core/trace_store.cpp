@@ -210,6 +210,49 @@ Result<void> TraceStore::put(const Trace& trace) {
     return Result<void>::success();
 }
 
+std::vector<Trace> TraceStore::traces_of_rule(const std::string& rule) {
+    std::vector<Trace> out;
+    if (!db_)
+        return out;
+    const std::string suffix = "/" + rule;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(as_db(db_),
+                           "SELECT task_hash, task_display, outputs FROM trace"
+                           " WHERE substr(task_display, -?2) = ?1",
+                           -1, &stmt, nullptr) != SQLITE_OK)
+        return out;
+    sqlite3_bind_text(stmt, 1, suffix.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 2, static_cast<int>(suffix.size()));
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        Trace t;
+        t.task_hash = blob_to_hash(sqlite3_column_blob(stmt, 0), sqlite3_column_bytes(stmt, 0));
+        const unsigned char* s = sqlite3_column_text(stmt, 1);
+        t.task_display = s ? reinterpret_cast<const char*>(s) : "";
+        try {
+            for (auto& o : json::parse(sqlite3_column_text(stmt, 2)))
+                t.outputs.push_back({o.at("path").get<std::string>(),
+                                     hash_from_hex(o.at("hash").get<std::string>())});
+        } catch (...) {
+            continue;
+        }
+        out.push_back(std::move(t));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+void TraceStore::erase(const Hash256& task_hash) {
+    if (!db_)
+        return;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(as_db(db_), "DELETE FROM trace WHERE task_hash=?1", -1, &stmt,
+                           nullptr) != SQLITE_OK)
+        return;
+    sqlite3_bind_blob(stmt, 1, task_hash.bytes.data(), 32, SQLITE_STATIC);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
 void TraceStore::clear_all() {
     if (db_)
         exec(as_db(db_), "DELETE FROM trace;");

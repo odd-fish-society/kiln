@@ -173,7 +173,9 @@ int main(int argc, char** argv) {
     auto* clean = app.add_subcommand("clean", "Delete build outputs (and traces)");
     bool c_traces = false;
     std::string c_workspace;
+    bool c_dead = false;
     clean->add_flag("--traces", c_traces, "also delete the trace store");
+    clean->add_flag("--dead", c_dead, "delete only the cooked outputs whose sources are gone (every build does this too)");
     clean->add_option("--workspace", c_workspace, "workspace root (default: auto-detect)");
 
     int rc = 0;
@@ -310,7 +312,7 @@ int main(int argc, char** argv) {
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
         } else if (*clean) {
-            auto r = cmd_clean(fs::path(c_workspace), c_traces);
+            auto r = cmd_clean(fs::path(c_workspace), c_traces, c_dead);
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());

@@ -11,6 +11,7 @@
 #include "core/trace_store.h"
 #include "core/util.h"
 #include "rules/registry.h"
+#include "workspace/build.h"
 #include "test_util.h"
 
 using namespace kiln;
@@ -315,4 +316,33 @@ TEST_CASE("cook_tinyasset: a .tasset source is packed under its document's own i
     CHECK(provider.find("\"0123456789abcdef0123456789abcdef\"") != std::string::npos);
     CHECK(provider.find(Hash256::of_string("content/content/level.tasset").hex()) == std::string::npos);
     CHECK(provider.find(Hash256::of_string("content/content/noid.tasset").hex()) != std::string::npos);
+}
+
+TEST_CASE("prune_dead_cooks deletes the cooked outputs of a vanished source, and nothing else") {
+    RuleHarness h;
+    write_tree(h.root, {{"content/kept.png", "png"},
+                        {".kiln/out/linux-dev/assets/demo/content/kept.png.ctasset", "kept"},
+                        {".kiln/out/linux-dev/assets/demo/content/gone.png.ctasset", "gone"},
+                        {".kiln/out/linux-dev/lib/archive.a", "lib"},
+                        {"outside.txt", "not under .kiln/out"}});
+    auto put = [&](const std::string& display, const std::string& output) {
+        Trace t;
+        t.task_hash = Hash256::of_string(display);
+        t.task_display = display;
+        t.outputs.push_back({output, Hash256{}});
+        REQUIRE(h.traces.put(t).ok());
+    };
+    put("content/kept.png/cook_tinyasset", ".kiln/out/linux-dev/assets/demo/content/kept.png.ctasset");
+    put("content/gone.png/cook_tinyasset", ".kiln/out/linux-dev/assets/demo/content/gone.png.ctasset");
+    put("content/escape.png/cook_tinyasset", "outside.txt"); // never deletes outside .kiln/out
+    put("plugins/demo/archive/archive", ".kiln/out/linux-dev/lib/archive.a"); // a synthetic primary
+    PruneStats stats = prune_dead_cooks(h.root, h.traces);
+    CHECK(stats.traces == 2);
+    CHECK(stats.files == 1);
+    CHECK(fs::exists(h.root / ".kiln/out/linux-dev/assets/demo/content/kept.png.ctasset"));
+    CHECK(!fs::exists(h.root / ".kiln/out/linux-dev/assets/demo/content/gone.png.ctasset"));
+    CHECK(fs::exists(h.root / ".kiln/out/linux-dev/lib/archive.a"));
+    CHECK(fs::exists(h.root / "outside.txt"));
+    CHECK(h.traces.traces_of_rule("cook_tinyasset").size() == 1);
+    CHECK(h.traces.traces_of_rule("archive").size() == 1);
 }

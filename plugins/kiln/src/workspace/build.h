@@ -9,6 +9,7 @@
 #include "console/renderer.h"
 #include "core/result.h"
 #include "core/scheduler.h"
+#include "core/trace_store.h"
 
 namespace fs = std::filesystem;
 
@@ -37,7 +38,19 @@ struct BuildOutcome {
     uint64_t elapsed_ms = 0;
     std::vector<std::string> built; // target:config strings built
     std::vector<WhyRecord> why;     // per-task rebuild reasons (--explain)
+    size_t pruned_outputs = 0;      // dead cook outputs deleted (prune_dead_cooks)
 };
+
+// The outputs of every cook_tinyasset trace whose source file is gone (a
+// moved, renamed or deleted asset), deleted from under .kiln/out with their
+// traces. Cooked assets are the one output a runtime finds by scanning a
+// directory, so a dead one is a ghost asset; other rules' primaries can be
+// synthetic and are never pruned.
+struct PruneStats {
+    size_t traces = 0;
+    size_t files = 0;
+};
+PruneStats prune_dead_cooks(const fs::path& root, TraceStore& traces);
 
 // Runs a full build for each target spec (resolution → expansion wave →
 // lowering → action wave). The renderer receives all scheduler events.

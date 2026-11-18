@@ -6,6 +6,8 @@
 
 #include "core/util.h"
 #include "nlohmann/json.hpp"
+#include "core/trace_store.h"
+#include "workspace/build.h"
 #include "workspace/workspace.h"
 
 namespace kiln {
@@ -293,13 +295,22 @@ Result<int> cmd_setup_clion(const fs::path& root_in, const std::string& config) 
     return Result<int>::success(0);
 }
 
-Result<int> cmd_clean(const fs::path& root_in, bool traces) {
+Result<int> cmd_clean(const fs::path& root_in, bool traces, bool dead) {
     fs::path root = root_in;
     if (root.empty()) {
         auto found = find_workspace_root(fs::current_path());
         if (!found.ok())
             return Result<int>::fail(found.error);
         root = *found;
+    }
+    if (dead) {
+        TraceStore store(root / ".kiln/traces.sqlite");
+        if (auto opened = store.open(); !opened.ok())
+            return Result<int>::fail(opened.error);
+        PruneStats stats = prune_dead_cooks(root, store);
+        std::printf("removed %zu stale cooked output%s (%zu dead trace%s)\n", stats.files,
+                    stats.files == 1 ? "" : "s", stats.traces, stats.traces == 1 ? "" : "s");
+        return Result<int>::success(0);
     }
     std::error_code ec;
     fs::remove_all(root / ".kiln/out", ec);

@@ -536,3 +536,20 @@ choices logged, MUST deviations fixed: none remain):
   a trailing optional entry needs an annotated local; the engine
   workspace's define lists were hoisted into `const x: { string? }`
   (DeclSets unchanged). A smoke step.
+
+## Dead cooked outputs
+
+- A task's outputs outlive the task: Kiln never deleted the outputs of a task
+  that left the graph. For `cook_tinyasset` that left ghost assets - a
+  runtime that scans the cooked tree still found a moved, renamed or deleted
+  asset under its old identity. Every `kiln build` now ends with
+  `prune_dead_cooks` (`workspace/build.cpp`): each `cook_tinyasset` trace
+  whose primary input file is gone has its outputs under `.kiln/out` deleted
+  and the trace dropped; `kiln clean --dead` runs the same pass alone.
+- Scoped to `cook_tinyasset` on purpose: its primary input is always the
+  source file, while other rules use synthetic primaries (`.../archive`,
+  `interface`, `provider`, `pch:...`, `reflect:...`) that never exist on disk -
+  a generic "primary is gone" rule would delete live outputs. Dead object
+  files stay (nothing scans for them; `kiln clean` removes them).
+- Cost: one indexed-free scan of the trace table filtered by the rule suffix
+  plus one stat per cook trace - within noise of a no-op build.

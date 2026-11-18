@@ -481,6 +481,30 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
 
 } // namespace
 
+PruneStats prune_dead_cooks(const fs::path& root, TraceStore& traces) {
+    static const std::string kRule = "cook_tinyasset";
+    PruneStats stats;
+    const fs::path out_dir = (root / ".kiln/out").lexically_normal();
+    for (const Trace& trace : traces.traces_of_rule(kRule)) {
+        const std::string primary =
+            trace.task_display.substr(0, trace.task_display.size() - kRule.size() - 1);
+        std::error_code ec;
+        if (primary.empty() || fs::path(primary).is_absolute() || fs::exists(root / primary, ec) || ec)
+            continue;
+        for (const OutputRecord& output : trace.outputs) {
+            const fs::path path = (root / output.path).lexically_normal();
+            const fs::path rel = path.lexically_relative(out_dir);
+            if (rel.empty() || *rel.begin() == "..")
+                continue;
+            if (fs::remove(path, ec))
+                stats.files++;
+        }
+        traces.erase(trace.task_hash);
+        stats.traces++;
+    }
+    return stats;
+}
+
 Result<BuildOutcome> run_build(const BuildOptions& opts, console::Renderer& renderer) {
     fs::path root = opts.workspace_root;
     if (root.empty()) {
@@ -523,6 +547,9 @@ Result<BuildOutcome> run_build(const BuildOptions& opts, console::Renderer& rend
         if (!r.ok())
             return Result<BuildOutcome>::fail(r.error);
     }
+    TraceStore traces(ws->root / ".kiln/traces.sqlite");
+    if (traces.open().ok())
+        outcome.pruned_outputs = prune_dead_cooks(ws->root, traces).files;
     return Result<BuildOutcome>::success(std::move(outcome));
 }
 
