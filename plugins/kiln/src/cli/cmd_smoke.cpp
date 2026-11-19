@@ -421,6 +421,8 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
     run_script("verify-livecode.sh", {"1"}, "livecode");
     run_script("verify-livecode-reflection.sh", {}, "livecode_reflection");
     run_script("verify-livecode-additions.sh", {}, "livecode_additions");
+    run_script("verify-livecode-additions.sh", {"--editor"}, "livecode_additions_editor");
+    run_script("verify-shader-reload.sh", {}, "shader_reload");
 
     // The RHI self-test as a gate (the Retiring-slot / retire-queue /
     // pipeline-cache rules it checks were only verified when someone ran it
@@ -433,7 +435,7 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
                   "dev", findings, &checks);
         auto log = util::read_file(root / "saved" / "logs" / "latest.log");
         const std::string text = log.ok() ? *log : std::string();
-        for (const char* verdict : {"RHI SELFTEST: PASS", "RHI SELFTEST PIPELINE CACHE: PASS"}) {
+        for (const char* verdict : {"RHI SELFTEST: PASS", "RHI SELFTEST PIPELINE CACHE: PASS", "RHI SELFTEST SHADER RELOAD: PASS"}) {
             if (text.find(verdict) == std::string::npos) {
                 json f;
                 f["app"] = "sandbox";
