@@ -398,6 +398,55 @@ TEST_CASE("K5c.1 toolchain upgrade: a changed compiler reruns compiles + link") 
     CHECK(count_executed(r4.out) == 0);
 }
 
+TEST_CASE("K5c.2 the pinned linker (tools.ld): passed as --ld-path, a changed linker reruns only the link") {
+    TempDir tmp;
+    auto files = fixture();
+    // The system c++ is GCC, which has no --ld-path: the cxx wrapper records
+    // the flag it was handed and drops it.
+    fs::path cxx = tmp.path / "fake_cxx.sh";
+    fs::path seen = tmp.path / "ld_path_seen.txt";
+    {
+        std::ofstream f(cxx);
+        f << "#!/bin/sh\nfor a; do shift; case \"$a\" in --ld-path=*) echo \"$a\" >> "
+          << seen.generic_string() << " ;; *) set -- \"$@\" \"$a\" ;; esac; done\nexec c++ \"$@\"\n";
+    }
+    chmod(cxx.c_str(), 0755);
+    fs::path ld = tmp.path / "fake_ld";
+    auto write_ld = [&](const char* tag) {
+        std::ofstream f(ld);
+        f << "#!/bin/sh\n# " << tag << "\n";
+    };
+    write_ld("v1");
+    files["kiln.workspace.luau"] =
+        "workspace \"k5\" {\n  pools = { link = 1 },\n  strict_globs = true,\n"
+        "  tools = { cxx = \"" +
+        cxx.generic_string() + "\", ld = \"" + ld.generic_string() + "\" },\n}\n";
+    write_tree(tmp.path, files);
+
+    REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
+    REQUIRE(run_kiln(tmp.path, build_args()).code == 0); // settle dep discovery
+    auto r2 = run_kiln(tmp.path, build_args());
+    REQUIRE(r2.code == 0);
+    CHECK(count_executed(r2.out) == 0);
+    {
+        std::ifstream f(seen);
+        std::string line;
+        REQUIRE(std::getline(f, line));
+        CHECK(line == "--ld-path=" + ld.generic_string());
+    }
+
+    write_ld("v2");
+    auto r3 = run_kiln(tmp.path, build_args());
+    REQUIRE(r3.code == 0);
+    CHECK(executed_compiles(r3.out, "core") == 0);
+    CHECK(executed_compiles(r3.out, "game") == 0);
+    CHECK(r3.out.find("/link") != std::string::npos);
+
+    auto r4 = run_kiln(tmp.path, build_args());
+    REQUIRE(r4.code == 0);
+    CHECK(count_executed(r4.out) == 0);
+}
+
 TEST_CASE("K5.10 two targets with different features keep their own graph files (a no-op reruns none)") {
     // A plugin whose DeclSet depends on a target feature, linked by two
     // targets: each configuration variant owns its graph files, so building

@@ -15,7 +15,9 @@ namespace kiln {
 // Covers the driver binary (symlinks resolved), and with `probe_driver` its
 // `--version` banner plus the programs it runs (`-print-prog-name=` for
 // cc1plus/cc1/ld) — the GCC driver does not change on every compiler rebuild,
-// cc1plus does. Only file CONTENTS and the banner are hashed, never a path
+// cc1plus does — and the runtime files it resolves (`-print-file-name=`
+// crtbegin.o/libstdc++.so: a Clang driver uses the GCC installation's).
+// Only file CONTENTS and the banner are hashed, never a path
 // (spec §1). An unresolvable tool yields a fixed marker; the task then fails
 // at run time naming the tool, as before.
 std::string toolchain_fingerprint(const std::string& tool,

@@ -81,8 +81,9 @@ std::vector<std::string> build_compile_argv(const TaskDecl& decl,
                                             const fs::path& workspace_root) {
     std::vector<std::string> argv = common_compile_flags(decl, workspace_root);
     // PCH: -include the COPIED header (derived path, never hashed); the
-    // adjacent .gch is picked up there. -Werror=invalid-pch turns GCC's
-    // silent per-TU header recompilation into a hard error (M2).
+    // adjacent .gch is picked up there (GCC and Clang both look for it).
+    // -Werror=invalid-pch turns GCC's silent per-TU header recompilation
+    // into a hard error (M2); Clang already fails on a stale PCH.
     std::string pch = param(decl, "pch", "");
     if (!pch.empty()) {
         argv.push_back("-include");
@@ -118,6 +119,11 @@ std::vector<std::string> build_link_argv(const TaskDecl& decl,
         if (k.rfind("syslib.", 0) == 0)
             argv.push_back("-l" + v);
     argv.push_back("-pthread");
+    // The workspace's `tools.ld` (a Clang driver's --ld-path): the pinned
+    // linker, never whatever `ld` the driver would find.
+    std::string linker = param(decl, "linker", "");
+    if (!linker.empty())
+        argv.push_back("--ld-path=" + linker);
     // Explicit linker determinism (spec §7a.3): never rely on the default.
     argv.push_back("-Wl,--build-id=sha1");
     append_flags(decl, argv);

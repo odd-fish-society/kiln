@@ -1050,6 +1050,16 @@ Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
         std::map<std::string, std::string> params;
         params["tool"] = cxx;
         params["out"] = ".kiln/out/" + cfg + "/bin/" + target.name;
+        // `tools.ld` names the linker binary (a Clang driver's --ld-path) and
+        // keys the link on its content, like the driver.
+        auto ld = ctx.ws->config.tools.find("ld");
+        if (ld != ctx.ws->config.tools.end()) {
+            params["linker"] = ld->second;
+            auto [it, inserted] = ctx.toolchain_fingerprints.try_emplace(ld->second);
+            if (inserted)
+                it->second = toolchain_fingerprint(ld->second, ctx.ws->root, false);
+            params["linker_hash"] = it->second;
+        }
         set_indexed(params, "obj", objs);
         set_indexed(params, "archive", archives);
         set_indexed(params, "syslib", sorted_uniq(std::move(syslibs)));

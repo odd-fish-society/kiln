@@ -17,9 +17,10 @@ std::string param(const TaskDecl& decl, const std::string& key, std::string def 
 
 // compile_pch (KILN-2): builds a precompiled header WITHOUT writing to the
 // source tree — the pch header is COPIED into the task's output dir and the
-// `.gch` is compiled next to the copy, so GCC's adjacent-gch pickup happens
-// entirely inside `.kiln/out/`. Params must mirror the module's compile flags
-// exactly (std/opt/debug/includes/defines/flags) or GCC rejects the gch.
+// `.gch` is compiled next to the copy, so the compiler's adjacent-gch pickup
+// (GCC's, and Clang's `-include` lookup) happens entirely inside `.kiln/out/`.
+// Params must mirror the module's compile flags exactly
+// (std/opt/debug/includes/defines/flags) or the compiler rejects the gch.
 TaskResult run_compile_pch(TaskCtx& ctx) {
     TaskResult r;
     std::string pch_header = param(*ctx.decl, "pch_header");
@@ -69,8 +70,8 @@ TaskResult run_compile_pch(TaskCtx& ctx) {
 }
 
 void register_pch() {
-    // outputs_opaque: gch bytes are NOT reproducible across builds (GCC's PCH
-    // is a compiler-state dump). Dependents key on this
+    // outputs_opaque: gch bytes are NOT reproducible across builds (a PCH is
+    // a compiler-state dump). Dependents key on this
     // task's INPUT digest instead — see decisions.md (migration pass).
     register_rule("compile_pch", 1, run_compile_pch, /*always_run=*/false,
                   /*outputs_opaque=*/true);

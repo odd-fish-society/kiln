@@ -69,6 +69,25 @@ std::string toolchain_fingerprint(const std::string& tool, const fs::path& works
             h.item(ph);
         }
         h.end_list();
+
+        // The C++ runtime the driver links and compiles against: Clang has no
+        // cc1plus of its own to change and uses the GCC installation's
+        // libstdc++ and crt files, so a GCC upgrade under an unchanged Clang
+        // must rerun its compiles (and rebuild its PCHs) too.
+        h.begin_list("files");
+        for (const char* file : {"crtbegin.o", "libstdc++.so"}) {
+            std::string out;
+            if (util::run_process({driver.generic_string(), std::string("-print-file-name=") + file},
+                                  workspace_root, &out) != 0)
+                continue;
+            fs::path resolved(util::trim(out));
+            Hash256 fh;
+            if (!resolved.is_absolute() || !hash_file_canonical(resolved, &fh))
+                continue;
+            h.item(file);
+            h.item(fh);
+        }
+        h.end_list();
     }
     return h.finish().hex();
 }
