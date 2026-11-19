@@ -139,6 +139,9 @@ Executor::Result Executor::run_task(const TaskDecl& decl,
         depcollector->add(rel);
     };
     ctx.cancelled = [cancelled] { return cancelled; };
+    ctx.hash_file = [this](const std::string& rel) {
+        return hash_cache_.hash_of(workspace_root_, rel);
+    };
 
     uint64_t t0 = util::now_ms();
     TaskResult tr = fn(ctx);

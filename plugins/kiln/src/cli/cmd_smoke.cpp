@@ -348,6 +348,80 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
         }
     }
 
+    // Live code reload. The loader's suite (dev only, like the loader:
+    // built here, not in the app matrix), then the two end-to-end scripts -
+    // each runs its own daemon on the sandbox; every FAIL line is a
+    // finding.
+    if (built_ok["dev"]) {
+        checks++;
+        std::printf("kiln smoke: livecode_tests (dev)\n");
+        std::fflush(stdout);
+        BuildOptions opts;
+        opts.workspace_root = root;
+        opts.target_specs = {"livecode_tests"};
+        opts.config_override = "dev";
+        opts.jobs = jobs;
+        opts.progress = console::ProgressMode::Plain;
+        console::Renderer renderer(
+            console::Renderer::Options{opts.progress, console::detect_colors().enabled, false});
+        auto outcome = run_build(opts, renderer);
+        renderer.teardown_region();
+        renderer.finish();
+        std::string out;
+        int rc = (outcome.ok() && !outcome->failed)
+                     ? util::run_process({bin("livecode_tests", "dev").string()}, root, &out)
+                     : -1;
+        if (rc != 0) {
+            json f;
+            f["app"] = "livecode_tests";
+            f["config"] = "dev";
+            f["kind"] = rc == -1 ? "build" : "exit_code";
+            f["message"] = rc == -1 ? std::string("livecode_tests did not build")
+                                    : "livecode_tests exited with code " + std::to_string(rc) + " (output: " + out + ")";
+            findings.push_back(std::move(f));
+        }
+    }
+    auto run_script = [&](const char* script, const std::vector<std::string>& args, const char* kind) {
+        if (!built_ok["dev"])
+            return;
+        checks++;
+        std::printf("kiln smoke: %s (dev)\n", script);
+        std::fflush(stdout);
+        std::vector<std::string> argv = {"bash", (root / "scripts" / script).string()};
+        argv.insert(argv.end(), args.begin(), args.end());
+        std::string out;
+        int rc = util::run_process(argv, root, &out);
+        if (rc == 0)
+            return;
+        bool listed = false;
+        size_t pos = 0;
+        while (pos < out.size()) {
+            size_t eol = out.find('\n', pos);
+            std::string line = out.substr(pos, (eol == std::string::npos ? out.size() : eol) - pos);
+            pos = (eol == std::string::npos) ? out.size() : eol + 1;
+            if (line.find("FAIL") == std::string::npos)
+                continue;
+            json f;
+            f["app"] = "sandbox";
+            f["config"] = "dev";
+            f["kind"] = kind;
+            f["message"] = line;
+            findings.push_back(std::move(f));
+            listed = true;
+        }
+        if (!listed) {
+            json f;
+            f["app"] = "sandbox";
+            f["config"] = "dev";
+            f["kind"] = kind;
+            f["message"] = std::string(script) + " exited with code " + std::to_string(rc);
+            findings.push_back(std::move(f));
+        }
+    };
+    run_script("verify-livecode.sh", {"1"}, "livecode");
+    run_script("verify-livecode-reflection.sh", {}, "livecode_reflection");
+    run_script("verify-livecode-additions.sh", {}, "livecode_additions");
+
     // The RHI self-test as a gate (the Retiring-slot / retire-queue /
     // pipeline-cache rules it checks were only verified when someone ran it
     // by hand). Offscreen; the sandbox exits 1 on a FAIL verdict, and both

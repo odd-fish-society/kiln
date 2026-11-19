@@ -5,16 +5,20 @@
 #include <condition_variable>
 #include <cstring>
 #include <mutex>
+#include <optional>
+#include <set>
 #include <thread>
 
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/resource.h>
 #include <sys/inotify.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "core/live.h"
 #include "core/util.h"
 #include "nlohmann/json.hpp"
 #include "workspace/workspace.h"
@@ -150,14 +154,37 @@ struct Watcher {
     }
 };
 
-// Hot-reload socket (spec K8): newline-delimited JSON, fire-and-forget.
+// One connected engine process. A client that sent the live hello gets
+// per-process code patches; every client gets the build/asset broadcasts.
+struct Client {
+    int fd = -1;
+    std::string inbuf;
+    std::string outbuf; // what the socket did not take yet (a build sends ~900 asset events)
+    bool live = false;
+    int pid = 0;
+    std::string build_id;
+    std::string config;
+    std::string exe; // workspace-relative
+    // source -> the object hash this process runs: its build's record plus
+    // every patch it acknowledged as applied.
+    std::map<std::string, std::string> running;
+    uint64_t next_patch = 1;
+    std::map<uint64_t, std::vector<live::PatchTu>> sent; // not yet answered
+    std::string last_key; // the last patch's content, so an unchanged diff is not resent
+};
+
+// Hot-reload socket (spec K8): newline-delimited JSON. The build and asset
+// events are broadcast; the code events go to one process each.
 struct HotReload {
     int listen_fd = -1;
+    fs::path root;
     fs::path sock_path;
     std::mutex mu;
-    std::vector<int> clients;
+    std::vector<Client> clients;
 
-    Result<void> init(const fs::path& root) {
+    Result<void> init(const fs::path& root_) {
+        // Absolute: the code events name object paths the engine opens.
+        root = fs::absolute(root_).lexically_normal();
         sock_path = root / ".kiln/hotreload.sock";
         std::error_code ec;
         fs::create_directories(root / ".kiln", ec);
@@ -180,23 +207,221 @@ struct HotReload {
     }
 
     void poll_accept() {
+        if (listen_fd < 0)
+            return;
         for (;;) {
             int c = accept(listen_fd, nullptr, nullptr);
             if (c < 0)
                 break;
             std::lock_guard lock(mu);
-            clients.push_back(c);
+            Client cl;
+            cl.fd = c;
+            clients.push_back(std::move(cl));
         }
+    }
+
+    bool any_live() {
+        std::lock_guard lock(mu);
+        for (auto& c : clients)
+            if (c.live)
+                return true;
+        return false;
+    }
+
+    // Queues a line and sends what the socket takes; false = the client is
+    // gone (or 256 MB behind).
+    static bool flush(Client& c) {
+        while (!c.outbuf.empty()) {
+            ssize_t rc = send(c.fd, c.outbuf.data(), c.outbuf.size(), MSG_DONTWAIT | MSG_NOSIGNAL);
+            if (rc > 0) {
+                c.outbuf.erase(0, static_cast<size_t>(rc));
+                continue;
+            }
+            if (rc < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                break;
+            return false;
+        }
+        return c.outbuf.size() < (256u << 20);
+    }
+
+    static bool send_line(Client& c, const json& msg) {
+        c.outbuf += msg.dump() + "\n";
+        return flush(c);
+    }
+
+    void drop(std::vector<Client>::iterator it) {
+        if (it->live)
+            live::remove_pin(root, it->config, it->pid);
+        close(it->fd);
     }
 
     void broadcast(const json& msg) {
         poll_accept();
-        std::string line = msg.dump() + "\n";
         std::lock_guard lock(mu);
         for (auto it = clients.begin(); it != clients.end();) {
-            ssize_t rc = send(*it, line.data(), line.size(), MSG_DONTWAIT | MSG_NOSIGNAL);
-            if (rc <= 0) {
-                close(*it);
+            if (!send_line(*it, msg)) {
+                drop(it);
+                it = clients.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    // The objects a client may still ask for: what it runs and what it was sent.
+    void pin(Client& c) {
+        std::set<std::string> hashes;
+        for (auto& [src, h] : c.running)
+            hashes.insert(h);
+        for (auto& [n, tus] : c.sent)
+            for (auto& t : tus) {
+                hashes.insert(t.hash);
+                if (!t.base_hash.empty())
+                    hashes.insert(t.base_hash);
+            }
+        live::write_pin(root, c.config, c.pid, hashes);
+    }
+
+    // Sends `c` the TUs whose newest object differs from what it runs, unless
+    // that is exactly the patch it was sent last.
+    void offer_patch(Client& c, console::Renderer& renderer) {
+        auto current = live::load_record(live::newest_record_path(root, c.exe));
+        if (!current.ok())
+            return;
+        auto tus = live::diff(c.running, *current);
+        if (tus.empty()) {
+            c.last_key.clear();
+            return;
+        }
+        std::string key;
+        for (auto& t : tus)
+            key += t.source + "\t" + t.hash + "\t" + t.base_hash + "\n";
+        if (key == c.last_key)
+            return;
+        std::set<std::string> reflection;
+        json arr = json::array();
+        for (auto& t : tus) {
+            json e = {{"source", t.source},
+                      {"hash", t.hash},
+                      {"object", live::object_path(root, c.config, t.hash).generic_string()},
+                      {"base_hash", t.base_hash},
+                      {"base", t.base_hash.empty()
+                                   ? std::string()
+                                   : live::object_path(root, c.config, t.base_hash).generic_string()}};
+            arr.push_back(std::move(e));
+            std::string plugin = live::reflection_plugin(t.source);
+            if (!plugin.empty())
+                reflection.insert(plugin);
+        }
+        uint64_t n = c.next_patch++;
+        json msg = {{"event", "code"},
+                    {"patch", n},
+                    {"build_id", c.build_id},
+                    {"tus", arr},
+                    {"reflection", std::vector<std::string>(reflection.begin(), reflection.end())}};
+        c.sent[n] = std::move(tus);
+        c.last_key = key;
+        pin(c);
+        if (send_line(c, msg))
+            renderer.note("live: patch " + std::to_string(n) + " (" +
+                          std::to_string(c.sent[n].size()) + " TU) -> pid " +
+                          std::to_string(c.pid));
+    }
+
+    void offer_patches(console::Renderer& renderer) {
+        std::lock_guard lock(mu);
+        for (auto& c : clients)
+            if (c.live)
+                offer_patch(c, renderer);
+    }
+
+    void handle(Client& c, const json& msg, console::Renderer& renderer) {
+        if (msg.contains("hello") && msg["hello"].is_object()) {
+            const json& h = msg["hello"];
+            c.build_id = h.value("build_id", "");
+            c.pid = h.value("pid", 0);
+            auto rec = live::find_record(root, c.build_id);
+            if (!rec) {
+                send_line(c, {{"event", "code_unavailable"},
+                              {"build_id", c.build_id},
+                              {"reason", "no live record for this build-id (not a "
+                                         "reload-capable build, or pruned)"}});
+                return;
+            }
+            c.live = true;
+            c.config = rec->config;
+            c.exe = rec->exe;
+            c.running.clear();
+            for (auto& t : rec->tus)
+                c.running[t.source] = t.hash;
+            // A reconnecting process already runs some patched objects.
+            if (h.contains("running") && h["running"].is_object())
+                for (auto& [source, hash] : h["running"].items())
+                    if (hash.is_string())
+                        c.running[source] = hash.get<std::string>();
+            pin(c);
+            renderer.note("live: pid " + std::to_string(c.pid) + " (" + rec->target + ", " +
+                          c.build_id.substr(0, 12) + ") connected");
+            // A process started from an older build than the newest is
+            // behind already: it gets its patch at once.
+            offer_patch(c, renderer);
+            return;
+        }
+        if (!c.live)
+            return;
+        auto answer = [&](const char* key) -> std::optional<uint64_t> {
+            if (msg.contains(key) && msg[key].is_number_unsigned())
+                return msg[key].get<uint64_t>();
+            return std::nullopt;
+        };
+        if (auto n = answer("applied")) {
+            auto it = c.sent.find(*n);
+            if (it != c.sent.end()) {
+                for (auto& t : it->second)
+                    c.running[t.source] = t.hash;
+                c.sent.erase(it);
+            }
+            pin(c);
+        } else if (auto n = answer("refused")) {
+            c.sent.erase(*n); // last_key stays: the same diff is not resent
+            pin(c);
+        } else if (auto n = answer("superseded")) {
+            c.sent.erase(*n);
+            pin(c);
+        } else if (auto n = answer("stale")) {
+            // It was computed before an earlier patch's answer arrived.
+            c.sent.erase(*n);
+            c.last_key.clear();
+            offer_patch(c, renderer);
+        }
+    }
+
+    void poll_reads(console::Renderer& renderer) {
+        poll_accept();
+        std::lock_guard lock(mu);
+        for (auto it = clients.begin(); it != clients.end();) {
+            char buf[4096];
+            bool closed = false;
+            for (;;) {
+                ssize_t n = recv(it->fd, buf, sizeof(buf), MSG_DONTWAIT);
+                if (n > 0) {
+                    it->inbuf.append(buf, static_cast<size_t>(n));
+                    continue;
+                }
+                if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
+                    closed = true;
+                break;
+            }
+            size_t nl;
+            while ((nl = it->inbuf.find('\n')) != std::string::npos) {
+                std::string line = it->inbuf.substr(0, nl);
+                it->inbuf.erase(0, nl + 1);
+                auto msg = json::parse(line, nullptr, false);
+                if (msg.is_object())
+                    handle(*it, msg, renderer);
+            }
+            if (closed || !flush(*it)) {
+                drop(it);
                 it = clients.erase(it);
             } else {
                 ++it;
@@ -208,8 +433,8 @@ struct HotReload {
         if (listen_fd >= 0)
             close(listen_fd);
         unlink(sock_path.c_str());
-        for (int c : clients)
-            close(c);
+        for (auto it = clients.begin(); it != clients.end(); ++it)
+            drop(it);
     }
 };
 
@@ -243,11 +468,30 @@ Result<int> cmd_daemon(const BuildOptions& opts, console::Renderer& renderer) {
     if (!hr.ok())
         renderer.note(hr.error + " (hot reload disabled)");
 
+    // The daemon's builds yield to the running app (children inherit the
+    // niceness), and the records/objects no live process needs any more
+    // go.
+    setpriority(PRIO_PROCESS, 0, 10);
+    {
+        std::error_code ec;
+        for (auto& cfg : fs::directory_iterator(root / ".kiln/out", ec))
+            if (fs::is_directory(cfg.path() / "live", ec))
+                live::prune(root, cfg.path().filename().generic_string());
+    }
+    // While a live process is connected its frame time comes first: half the
+    // cores unless -j says otherwise.
+    auto build_options = [&] {
+        BuildOptions o = opts;
+        if (o.jobs == 0 && hot.any_live())
+            o.jobs = std::max(1u, std::thread::hardware_concurrency() / 2);
+        return o;
+    };
+
     // Initial build.
     uint64_t last_ms = 0;
     {
         uint64_t t0 = util::now_ms();
-        auto outcome = run_build(opts, renderer);
+        auto outcome = run_build(build_options(), renderer);
         last_ms = util::now_ms() - t0;
         if (!outcome.ok()) {
             renderer.teardown_region();
@@ -262,6 +506,8 @@ Result<int> cmd_daemon(const BuildOptions& opts, console::Renderer& renderer) {
                 last_ms);
             hot.broadcast({{"event", "build"},
                            {"status", outcome->failed ? "fail" : "ok"}});
+            if (!outcome->failed)
+                hot.offer_patches(renderer);
         }
     }
     std::string watch_line = "watching… last: " + console::fmt_duration_ms(last_ms) +
@@ -272,6 +518,7 @@ Result<int> cmd_daemon(const BuildOptions& opts, console::Renderer& renderer) {
     bool dirty = false;
 
     while (!g_stop.load()) {
+        hot.poll_reads(renderer);
         if (watcher.wait_event(150)) {
             dirty = true;
             debounce_start = util::now_ms();
@@ -279,7 +526,7 @@ Result<int> cmd_daemon(const BuildOptions& opts, console::Renderer& renderer) {
         if (dirty && util::now_ms() - debounce_start >= 150) {
             dirty = false;
             uint64_t t0 = util::now_ms();
-            auto outcome = run_build(opts, renderer);
+            auto outcome = run_build(build_options(), renderer);
             last_ms = util::now_ms() - t0;
             if (!outcome.ok()) {
                 renderer.teardown_region();
@@ -294,6 +541,10 @@ Result<int> cmd_daemon(const BuildOptions& opts, console::Renderer& renderer) {
                     last_ms);
                 hot.broadcast({{"event", "build"},
                                {"status", outcome->failed ? "fail" : "ok"}});
+                // Code events: a failed build sends none - its `build
+                // fail` event is the report.
+                if (!outcome->failed)
+                    hot.offer_patches(renderer);
                 // Asset events: read providers' asset manifests
                 // (.kiln/graph/<platform-config>/<variant>/*.provider.json).
                 try {

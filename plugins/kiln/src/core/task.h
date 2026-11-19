@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "core/hash.h"
+#include "core/result.h"
 
 namespace fs = std::filesystem;
 
@@ -54,6 +55,9 @@ struct TaskCtx {
     std::function<void(std::string_view)> log;         // buffered
     std::function<void(std::string_view path)> report_dep; // dynamic dep
     std::function<bool()> cancelled;
+    // The build's content hash of a workspace-relative file (the file hash
+    // cache: a task's own inputs are already hashed, so this rarely reads).
+    std::function<Result<Hash256>(const std::string& rel)> hash_file;
 };
 struct TaskResult {
     bool ok = false;

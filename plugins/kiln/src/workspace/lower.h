@@ -32,6 +32,9 @@ struct LowerCtx {
     // lowering: every cook task names its tool, and rehashing a 40+ MB
     // binary per task made lowering dominate a no-op build.
     std::map<std::string, std::string> tool_hashes; // absolute path → hex ("" = unreadable)
+    // A reload-capable config's compile outputs: object → source (the link
+    // record's TU list).
+    std::map<std::string, std::string> live_objects;
 
     struct PluginTasks {
         std::vector<TaskId> compiles;      // module compiles (all modules)

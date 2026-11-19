@@ -3,6 +3,7 @@
 #include <filesystem>
 
 #include "core/depfile.h"
+#include "core/live.h"
 #include "core/util.h"
 #include "rules/compile_args.h"
 
@@ -33,6 +34,14 @@ TaskResult run_compile(TaskCtx& ctx) {
     fs::create_directories((ctx.workspace_root / param(*ctx.decl, "depfile")).parent_path(),
                            ec);
     auto argv = build_compile_argv(*ctx.decl, ctx.workspace_root);
+    if (param(*ctx.decl, "live") == "1") {
+        std::string bad = live::forbidden_live_flag(argv);
+        if (!bad.empty()) {
+            r.error = "a reload-capable config cannot compile with " + bad + ": " +
+                      ctx.decl->id.primary_input;
+            return r;
+        }
+    }
     argv.push_back("-MD");
     argv.push_back("-MF");
     argv.push_back(param(*ctx.decl, "depfile"));
@@ -94,6 +103,14 @@ TaskResult run_link(TaskCtx& ctx) {
     std::error_code ec;
     fs::create_directories((ctx.workspace_root / param(*ctx.decl, "out")).parent_path(), ec);
     auto argv = build_link_argv(*ctx.decl, ctx.workspace_root);
+    const bool live = param(*ctx.decl, "live") == "1";
+    if (live) {
+        std::string bad = live::forbidden_live_flag(argv);
+        if (!bad.empty()) {
+            r.error = "a reload-capable config cannot link with " + bad;
+            return r;
+        }
+    }
     std::string out;
     int rc = util::run_process(argv, ctx.workspace_root, &out);
     if (!out.empty())
@@ -102,8 +119,30 @@ TaskResult run_link(TaskCtx& ctx) {
         r.error = "link failed (" + std::to_string(rc) + ")";
         return r;
     }
-    r.ok = true;
     r.outputs.push_back(param(*ctx.decl, "out"));
+    // The link record (each TU's source and object hash, under the
+    // executable's build-id) and the retained objects.
+    if (live) {
+        std::vector<std::pair<std::string, std::string>> tus;
+        for (auto& [k, v] : ctx.decl->params) {
+            if (k.rfind("live_tu.", 0) != 0)
+                continue;
+            auto tab = v.find('\t');
+            if (tab != std::string::npos)
+                tus.emplace_back(v.substr(0, tab), v.substr(tab + 1));
+        }
+        auto rec = live::write_link_record(ctx.workspace_root, param(*ctx.decl, "live_config"),
+                                           param(*ctx.decl, "live_target"),
+                                           param(*ctx.decl, "out"), std::move(tus),
+                                           ctx.hash_file);
+        if (!rec.ok()) {
+            r.error = rec.error;
+            return r;
+        }
+        live::prune(ctx.workspace_root, param(*ctx.decl, "live_config"));
+        r.outputs.push_back(param(*ctx.decl, "out") + ".live.json");
+    }
+    r.ok = true;
     return r;
 }
 
@@ -117,7 +156,8 @@ void register_cpp() {
     // the pre-existing archive (behavior change ⇒ version bump ⇒ all archives
     // rebuild deterministically).
     register_rule("archive", 2, run_archive);
-    register_rule("link", 1, run_link);
+    // v2: a reload-capable config's link also writes the live record.
+    register_rule("link", 2, run_link);
 }
 
 } // namespace builtin

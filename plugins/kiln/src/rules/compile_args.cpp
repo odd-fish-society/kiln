@@ -3,6 +3,7 @@
 #include <string>
 
 #include "core/depfile.h"
+#include "core/live.h"
 #include "core/util.h"
 
 namespace kiln::rules {
@@ -62,6 +63,11 @@ std::vector<std::string> common_compile_flags(const TaskDecl& decl,
         argv.push_back("-O3");
     if (param(decl, "debug", "0") == "1")
         argv.push_back("-g");
+    // A reload-capable config (live::is_live_config): room for the patch
+    // jump at every entry, and frame pointers.
+    if (param(decl, "live", "0") == "1")
+        for (auto& f : live::live_compile_flags())
+            argv.push_back(f);
     argv.push_back("-fPIC");
     argv.push_back("-pthread");
     argv.push_back("-Werror=date-time");

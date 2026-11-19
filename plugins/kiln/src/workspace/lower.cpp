@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <set>
 
+#include "core/live.h"
 #include "core/toolchain.h"
 #include "core/util.h"
 #include "nlohmann/json.hpp"
@@ -149,6 +150,12 @@ TaskDecl make_task(LowerCtx& ctx, const std::string& rule, const std::string& pr
         if (inserted)
             it->second = toolchain_fingerprint(tool, ctx.ws->root, rule != "archive");
         params["toolchain_hash"] = it->second;
+    }
+    if (live::is_live_config(ctx.ct) &&
+        (rule == "compile_c" || rule == "compile_cpp" || rule == "compile_pch")) {
+        params["live"] = "1";
+        if (rule != "compile_pch" && params.count("out"))
+            ctx.live_objects[params.at("out")] = primary;
     }
 
     TaskDecl d;
@@ -1064,8 +1071,21 @@ Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
         set_indexed(params, "archive", archives);
         set_indexed(params, "syslib", sorted_uniq(std::move(syslibs)));
         set_indexed(params, "flag", sorted_uniq(std::move(link_flags)));
+        std::vector<std::string> link_outputs = {params["out"]};
+        if (live::is_live_config(ctx.ct)) {
+            // Every TU this config compiled (a superset of what the archives
+            // contribute: the record matches TUs to the image by symbol).
+            params["live"] = "1";
+            params["live_config"] = cfg;
+            params["live_target"] = target.name;
+            std::vector<std::string> tus;
+            for (auto& [obj, src] : ctx.live_objects)
+                tus.push_back(src + "\t" + obj);
+            set_indexed(params, "live_tu", tus);
+            link_outputs.push_back(params["out"] + ".live.json");
+        }
         TaskDecl d = make_task(ctx, "link", ctx.target_files.at(target.name), params, {}, deps,
-                               {params["out"]}, "link");
+                               link_outputs, "link");
         KILN_TRY(void_result(sched.add(std::move(d))));
     }
 
@@ -1106,6 +1126,8 @@ Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
                     p["std"] = m.cpp_std.empty() ? ctx.ws->config.cpp_std : m.cpp_std;
                     p["opt"] = opt_for(ctx.ct);
                     p["debug"] = debug_for(ctx.ct);
+                    if (live::is_live_config(ctx.ct))
+                        p["live"] = "1";
                     p["tool"] = cxx;
                     p["out"] = obj;
                     if (!m.pch.empty()) {
@@ -1187,6 +1209,8 @@ Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
                                    : (c.cpp_std.empty() ? ctx.ws->config.cpp_std : c.cpp_std);
                     p["opt"] = opt_for(ctx.ct);
                     p["debug"] = debug_for(ctx.ct);
+                    if (live::is_live_config(ctx.ct))
+                        p["live"] = "1";
                     p["tool"] = is_c ? (ctx.ws->config.tools.count("cc")
                                             ? ctx.ws->config.tools.at("cc")
                                             : "cc")

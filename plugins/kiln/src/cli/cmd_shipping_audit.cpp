@@ -131,6 +131,10 @@ const std::vector<CheckDef>& checks() {
         // The language service (scriptlang, Luau's analysis) is the
         // editor's and the tools' - never a runtime's.
         {"A18", "no Luau analysis / language-service symbols", {"Luau::Frontend", "Luau::TypeChecker", "Luau::autocomplete", "scriptlang::"}, {}, {}, {"sandbox", "tinyserver"}, ""},
+        // The pinned LLVM (the live-code loader's JITLink, llvm::object and
+        // DWARF) is linked into the dev editor and sandbox only - its plugin is
+        // an empty library in every other config.
+        {"A19", "no LLVM / live-code loader symbols (the LiveCodeSubsystem shell stays: a subsystem is never removed per config)", {"llvm::", "livecode::loader::", "__jit_debug_register_code"}, {}, {}, {"sandbox", "tinyserver"}, ""},
     };
     return kChecks;
 }
