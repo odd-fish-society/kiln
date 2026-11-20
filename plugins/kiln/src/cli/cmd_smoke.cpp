@@ -423,6 +423,9 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
     run_script("verify-livecode-additions.sh", {}, "livecode_additions");
     run_script("verify-livecode-additions.sh", {"--editor"}, "livecode_additions_editor");
     run_script("verify-shader-reload.sh", {}, "shader_reload");
+    // The default scene offset by 2^20 m and 2^23 m must capture
+    // byte-identically to the origin in both apps.
+    run_script("verify-far-origin.sh", {}, "far_origin");
 
     // The RHI self-test as a gate (the Retiring-slot / retire-queue /
     // pipeline-cache rules it checks were only verified when someone ran it
