@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <fstream>
+#include <map>
+#include <set>
 #include <span>
+#include <string_view>
 
 #include "core/hash.h"
 #include "core/util.h"
@@ -240,6 +243,13 @@ TaskResult run_pack(TaskCtx& ctx) {
                               a.value("hash", "")});
     }
     std::sort(assets.begin(), assets.end());
+    // One id names one blob in a target's pack (a copied committed asset
+    // keeps its source's identity).
+    for (size_t i = 1; i < assets.size(); ++i)
+        if (assets[i].id.substr(0, 32) == assets[i - 1].id.substr(0, 32))
+            return fail("pack: asset id " + assets[i].id.substr(0, 32) + " is claimed by both " +
+                        assets[i - 1].path + " and " + assets[i].path +
+                        " (a copied asset keeps its source's identity: re-import or re-mint one)");
 
     std::string out_path = param(*ctx.decl, "out");
     std::string index_path = param(*ctx.decl, "out_index");
@@ -278,43 +288,68 @@ TaskResult run_pack(TaskCtx& ctx) {
     };
     // The cooked blob's TinyAssetType (the .ctasset header's u32 at offset
     // 12); 0 for anything that doesn't parse as one (defensive - the pack is
-    // not exclusively .ctasset content in principle).
-    auto blob_type = [](const std::string& blob) -> uint32_t {
-        if (blob.size() < 16 || blob.compare(0, 7, "TASSET1") != 0)
+    // not exclusively .ctasset content in principle). Only the header is read:
+    // the blobs stream into the pack below.
+    auto blob_type = [&](const std::string& path) -> uint32_t {
+        std::ifstream in(ctx.workspace_root / path, std::ios::binary);
+        char head[16];
+        if (!in.read(head, 16) || std::string_view(head, 7) != "TASSET1")
             return 0;
         uint32_t t = 0;
         for (int i = 0; i < 4; ++i)
-            t |= (uint32_t)(uint8_t)blob[12 + i] << (8 * i);
+            t |= (uint32_t)(uint8_t)head[12 + i] << (8 * i);
         return t;
     };
+
+    // A target's `pack_types` keeps only those types (unset keeps every
+    // one); the index records what was left out.
+    std::set<uint32_t> keep_types;
+    for (auto& t : prefix_params(*ctx.decl, "pack_type."))
+        keep_types.insert(static_cast<uint32_t>(std::stoul(t)));
+    struct Packed {
+        const Asset* asset;
+        uint32_t type;
+        uint64_t size;
+    };
+    std::vector<Packed> packed;
+    std::map<uint32_t, size_t> dropped;
+    for (auto& a : assets) {
+        std::error_code ec;
+        const uint64_t size = fs::file_size(ctx.workspace_root / a.path, ec);
+        if (ec)
+            return fail("pack: cannot read " + a.path + ": " + ec.message());
+        const uint32_t type = blob_type(a.path);
+        if (!keep_types.empty() && !keep_types.count(type)) {
+            dropped[type]++;
+            continue;
+        }
+        packed.push_back({&a, type, size});
+    }
 
     constexpr size_t kHeaderSize = 5 + 4 + 4 + 32; // magic + count + table_offset + build hash
     constexpr size_t kEntrySize = 16 + 4 + 8 + 8;  // id + type + offset + size
     const size_t table_offset = kHeaderSize;
-    const size_t data_start = table_offset + assets.size() * kEntrySize;
+    const size_t data_start = table_offset + packed.size() * kEntrySize;
 
     std::string table;
     uint64_t offset = data_start;
     json index = {{"format", 1}, {"assets", json::array()}};
-    std::vector<std::string> blobs;
-    for (auto& a : assets) {
-        auto content = util::read_file(ctx.workspace_root / a.path);
-        if (!content.ok())
-            return fail(content.error);
-
-        auto [high, low] = parse_asset_id(a.id.substr(0, 32));
+    for (auto& p : packed) {
+        auto [high, low] = parse_asset_id(p.asset->id.substr(0, 32));
         write_u64(table, high);
         write_u64(table, low);
-        write_u32(table, blob_type(*content));
+        write_u32(table, p.type);
         write_u64(table, offset);
-        write_u64(table, content->size());
-        offset += content->size();
-
-        index["assets"].push_back({{"id", a.id},
-                                   {"path", a.path},
-                                   {"offset", offset - content->size()},
-                                   {"size", content->size()}});
-        blobs.push_back(std::move(*content));
+        write_u64(table, p.size);
+        index["assets"].push_back(
+            {{"id", p.asset->id}, {"path", p.asset->path}, {"offset", offset}, {"size", p.size}});
+        offset += p.size;
+    }
+    if (!keep_types.empty()) {
+        json omitted = json::object();
+        for (auto& [type, count] : dropped)
+            omitted[std::to_string(type)] = count;
+        index["omitted_types"] = omitted;
     }
 
     // build_hash = BLAKE3 of the serialized table bytes + each blob's
@@ -322,27 +357,43 @@ TaskResult run_pack(TaskCtx& ctx) {
     // same-size content edit would leave it unchanged - the provider's
     // per-blob content hashes make ANY asset change change the hash).
     std::string hashInput = table;
-    for (auto& a : assets)
-        hashInput += a.hash; // 64-hex content hash from the provider manifest
+    for (auto& p : packed)
+        hashInput += p.asset->hash; // 64-hex content hash from the provider manifest
     const Hash256 build_hash = Hash256::of_bytes(
         std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(hashInput.data()), hashInput.size()));
 
-    std::string out;
-    out += "KPAK2";
-    write_u32(out, static_cast<uint32_t>(assets.size()));
-    write_u32(out, static_cast<uint32_t>(table_offset));
-    out.append(reinterpret_cast<const char*>(build_hash.bytes.data()), 32);
-    out += table;
-    for (auto& b : blobs)
-        out += b;
     // Atomic outputs (same discipline as the archive rule): write both files
     // to the task-private dir and rename over the outputs — a reader (the
     // running engine's hot-reload path) must never observe a half-written
-    // .kpak/.kpak.json pair mid-repack.
+    // .kpak/.kpak.json pair mid-repack. The blobs stream from their files
+    // (a client pack is most of a gigabyte).
     fs::path tmp_kpak = ctx.out_dir / "out.kpak";
     fs::path tmp_index = ctx.out_dir / "out.kpak.json";
-    if (!util::write_file(tmp_kpak, out).ok())
-        return fail("pack: cannot write " + tmp_kpak.generic_string());
+    {
+        std::ofstream out(tmp_kpak, std::ios::binary | std::ios::trunc);
+        std::string head = "KPAK2";
+        write_u32(head, static_cast<uint32_t>(packed.size()));
+        write_u32(head, static_cast<uint32_t>(table_offset));
+        head.append(reinterpret_cast<const char*>(build_hash.bytes.data()), 32);
+        out.write(head.data(), (std::streamsize)head.size());
+        out.write(table.data(), (std::streamsize)table.size());
+        std::vector<char> buffer(1 << 20);
+        for (auto& p : packed) {
+            std::ifstream in(ctx.workspace_root / p.asset->path, std::ios::binary);
+            uint64_t left = p.size;
+            while (left > 0 && in) {
+                const std::streamsize n = (std::streamsize)std::min<uint64_t>(left, buffer.size());
+                if (!in.read(buffer.data(), n))
+                    break;
+                out.write(buffer.data(), n);
+                left -= (uint64_t)n;
+            }
+            if (left != 0)
+                return fail("pack: " + p.asset->path + " changed size while packing");
+        }
+        if (!out.flush())
+            return fail("pack: cannot write " + tmp_kpak.generic_string());
+    }
     if (!util::write_file(tmp_index, index.dump(2)).ok())
         return fail("pack: cannot write " + tmp_index.generic_string());
     fs::path dst_kpak = ctx.workspace_root / out_path;

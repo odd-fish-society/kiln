@@ -42,9 +42,16 @@ position (`AssetIndex`, u32).
   "assets": [
     {"id": "<64-hex>", "path": ".kiln/out/<config>/assets/<plugin>/<rel>",
      "offset": 234, "size": 12345}
-  ]
+  ],
+  "omitted_types": {"3": 119}
 }
 ```
+
+A `pack_tinyasset` entry's `id` is the committed file's own 32-hex identity
+and its `path` the committed workspace-relative path. `omitted_types` (type
+number -> count) is present only when the target declares `pack_types`.
+One id names one blob: a duplicate fails the pack. The blobs stream from
+their files into the pack (the writer never holds them in memory).
 
 `id` is stable across moves that keep the plugin-relative source path; a
 rename changes the id (documented rename story: stable relpath, not content).

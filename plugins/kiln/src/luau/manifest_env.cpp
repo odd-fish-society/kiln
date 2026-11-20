@@ -696,7 +696,7 @@ int spec_target(lua_State* L) {
     luaL_checktype(L, 2, LUA_TTABLE);
     validate_fields(L, 2, st,
                     {"platforms", "default_config", "enable_plugins", "disable_plugins",
-                     "features", "link", "syslibs", "link_flags", "companions"},
+                     "features", "link", "syslibs", "link_flags", "companions", "pack_types"},
                     {});
     if (!st->decls.target)
         luaL_error(L, "internal: target spec without declaration");
@@ -713,6 +713,11 @@ int spec_target(lua_State* L) {
     t.syslibs = get_strvec_field(L, 2, "syslibs");
     t.link_flags = get_strvec_field(L, 2, "link_flags");
     t.companions = get_strvec_field(L, 2, "companions");
+    t.pack_types = get_strvec_field(L, 2, "pack_types");
+    for (auto& type : t.pack_types)
+        if (type.empty() || type.find_first_not_of("0123456789") != std::string::npos || type.size() > 9)
+            luaL_error(L, "target '%s': pack_types entry '%s' is not an asset type number", t.name.c_str(),
+                       type.c_str());
     return 0;
 }
 

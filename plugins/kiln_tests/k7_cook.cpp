@@ -479,3 +479,136 @@ TEST_CASE("K7.10 companions build with their target in its config; an unknown co
     CHECK(r2.code != 0);
     CHECK(r2.out.find("unknown companion 'nope'") != std::string::npos);
 }
+
+namespace {
+
+// A minimal TinyAsset container: the header (20 bytes before v4, 24 from
+// it), one identity chunk (type 100) and a payload chunk.
+std::string tinyasset_bytes(uint32_t version, uint32_t type, uint64_t high, uint64_t low,
+                            const std::string& payload) {
+    std::string s("TASSET1\0", 8);
+    auto u32 = [&](uint32_t v) {
+        for (int i = 0; i < 4; ++i)
+            s.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
+    };
+    auto u64 = [&](uint64_t v) {
+        for (int i = 0; i < 8; ++i)
+            s.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
+    };
+    const bool identity = version >= 2;
+    const uint32_t chunks = identity ? 2 : 1;
+    u32(version);
+    u32(type);
+    u32(chunks);
+    if (version >= 4)
+        u32(0x04030201u);
+    const uint64_t data = s.size() + chunks * 20;
+    u32(1);
+    u64(data);
+    u64(payload.size());
+    if (identity) {
+        u32(100);
+        u64(data + payload.size());
+        u64(16);
+    }
+    s += payload;
+    if (identity) {
+        u64(high);
+        u64(low);
+    }
+    return s;
+}
+
+std::map<std::string, std::string> packaged_fixture(const std::string& pack_types) {
+    return {
+        {"kiln.workspace.luau", "workspace \"k7\" {\n  strict_globs = true,\n}\n"},
+        {"build/game.target.luau",
+         "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
+         "  link = { \"app/main\" },\n" + pack_types + "}\n"},
+        {"plugins/content/plugin.build.luau",
+         "plugin \"content\" {}\n"
+         "cook \"imported\" {\n  rule = \"pack_tinyasset\",\n  inputs = glob(\"content/**/*.ctasset\"),\n}\n"
+         "cook \"icon\" {\n  rule = \"cook_copy\",\n  inputs = glob(\"content/*.png\"),\n}\n"},
+        {"plugins/content/content/models/rock.ctasset",
+         tinyasset_bytes(4, 1, 0x1122334455667788ull, 0x99aabbccddeeff00ull, "MESH")},
+        {"plugins/content/content/models/rock_mat.ctasset",
+         tinyasset_bytes(3, 2, 0x0102030405060708ull, 0x1112131415161718ull, "MATERIAL")},
+        {"plugins/content/content/icon.png", "PNGDATA"},
+        {"plugins/app/plugin.build.luau",
+         "plugin \"app\" { public_deps = { \"content\" } }\n"
+         "module \"main\" {\n  sources = glob(\"src/*.cpp\"),\n  deps = { public = { "
+         "\"content\" } },\n}\n"},
+        {"plugins/app/src/main.cpp", "int main() { return 0; }\n"},
+    };
+}
+
+} // namespace
+
+TEST_CASE("K7.11 pack_tinyasset packs committed containers verbatim under their identity") {
+    TempDir tmp;
+    write_tree(tmp.path, packaged_fixture(""));
+    auto r = run_kiln(tmp.path, build_args());
+    INFO(r.out);
+    REQUIRE(r.code == 0);
+
+    // No cook task and no copy: the committed path is the manifest's path.
+    CHECK_FALSE(file_exists(tmp.path / ".kiln/out/linux-dev/assets/content/content/models/rock.ctasset"));
+    auto index = read_file(tmp.path / ".kiln/out/linux-dev/pack/game.kpak.json");
+    CHECK(index.find("\"id\": \"112233445566778899aabbccddeeff00\"") != std::string::npos);
+    CHECK(index.find("\"id\": \"01020304050607081112131415161718\"") != std::string::npos); // a v3 header
+    CHECK(index.find("plugins/content/content/models/rock.ctasset") != std::string::npos);
+
+    // The blob is the committed file, byte for byte.
+    std::string kpak = read_file(tmp.path / ".kiln/out/linux-dev/pack/game.kpak");
+    std::string rock = read_file(tmp.path / "plugins/content/content/models/rock.ctasset");
+    CHECK(kpak.find(rock) != std::string::npos);
+
+    // An edit repacks through the provider's declared inputs.
+    write_tree(tmp.path, {{"plugins/content/content/models/rock.ctasset",
+                           tinyasset_bytes(4, 1, 0x1122334455667788ull, 0x99aabbccddeeff00ull, "MESH2")}});
+    auto r2 = run_kiln(tmp.path, build_args());
+    INFO(r2.out);
+    REQUIRE(r2.code == 0);
+    CHECK(r2.out.find("] ok build/game.target.luau/pack_target") != std::string::npos);
+    CHECK(read_file(tmp.path / ".kiln/out/linux-dev/pack/game.kpak").find("MESH2") != std::string::npos);
+}
+
+TEST_CASE("K7.12 pack_types keeps only the listed asset types and records the rest") {
+    TempDir tmp;
+    write_tree(tmp.path, packaged_fixture("  pack_types = { 1 },\n"));
+    auto r = run_kiln(tmp.path, build_args());
+    INFO(r.out);
+    REQUIRE(r.code == 0);
+    auto index = read_file(tmp.path / ".kiln/out/linux-dev/pack/game.kpak.json");
+    CHECK(index.find("112233445566778899aabbccddeeff00") != std::string::npos);
+    CHECK(index.find("01020304050607081112131415161718") == std::string::npos);
+    CHECK(index.find("icon.png") == std::string::npos);
+    CHECK(index.find("\"omitted_types\"") != std::string::npos);
+
+    write_tree(tmp.path, packaged_fixture("  pack_types = { \"mesh\" },\n"));
+    auto bad = run_kiln(tmp.path, build_args());
+    CHECK(bad.code != 0);
+    CHECK(bad.out.find("is not an asset type number") != std::string::npos);
+}
+
+TEST_CASE("K7.13 a container without identity and a duplicated id are build errors naming the files") {
+    TempDir tmp;
+    auto tree = packaged_fixture("");
+    tree["plugins/content/content/models/old.ctasset"] = tinyasset_bytes(1, 1, 0, 0, "OLD");
+    write_tree(tmp.path, tree);
+    auto r = run_kiln(tmp.path, build_args());
+    CHECK(r.code != 0);
+    CHECK(r.out.find("plugins/content/content/models/old.ctasset") != std::string::npos);
+    CHECK(r.out.find("no identity chunk") != std::string::npos);
+
+    TempDir tmp2;
+    auto dup = packaged_fixture("");
+    dup["plugins/content/content/models/rock_copy.ctasset"] =
+        tinyasset_bytes(4, 1, 0x1122334455667788ull, 0x99aabbccddeeff00ull, "MESH");
+    write_tree(tmp2.path, dup);
+    auto r2 = run_kiln(tmp2.path, build_args());
+    INFO(r2.out);
+    CHECK(r2.code != 0);
+    CHECK(r2.out.find("is claimed by both") != std::string::npos);
+    CHECK(r2.out.find("rock_copy.ctasset") != std::string::npos);
+}

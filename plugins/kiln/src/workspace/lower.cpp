@@ -1,6 +1,9 @@
 #include "workspace/lower.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
 #include <set>
 
 #include "core/live.h"
@@ -209,6 +212,57 @@ std::string tasset_document_id(const fs::path& file) {
     if (hex.size() != 32 || hex.find_first_not_of("0123456789abcdef") != std::string::npos)
         return {};
     return hex;
+}
+
+// A committed TinyAsset container's identity (chunk 100: AssetID {u64
+// High, u64 Low}, LE) as the 32-hex id, read from the header and chunk
+// table only. v2-v3 headers are 20 bytes, v4 adds the byte-order field; v1
+// has no identity. Empty + `why` when there is none.
+std::string tinyasset_identity(const fs::path& file, std::string& why) {
+    std::ifstream in(file, std::ios::binary);
+    char head[24] = {};
+    if (!in.read(head, 20) || std::memcmp(head, "TASSET1\0", 8) != 0) {
+        why = "not a TinyAsset container";
+        return {};
+    }
+    auto u32 = [](const char* p) {
+        uint32_t v = 0;
+        for (int i = 0; i < 4; ++i)
+            v |= (uint32_t)(uint8_t)p[i] << (8 * i);
+        return v;
+    };
+    auto u64 = [](const char* p) {
+        uint64_t v = 0;
+        for (int i = 0; i < 8; ++i)
+            v |= (uint64_t)(uint8_t)p[i] << (8 * i);
+        return v;
+    };
+    const uint32_t version = u32(head + 8), chunks = u32(head + 16);
+    if (version < 2) {
+        why = "container v" + std::to_string(version) + " has no identity chunk (re-import it)";
+        return {};
+    }
+    const std::streamoff table = version >= 4 ? 24 : 20;
+    in.seekg(table);
+    for (uint32_t i = 0; i < chunks && i < 4096; ++i) {
+        char entry[20];
+        if (!in.read(entry, 20))
+            break;
+        if (u32(entry) != 100 || u64(entry + 12) != 16)
+            continue;
+        char id[16];
+        in.seekg((std::streamoff)u64(entry + 4));
+        if (!in.read(id, 16))
+            break;
+        char hex[33];
+        std::snprintf(hex, sizeof(hex), "%016llx%016llx", (unsigned long long)u64(id),
+                      (unsigned long long)u64(id + 8));
+        if (std::string(hex) == std::string(32, '0'))
+            break;
+        return hex;
+    }
+    why = "no identity chunk";
+    return {};
 }
 
 std::string opt_for(const ConfigTuple& ct) {
@@ -836,6 +890,21 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             continue;
         if (c.rule == "check_scripts")
             continue; // whole-tree, lowered after every plugin (lower_script_checks)
+        if (c.rule == "pack_tinyasset") {
+            // Committed containers packed verbatim under their own identity -
+            // no task; the provider declares them as inputs, so an edit
+            // repacks.
+            for (auto& primary : c.inputs) {
+                std::string why;
+                std::string id = tinyasset_identity(ctx.ws->root / primary, why);
+                if (id.empty())
+                    return Result<void>::fail(c.file + ": pack_tinyasset '" + c.name + "': " + primary +
+                                              ": " + why);
+                pt.cook_assets.push_back(id + "=" + primary);
+                pt.packed_inputs.push_back(primary);
+            }
+            continue;
+        }
         for (auto& primary : c.inputs) {
         std::string ext;
         bool append_ext = false;
@@ -984,7 +1053,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         set_indexed(params, "asset", pt.cook_assets);
 
         TaskDecl d = make_task(ctx, "provider", pdir + "/provider", params,
-                               {}, deps, {pt.provider_path});
+                               pt.packed_inputs, deps, {pt.provider_path});
         auto id = d.id;
         KILN_TRY(void_result(sched.add(std::move(d))));
         pt.provider = id;
@@ -1103,6 +1172,7 @@ Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
             }
         }
         set_indexed(params, "provider", providers);
+        set_indexed(params, "pack_type", target.pack_types);
         TaskDecl d = make_task(ctx, "pack_target", ctx.target_files.at(target.name), params,
                                {}, deps, {params["out"], params["out_index"]});
         KILN_TRY(void_result(sched.add(std::move(d))));

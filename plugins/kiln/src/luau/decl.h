@@ -103,6 +103,9 @@ struct TargetDecl {
     // Targets whose binaries this one launches at run time (a crash watcher,
     // a reporter): built after it, in the same platform-config, whenever it is.
     std::vector<std::string> companions;
+    // The asset types (the cooked blob's u32 type field) this target's pack keeps,
+    // as decimal strings; empty = every type.
+    std::vector<std::string> pack_types;
     std::string file;
     int line = 0;
 };

@@ -3,6 +3,7 @@
 #include <cstdio>
 
 #include <algorithm>
+#include <fstream>
 #include <map>
 #include <regex>
 #include <string>
@@ -135,6 +136,9 @@ const std::vector<CheckDef>& checks() {
         // DWARF) is linked into the dev editor and sandbox only - its plugin is
         // an empty library in every other config.
         {"A19", "no LLVM / live-code loader symbols (the LiveCodeSubsystem shell stays: a subsystem is never removed per config)", {"llvm::", "livecode::loader::", "__jit_debug_register_code"}, {}, {}, {"sandbox", "tinyserver"}, ""},
+        // The server's pack is scoped to what a server reads (its target's
+        // pack_types), so a render type never ships in it by default.
+        {"A20", "tinyserver: the pack holds only its target's pack_types", {}, {}, {}, {"tinyserver"}, ""}, // pack check, handled specially
     };
     return kChecks;
 }
@@ -254,6 +258,54 @@ Result<int> cmd_shipping_audit(const fs::path& root, const std::string& config,
         }
     }
 
+    // The server pack's types (A20): the kpak table's u32 type of each
+    // entry (KPAK2: count at 5, table offset at 9, 36-byte entries with the
+    // type at +16) against the target's declared pack_types.
+    std::string serverPackProblem;
+    {
+        std::vector<std::string> declared;
+        auto wsRoot = root.empty() ? find_workspace_root(fs::current_path()) : Result<fs::path>::success(root);
+        if (auto ws = wsRoot.ok() ? load_workspace(*wsRoot) : Result<Workspace>::fail(wsRoot.error); ws.ok()) {
+            auto it = ws->targets.find("tinyserver");
+            if (it != ws->targets.end())
+                declared = it->second.pack_types;
+        }
+        std::ifstream pack(root / outDir / "pack/tinyserver.kpak", std::ios::binary);
+        char head[13] = {};
+        auto u32 = [](const char* b) {
+            uint32_t v = 0;
+            for (int i = 0; i < 4; ++i)
+                v |= (uint32_t)(uint8_t)b[i] << (8 * i);
+            return v;
+        };
+        if (std::find(auditTargets.begin(), auditTargets.end(), "tinyserver") == auditTargets.end())
+            ; // not audited this run (as the binary rows skip an unaudited target)
+        else if (declared.empty())
+            serverPackProblem = "the tinyserver target declares no pack_types";
+        else if (!pack.read(head, 13) || std::string_view(head, 5) != "KPAK2")
+            serverPackProblem = "tinyserver.kpak is missing or not KPAK2";
+        else {
+            const uint32_t count = u32(head + 5);
+            pack.seekg(u32(head + 9));
+            std::map<uint32_t, size_t> stray;
+            for (uint32_t i = 0; i < count; ++i) {
+                char entry[36];
+                if (!pack.read(entry, 36)) {
+                    serverPackProblem = "tinyserver.kpak's table is truncated";
+                    break;
+                }
+                const std::string type = std::to_string(u32(entry + 16));
+                if (std::find(declared.begin(), declared.end(), type) == declared.end())
+                    stray[u32(entry + 16)]++;
+            }
+            std::string types;
+            for (auto& [type, n] : stray)
+                types += (types.empty() ? "" : ", ") + std::to_string(n) + " of type " + std::to_string(type);
+            if (serverPackProblem.empty() && !types.empty())
+                serverPackProblem = "assets outside the declared pack_types: " + types;
+        }
+    }
+
     // The lint gating (A12) - the committed cook manifests gate lint_strict
     // on the shipping config.
     std::vector<std::string> lintManifests = {
@@ -335,6 +387,13 @@ Result<int> cmd_shipping_audit(const fs::path& root, const std::string& config,
             else {
                 r.verdict = "fail";
                 r.detail = found.front();
+            }
+        } else if (check.id == "A20") {
+            if (serverPackProblem.empty())
+                r.verdict = "pass";
+            else {
+                r.verdict = "fail";
+                r.detail = serverPackProblem;
             }
         } else if (check.id == "A12") {
             if (lintGated)

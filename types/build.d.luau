@@ -80,6 +80,9 @@ export type TargetSpec = {
     syslibs: { string? }?,
     link_flags: { string? }?,
     companions: { string? }?,
+    -- The asset type numbers (the cooked header's type field) the target's
+    -- pack keeps; unset packs every asset.
+    pack_types: { number? }?,
 }
 
 export type PluginRootSpec = {

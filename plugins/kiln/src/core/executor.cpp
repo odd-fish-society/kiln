@@ -153,6 +153,14 @@ Executor::Result Executor::run_task(const TaskDecl& decl,
         out.trace = old_trace;
         out.why = tr.error.empty() ? "task failed" : tr.error;
         out.why_ref = Result::WhyRef{.kind = "error", .msg = out.why};
+        // The reason reaches the console under the [fail] line (the task's
+        // log block), not only `.kiln/why.json`.
+        if (!tr.error.empty() && out.log.find(tr.error) == std::string::npos) {
+            if (!out.log.empty() && out.log.back() != '\n')
+                out.log += '\n';
+            out.log += tr.error;
+            out.log += '\n';
+        }
         return out;
     }
 

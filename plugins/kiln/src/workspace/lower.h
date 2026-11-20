@@ -52,6 +52,7 @@ struct LowerCtx {
         std::map<std::string, std::vector<std::string>> module_objs; // module → obj paths
         std::map<std::string, std::vector<TaskId>> module_compiles;  // module → compile ids
         std::vector<std::string> cook_assets; // "id=path"
+        std::vector<std::string> packed_inputs; // pack_tinyasset files (the provider's inputs)
         std::string interface_path;
         std::string provider_path;
         std::string declset_path;
