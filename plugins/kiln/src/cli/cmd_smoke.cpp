@@ -91,10 +91,10 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
     // Tinycrash is every app's crash watcher (without it a run's crash
     // leaves only a raw fallback), tinycrashreport its reporter window.
     // Tinyscriptcheck type-checks the content scripts. Tinysignal is
-    // net-test's P2P relay.
+    // net-test's P2P relay. Tinyphysbench gates cross-worker determinism.
     const std::vector<std::string> kApps = {"tinycook", "tinyreflect", "protoc", "tinycrash", "tinycrashreport",
                                             "tinyeditor", "sandbox", "tinyserver", "tinytest",
-                                            "tinyscriptcheck", "tinysignal"};
+                                            "tinyscriptcheck", "tinysignal", "tinyphysbench"};
     const std::vector<std::string> kConfigs = {"dev", "dev-asan"};
     // The sanitizer matrix: the concurrency bugs found so far are TSAN
     // territory and are now fixed - run tinytest under TSAN and UBSAN
@@ -194,6 +194,12 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
     run("tinyeditor", {"--frames", "600"}, "dev");
     run("sandbox", {"--frames", "600"}, "dev");
     run("tinyserver", {"--ticks", "1000"}, "dev");
+    // Both backends on the physics demo at 1 and 4 workers. Exit 1 is a
+    // backend whose hashes depend on the worker count.
+    run("tinyphysbench",
+        {"--scene", "plugins/game/game_content/content/scenes/physics_demo.tasset", "--ticks", "300",
+         "--workers", "1,4", "--out", (root / ".kiln" / "out" / "smoke" / "physbench").string()},
+        "dev");
 
     // M-D: the two-window standing gate - a torn-out panel window must boot,
     // run VUID-free, and shut down cleanly on every smoke pass (the
