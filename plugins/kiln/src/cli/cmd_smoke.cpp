@@ -535,6 +535,43 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
         }
     }
 
+    // The static site renders from the cooked databases with no dead link
+    // (one finding per dead link).
+    if (built_ok["dev"]) {
+        checks++;
+        std::printf("kiln smoke: tinydoc render (dev)\n");
+        std::fflush(stdout);
+        std::string out;
+        const fs::path tool = root / ".kiln" / "out" / cfgdirs["dev"] / "bin" / "tinydoc";
+        int rc = util::run_process({tool.string(), "render", "--config", cfgdirs["dev"]}, root, &out);
+        if (rc != 0) {
+            bool listed = false;
+            size_t pos = 0;
+            while (pos < out.size()) {
+                size_t eol = out.find('\n', pos);
+                std::string line = out.substr(pos, (eol == std::string::npos ? out.size() : eol) - pos);
+                pos = (eol == std::string::npos) ? out.size() : eol + 1;
+                if (line.empty() || line.rfind("tinydoc render:", 0) == 0)
+                    continue;
+                json f;
+                f["app"] = "tinydoc";
+                f["config"] = "dev";
+                f["kind"] = "docs-site";
+                f["message"] = line;
+                findings.push_back(std::move(f));
+                listed = true;
+            }
+            if (!listed) {
+                json f;
+                f["app"] = "tinydoc";
+                f["config"] = "dev";
+                f["kind"] = "docs-site";
+                f["message"] = "tinydoc render exited with code " + std::to_string(rc) + (out.empty() ? "" : " (output: " + out + ")");
+                findings.push_back(std::move(f));
+            }
+        }
+    }
+
     // The per-lighting-case test maps (the 90-degree camera orbit + each
     // committed golden set) - the regression net for the map-wall occlusion
     // / camera-relative class of lighting bug. The sandbox binary is

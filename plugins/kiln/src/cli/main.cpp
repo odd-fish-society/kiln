@@ -131,6 +131,18 @@ int main(int argc, char** argv) {
     smoke->add_option("-j", s2_jobs, "worker count");
     smoke->add_option("--workspace", s2_workspace, "workspace root (default: auto-detect)");
 
+    // ---- docs -----------------------------------------------------------------------
+    auto* docs = app.add_subcommand("docs", "Build the doc databases and render the static docs site (--serve [port] serves it)");
+    std::string docs_target = "tinyeditor", docs_tool = "tinydoc", docs_workspace;
+    int docs_port = 0, docs_jobs = 0;
+    bool docs_serve = false;
+    docs->add_option("target", docs_target, "the target whose cook_docs tasks cook the databases (default: tinyeditor)");
+    docs->add_option("--tool", docs_tool, "the docs tool's target name (default: tinydoc)");
+    docs->add_flag("--serve", docs_serve, "serve the site on 127.0.0.1 after rendering");
+    docs->add_option("--port", docs_port, "the serve port (default: 8040)");
+    docs->add_option("-j", docs_jobs, "worker count");
+    docs->add_option("--workspace", docs_workspace, "workspace root (default: auto-detect)");
+
     // ---- test-scenes ----------------------------------------------------------------
     auto* test_scenes = app.add_subcommand(
         "test-scenes",
@@ -283,6 +295,11 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
         } else if (*shipping_audit) {
             auto r = cmd_shipping_audit(fs::path(sa_workspace), sa_config, sa_targets);
+            rc = r.ok() ? *r : 2;
+            if (!r.ok())
+                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
+        } else if (*docs) {
+            auto r = cmd_docs(fs::path(docs_workspace), docs_target, docs_tool, docs_serve ? (docs_port > 0 ? docs_port : 8040) : 0, docs_jobs);
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());

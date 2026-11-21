@@ -30,6 +30,9 @@ Result<int> cmd_clean(const fs::path& root, bool traces, bool dead);
 Result<int> cmd_test(const fs::path& root, const std::string& target, int jobs,
                      const std::string& platform, const std::string& config);
 Result<int> cmd_smoke(const fs::path& root, int jobs);
+// `kiln docs`: build `target` (its cook_docs tasks), run `<tool> render`, and
+// with serve_port > 0 `<tool> serve` on localhost.
+Result<int> cmd_docs(const fs::path& root, const std::string& target, const std::string& tool, int serve_port, int jobs);
 Result<int> cmd_shipping_audit(const fs::path& root, const std::string& config,
                               const std::vector<std::string>& targets);
 // Type-check the manifests (types/build.d.luau, cluau's strict rules for
