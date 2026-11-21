@@ -46,6 +46,9 @@ struct LowerCtx {
         std::optional<TaskId> provider;
         std::optional<TaskId> reflect_gen; // the plugin's reflect_gen task, when it has one
         std::string reflect_dluau;         // its <plugin>.d.luau output
+        std::string reflect_docs;          // its <plugin>.docs.json output
+        std::optional<TaskId> docdb;       // its cook_docs task, when it has one
+        std::string docdb_path;            // that task's database asset
         std::map<std::string, std::vector<TaskId>> clib_compiles;
         std::map<std::string, TaskId> clib_archive;
         std::map<std::string, TaskId> clib_interface;

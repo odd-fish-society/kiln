@@ -139,6 +139,9 @@ const std::vector<CheckDef>& checks() {
         // The server's pack is scoped to what a server reads (its target's
         // pack_types), so a render type never ships in it by default.
         {"A20", "tinyserver: the pack holds only its target's pack_types", {}, {}, {}, {"tinyserver"}, ""}, // pack check, handled specially
+        // The doc databases are the editor's - no runtime pack carries a
+        // DocDatabase (TinyAssetType 13).
+        {"A21", "no DocDatabase asset in a runtime pack", {}, {}, {}, {"sandbox", "tinyserver"}, ""}, // pack check, handled specially
     };
     return kChecks;
 }
@@ -306,6 +309,39 @@ Result<int> cmd_shipping_audit(const fs::path& root, const std::string& config,
         }
     }
 
+    // A21: every audited runtime pack's table, by type (the A20 layout).
+    std::string docPackProblem;
+    for (const std::string target : {"sandbox", "tinyserver"}) {
+        if (std::find(auditTargets.begin(), auditTargets.end(), target) == auditTargets.end())
+            continue;
+        std::ifstream pack(root / outDir / ("pack/" + target + ".kpak"), std::ios::binary);
+        char head[13] = {};
+        auto u32 = [](const char* b) {
+            uint32_t v = 0;
+            for (int i = 0; i < 4; ++i)
+                v |= (uint32_t)(uint8_t)b[i] << (8 * i);
+            return v;
+        };
+        if (!pack.read(head, 13) || std::string_view(head, 5) != "KPAK2") {
+            docPackProblem = target + ".kpak is missing or not KPAK2";
+            break;
+        }
+        const uint32_t count = u32(head + 5);
+        pack.seekg(u32(head + 9));
+        size_t docs = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            char entry[36];
+            if (!pack.read(entry, 36))
+                break;
+            if (u32(entry + 16) == 13)
+                docs++;
+        }
+        if (docs) {
+            docPackProblem = target + ".kpak holds " + std::to_string(docs) + " DocDatabase asset(s)";
+            break;
+        }
+    }
+
     // The lint gating (A12) - the committed cook manifests gate lint_strict
     // on the shipping config.
     std::vector<std::string> lintManifests = {
@@ -394,6 +430,13 @@ Result<int> cmd_shipping_audit(const fs::path& root, const std::string& config,
             else {
                 r.verdict = "fail";
                 r.detail = serverPackProblem;
+            }
+        } else if (check.id == "A21") {
+            if (docPackProblem.empty())
+                r.verdict = "pass";
+            else {
+                r.verdict = "fail";
+                r.detail = docPackProblem;
             }
         } else if (check.id == "A12") {
             if (lintGated)

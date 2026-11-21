@@ -517,6 +517,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         reflect_gen_task = id;
         pt.reflect_gen = id;
         pt.reflect_dluau = gen_dluau;
+        pt.reflect_docs = gen_docs;
     }
 
     // ---- module compiles ----------------------------------------------------
@@ -899,6 +900,61 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             continue;
         if (c.rule == "check_scripts")
             continue; // whole-tree, lowered after every plugin (lower_script_checks)
+        if (c.rule == "cook_docs") {
+            // ONE task per declaration - the plugin's reflect fragment (when
+            // it has a reflect_gen task), its Markdown pages (the inputs) and
+            // the `deps` plugins' databases (their cook_docs tasks, lowered
+            // first: a dependency is a lower plugin) merge into
+            // <plugin>.docdb.ctasset, packed like any cooked asset.
+            std::string site = c.file + ":" + std::to_string(c.line);
+            std::map<std::string, std::string> params = c.params;
+            std::vector<TaskId> deps;
+            std::vector<std::string> inputs = c.inputs;
+            if (pt.reflect_gen) {
+                params["fragment"] = pt.reflect_docs;
+                deps.push_back(*pt.reflect_gen);
+            }
+            if (inputs.empty() && !pt.reflect_gen)
+                continue; // nothing to cook
+            std::vector<std::string> dep_dbs;
+            std::string names = params["deps"];
+            params.erase("deps");
+            for (size_t at = 0; at < names.size();) {
+                size_t comma = names.find(',', at);
+                std::string name = names.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+                at = comma == std::string::npos ? names.size() : comma + 1;
+                if (name.empty())
+                    continue;
+                auto pit = ctx.tasks.find(name);
+                if (pit == ctx.tasks.end() || !pit->second.docdb)
+                    return Result<void>::fail(site + ": cook_docs '" + c.name + "': plugin '" + name +
+                                              "' has no cook_docs task in this target (is it a dependency, "
+                                              "declaring one in this config?)");
+                deps.push_back(*pit->second.docdb);
+                dep_dbs.push_back(pit->second.docdb_path);
+            }
+            if (params.count("sections"))
+                inputs.push_back(params["sections"]);
+            std::string rel = "docs/" + plugin + ".docdb";
+            std::string out = ".kiln/out/" + cfg_name(ctx.ct) + "/assets/" + plugin + "/" + rel + ".ctasset";
+            std::string asset_id = Hash256::of_string(plugin + "/" + rel).hex().substr(0, 32);
+            params["plugin"] = plugin;
+            params["out"] = out;
+            params["asset_id"] = asset_id;
+            set_indexed(params, "dep", dep_dbs);
+            set_indexed(params, "input", c.inputs);
+            if (params.count("tool"))
+                set_tool_hash(ctx, params, params["tool"]);
+            TaskDecl d = make_task(ctx, c.rule, pdir + "/docs:" + c.name, params, sorted_uniq(inputs), deps, {out});
+            auto id = d.id;
+            KILN_TRY(void_result(sched.add(std::move(d))));
+            pt.cooks.push_back(id);
+            pt.cook_outputs.push_back(out);
+            pt.cook_assets.push_back(asset_id + "=" + out);
+            pt.docdb = id;
+            pt.docdb_path = out;
+            continue;
+        }
         if (c.rule == "pack_tinyasset") {
             // Committed containers packed verbatim under their own identity -
             // no task; the provider declares them as inputs, so an edit
