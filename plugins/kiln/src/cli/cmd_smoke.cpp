@@ -92,9 +92,10 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
     // leaves only a raw fallback), tinycrashreport its reporter window.
     // Tinyscriptcheck type-checks the content scripts. Tinysignal is
     // net-test's P2P relay. Tinyphysbench gates cross-worker determinism.
+    // Tinydoc checks the doc coverage.
     const std::vector<std::string> kApps = {"tinycook", "tinyreflect", "protoc", "tinycrash", "tinycrashreport",
                                             "tinyeditor", "sandbox", "tinyserver", "tinytest",
-                                            "tinyscriptcheck", "tinysignal", "tinyphysbench"};
+                                            "tinyscriptcheck", "tinysignal", "tinyphysbench", "tinydoc"};
     const std::vector<std::string> kConfigs = {"dev", "dev-asan"};
     // The sanitizer matrix: the concurrency bugs found so far are TSAN
     // territory and are now fixed - run tinytest under TSAN and UBSAN
@@ -491,6 +492,44 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
                 f["kind"] = "global_state";
                 f["message"] = "global-state-audit exited with code " + std::to_string(rc) +
                                (out.empty() ? "" : " (output: " + out + ")");
+                findings.push_back(std::move(f));
+            }
+        }
+    }
+
+    // The doc coverage ratchet and the leak check - a new user-facing id
+    // without a `///` brief, a stale baseline row, or a user doc carrying an
+    // engineering marker (one finding per line).
+    if (built_ok["dev"]) {
+        checks++;
+        std::printf("kiln smoke: tinydoc check (dev)\n");
+        std::fflush(stdout);
+        std::string out;
+        const fs::path tool = root / ".kiln" / "out" / cfgdirs["dev"] / "bin" / "tinydoc";
+        int rc = util::run_process({tool.string(), "check", "--config", cfgdirs["dev"]}, root, &out);
+        if (rc != 0) {
+            bool listed = false;
+            size_t pos = 0;
+            while (pos < out.size()) {
+                size_t eol = out.find('\n', pos);
+                std::string line = out.substr(pos, (eol == std::string::npos ? out.size() : eol) - pos);
+                pos = (eol == std::string::npos) ? out.size() : eol + 1;
+                if (line.empty() || line.rfind("tinydoc check:", 0) == 0)
+                    continue;
+                json f;
+                f["app"] = "tinydoc";
+                f["config"] = "dev";
+                f["kind"] = "docs";
+                f["message"] = line;
+                findings.push_back(std::move(f));
+                listed = true;
+            }
+            if (!listed) {
+                json f;
+                f["app"] = "tinydoc";
+                f["config"] = "dev";
+                f["kind"] = "docs";
+                f["message"] = "tinydoc check exited with code " + std::to_string(rc) + (out.empty() ? "" : " (output: " + out + ")");
                 findings.push_back(std::move(f));
             }
         }

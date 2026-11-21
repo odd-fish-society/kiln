@@ -30,7 +30,8 @@ std::vector<std::string> indexed_params(const TaskDecl& decl, const std::string&
 // types - compiled into every NON-headless module-with-sources) plus
 // <plugin>.script.gen.cpp (the Luau bindings of the Script-marked Sim
 // surface - compiled into every module-with-sources) plus
-// <plugin>.d.luau. The tool is a build output of the `tinycook` target
+// <plugin>.d.luau, plus <plugin>.docs.json (the plugin's reference
+// doc entries). The tool is a build output of the `tinycook` target
 // (built earlier in the same `kiln build a b c...` invocation);
 // tool_hash regenerates on tool changes.
 TaskResult run_reflect_gen(TaskCtx& ctx) {
@@ -41,6 +42,7 @@ TaskResult run_reflect_gen(TaskCtx& ctx) {
     std::string out_dluau = param(*ctx.decl, "out_dluau");
     std::string out_presentation = param(*ctx.decl, "out_presentation");
     std::string out_script = param(*ctx.decl, "out_script");
+    std::string out_docs = param(*ctx.decl, "out_docs");
     if (tool.empty() || plugin.empty() || out.empty() || out_dluau.empty()) {
         r.error = "reflect_gen: missing tool/plugin/out/out_dluau params";
         return r;
@@ -58,6 +60,10 @@ TaskResult run_reflect_gen(TaskCtx& ctx) {
     if (!out_script.empty()) {
         argv.push_back("--out-script");
         argv.push_back(out_script);
+    }
+    if (!out_docs.empty()) {
+        argv.push_back("--docs");
+        argv.push_back(out_docs);
     }
     for (auto& prefix : indexed_params(*ctx.decl, "strip_prefix"))
         argv.push_back("--strip-prefix=" + prefix);
@@ -106,12 +112,20 @@ TaskResult run_reflect_gen(TaskCtx& ctx) {
         }
         r.outputs.push_back(out_script);
     }
+    if (!out_docs.empty()) {
+        if (!fs::is_regular_file(ctx.workspace_root / out_docs)) {
+            r.error = "reflect_gen: tool did not produce " + out_docs;
+            return r;
+        }
+        r.outputs.push_back(out_docs);
+    }
     return r;
 }
 
 } // namespace
 
-void register_reflect() { register_rule("reflect_gen", 1, run_reflect_gen); }
+// v2: the docs.json output.
+void register_reflect() { register_rule("reflect_gen", 2, run_reflect_gen); }
 
 } // namespace builtin
 } // namespace kiln::rules

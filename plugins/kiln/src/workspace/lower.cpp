@@ -472,6 +472,12 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         for (auto& m : declset.modules)
             for (auto& d : m.public_includes)
                 scan_dirs.push_back(d);
+        // An app plugin (the editor) exposes no public headers: its private
+        // include roots are its declarations' home.
+        if (scan_dirs.empty())
+            for (auto& m : declset.modules)
+                for (auto& d : m.private_includes)
+                    scan_dirs.push_back(d);
         if (scan_dirs.empty())
             scan_dirs.push_back(util::join_rel(pdir, "include"));
         scan_dirs = sorted_uniq(std::move(scan_dirs));
@@ -482,6 +488,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         std::string gen_presentation_cpp = gen_dir + "/" + plugin + ".reflection.presentation.gen.cpp";
         std::string gen_script_cpp = gen_dir + "/" + plugin + ".script.gen.cpp";
         std::string gen_dluau = gen_dir + "/" + plugin + ".d.luau";
+        std::string gen_docs = gen_dir + "/" + plugin + ".docs.json";
         std::map<std::string, std::string> params;
         params["tool"] = declset.plugin->reflect_tool;
         params["plugin"] = plugin;
@@ -493,6 +500,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         // TU, compiled by every flavor (headless too).
         params["out_script"] = gen_script_cpp;
         params["out_dluau"] = gen_dluau;
+        // The plugin's reference doc fragment.
+        params["out_docs"] = gen_docs;
         set_indexed(params, "header", scan_headers);
         set_indexed(params, "strip_prefix", scan_dirs);
 
@@ -502,7 +511,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         set_tool_hash(ctx, params, params["tool"]);
 
         TaskDecl d = make_task(ctx, "reflect_gen", pdir + "/reflect:" + plugin, params,
-                               scan_headers, {}, {gen_cpp, gen_presentation_cpp, gen_script_cpp, gen_dluau});
+                               scan_headers, {}, {gen_cpp, gen_presentation_cpp, gen_script_cpp, gen_dluau, gen_docs});
         auto id = d.id;
         KILN_TRY(void_result(sched.add(std::move(d))));
         reflect_gen_task = id;
