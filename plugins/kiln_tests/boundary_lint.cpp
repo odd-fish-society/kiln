@@ -31,7 +31,7 @@ const std::vector<std::string>& deny_strings() {
 }
 
 std::vector<fs::path> scan_roots() {
-    return {repo_root() / "plugins", repo_root() / "skills"};
+    return {repo_root() / "plugins"};
 }
 
 bool scannable(const fs::path& p) {
@@ -91,7 +91,7 @@ std::optional<std::string> check_file(const fs::path& file) {
 
 } // namespace
 
-TEST_CASE("boundary lint: no engine references under plugins/skills") {
+TEST_CASE("boundary lint: no engine references under plugins") {
     size_t scanned = 0;
     for (auto& root : scan_roots()) {
         std::error_code ec;

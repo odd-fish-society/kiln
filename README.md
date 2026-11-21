@@ -286,4 +286,6 @@ delete: worst case is a clean rebuild), `compile_commands/` for IDEs,
 
 ## Docs
 
-- `spec-outline.md`: normative contracts (the "what"; wins conflicts).
+- `docs/spec-outline.md`: the normative contracts (the "what"; wins conflicts).
+- `docs/decisions.md`: the design decisions and their reasons (the "why").
+- `docs/kpak-format.md`: the KPAK2 pack format.

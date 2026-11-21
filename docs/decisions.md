@@ -1,11 +1,14 @@
 # Kiln: decisions & deviations
 
-Normative spec: `docs/spec-outline.md`. Where the spec says SHOULD
-or leaves a choice open, the call is recorded here. Deviations from MUSTs are
-bugs: if one appears, fix it, don't log it here.
+The normative spec is `docs/spec-outline.md` ("the spec"). Where
+the spec says SHOULD or leaves a choice open, the call is recorded here, with
+its reasons, the alternatives rejected and the consequences. Deviations from MUSTs are bugs:
+if one appears, fix it, don't log it here.
 
-Entries marked ": canonized, spec §X" record choices the (amended) spec now
-owns; they remain here only as a trail of what changed.
+Entries marked ": canonized, spec §n" record choices the (amended) spec now
+owns; they remain here only as a record of what changed and why. The first
+sections follow the order Kiln was built in, one per area; the later ones each
+cover one piece of work.
 
 ## Tooling
 
@@ -17,8 +20,8 @@ owns; they remain here only as a trail of what changed.
   target).
 - SQLite amalgamation `3.46.1`, CLI11 `2.4.2`, doctest `2.4.11`,
   nlohmann/json `3.11.3` (edges only: never in hash paths, per spec §2.3).
-- In-tree repo layout during development: canonized, spec §0 (interim
-  exception for a `kiln/` subfolder laid out as the standalone repo).
+- Kiln lives in-tree as a `kiln/` subfolder laid out as a standalone
+  repository would be: canonized, spec §0.
 - `src/workspace/`: canonized, spec §0.
 
 ## Core loop
@@ -37,7 +40,7 @@ owns; they remain here only as a trail of what changed.
 ## Console
 
 - Fancy repaint rewrites the whole visible region (scroll ring + 2 pinned
-  rows), wrapped in DEC synchronized output (2026). Wake is on event arrival
+  rows), wrapped in DEC synchronized output (private mode 2026). Wake is on event arrival
   (condvar); repaints coalesce to a ≥33 ms floor (spec §3a as amended); the
   periodic poll (50 ms) serves only SIGWINCH + plain-mode heartbeats.
 - `--progress=none` still prints the final summary and failures (never the
@@ -47,7 +50,7 @@ owns; they remain here only as a trail of what changed.
   `cached` lines, each with the task's original duration, and read as a full
   rebuild. The counters and the summary carry the cached count.
 
-## No-op build cost (2026-11-16)
+## No-op build cost
 
 - Lowering hashes each tool binary once (`LowerCtx::tool_hashes`); it used
   to hash the tool for every task that names it, and a 42 MB cook tool
@@ -63,8 +66,8 @@ owns; they remain here only as a trail of what changed.
   depends on the target's features (an engine built in editor / game /
   tool / server flavors) shared one path across targets, and a
   multi-target build rewrote it in each graph (~2-3 s of the 7 s no-op
-  above). This retires the "shared config NAME" quirk logged under the
-  migration notes below. Moving the files changed every dependent task's
+  above). This retires the "shared config NAME" quirk logged under
+  "Engine workspace migration: flavors and archives" below. Moving the files changed every dependent task's
   digest (an output summary carries the output's path), so the first build
   of each config after the change recompiled everything once. The daemon
   reads providers from the variant folders only (a stale pre-change file
@@ -142,7 +145,7 @@ owns; they remain here only as a trail of what changed.
   hashes match (`--print-config-hash`) before the `cmp`.
 - `bootstrap.sh` gains a hidden `kiln build --print-config-hash` flag (no
   build, just resolution + hash) to serve the spec §7a.3 assertion. It is
-  undocumented: a bootstrap internal.
+  left out of the user documentation on purpose: it is a bootstrap internal.
 
 ## Plugin toggling
 
@@ -153,9 +156,9 @@ owns; they remain here only as a trail of what changed.
 
 ## Cooking
 
-- kpak format v1 stores blobs UNCOMPRESSED. The spec mentions zstd framing;
-  the format is versioned (`KPAK1` magic + format field in the index) so
-  compression can be added without breaking readers. See
+- The kpak format stores blobs UNCOMPRESSED. The spec mentions zstd framing;
+  the format is versioned by its magic (`KPAK1`, now `KPAK2`), so compression
+  can be added in a later version without breaking readers. See
   `docs/kpak-format.md`.
 - Tool discovery: workspace `tools` table, else PATH. `tool_hash` (BLAKE3 of
   the resolved binary) is a param, so tool upgrades recook exactly that
@@ -187,8 +190,8 @@ owns; they remain here only as a trail of what changed.
 
 ## Fixes pass
 
-New deviations discovered while landing F1: F8, same rules as above (SHOULD
-choices logged, MUST deviations fixed: none remain):
+Choices made while fixing the first round of correctness defects, same rules
+as above (SHOULD choices logged, MUST deviations fixed: none remain):
 
 - The implementation record keeps the filename `.provider.json` and the rule
   name `provider` (spec §7.2 names the records, not the files). Renaming would
@@ -206,7 +209,7 @@ choices logged, MUST deviations fixed: none remain):
   build uses, so the bootstrap assertion can never drift from the real
   ConfigTuple.
 
-## Migration pass
+## Engine workspace migration
 
 - gch outputs are NOT byte-reproducible (two GCC builds from
   identical inputs/flags/paths differ by millions of bytes: PCH is a
@@ -221,7 +224,7 @@ choices logged, MUST deviations fixed: none remain):
   dynamic dep of itself.
 - `check_pkg_config` uses `always_run=true` (check tasks bypass the trace
   cache-hit path): a cached check is a check that never fires.
-- Indexed `flag.N` params (KILN-1) are the canonical multi-token flag form;
+- Indexed `flag.N` params are the canonical multi-token flag form;
   the legacy single `flags` param remains for back-compat only.
 
 ## Cooking pass
@@ -350,7 +353,7 @@ choices logged, MUST deviations fixed: none remain):
   reader served the STALE blob, so the hot-reload loop showed no visible
   change; spec §7.2 amended, K7.2 now asserts the repack.
 
-## Migration pass additions (engine workspace)
+## Engine workspace migration: flavors and archives
 
 - The engine/engine-editor flavor (same sources, TE_EDITOR on/off) is modeled
   as a ConfigTuple FEATURE (`editor = "1"` in the tinyeditor target): task
@@ -372,8 +375,8 @@ choices logged, MUST deviations fixed: none remain):
   shared per-name serialized artifacts (declset/graph/why JSONs) with the
   last-built target's. Building is correct (each target reads what its own
   wave wrote); only the per-name artifacts are last-writer-wins. Logged, not
-  yet fixed (would need name() to include a feature signature). *Fixed
-  2026-11-16 for the per-plugin graph files (see "No-op build cost").*
+  fixed at the time (it needs the path to include a feature signature).
+  *Since fixed for the per-plugin graph files (see "No-op build cost").*
 - `c_library`/`module` gained a `flags` field (indexed compile-flag tokens);
   `sources` tables accept nested tables (conditionals producing sublists).
 - Sandbox's link line now receives NFD's GTK3 `public_syslibs` (dropped by
@@ -390,10 +393,10 @@ choices logged, MUST deviations fixed: none remain):
   precedent, spec §2.3): layer data never enters digests; root paths act only
   through discovered manifest paths, which task identity already covers.
   Making layers behavioral would cross a line drawn on purpose: see spec §0.
-- `strict_globs = true` remains the engine workspace default (the M2
-  recommendation was already in force): missed `../` escapes after a root move
-  fail loudly instead of silently cooking the wrong tree.
-- Engine layer assignment (M1): `third_party/plugins` (third_party),
+- `strict_globs = true` remains the engine workspace default: missed `../`
+  escapes after a root move fail loudly instead of silently cooking the wrong
+  tree.
+- Engine layer assignment: `third_party/plugins` (third_party),
   `engine/plugins` (engine: assetio + engine), `editor/plugins` (editor:
   editor + tools), `game/plugins` (game: game + game_content). `tools`
   (tinycook) sits in the editor layer: it must never depend on game code:
@@ -401,19 +404,19 @@ choices logged, MUST deviations fixed: none remain):
   (assetio) stays legal. A dedicated `tools` layer between engine and editor
   remains the alternative if editor code should ever be off-limits to it.
 - `plugin_roots` makes a future second-game split (`game/` →
-  `games/<name>/` as additional roots) a config edit, retiring that part of
-  the old multi-game layout contingency planning.
+  `games/<name>/` as additional roots) a workspace config edit; no Kiln
+  change is needed for it.
 - Migration cost: moving manifests changed `primary_input` identities ⇒ cold
-  traces once (M3). Early cutoff limited the rebuild to identity-changed
+  traces once. Early cutoff limited the rebuild to identity-changed
   tasks: unchanged compiles stayed cached, and the post-migration
   `.kpak.json` indexes were byte-identical (ids and paths), proving asset
   IDs survived the move. The pre-existing shared-config-NAME artifact quirk
   (last-writer-wins on `.kiln/graph/<name>/` across multi-target builds)
-  is unchanged by this pass.
+  was unchanged by this move.
 
-## Source & content move-in pass (Part 3: M8: M10)
+## Sources and content move into their plugins
 
-- Content trees moved INTO their plugins (M8): `Sandbox/content` →
+- Content trees moved INTO their plugins: `Sandbox/content` →
   `game/plugins/game_content/content`, `TinyEngine/content` →
   `engine/plugins/engine/content`. Audit result per target: every `.kpak.json`
   entry moved exactly as predicted (sandbox 40/40 moved, tinyeditor 40 moved +
@@ -423,7 +426,7 @@ choices logged, MUST deviations fixed: none remain):
   which are file-embedded and path-independent); all runtime references are
   path-authored (Project::FindEngineAsset/FindProjectAsset probes, updated
   to the new `/engine/content/` and `/game_content/content/` cooked paths).
-- Module sources moved into their plugins (M9) with the include-shape trick:
+- Module sources moved into their plugins with the include-shape trick:
   consumers' include lines are unchanged. `assetio` split cleanly
   (`src/` + `include/assetio/`); the ENGINE tree stays INTERLEAVED under
   `engine/plugins/engine/src/` (headers next to TUs, include root = `src/`)
@@ -439,8 +442,8 @@ choices logged, MUST deviations fixed: none remain):
   wrapper, NOT vendored code) moved into the engine plugin's `src/`
   (precedent: tools/src/stb_image_shim.cpp).
 - The vendored tree moved INTO the third_party plugin
-  (`third_party/plugins/third_party/vendor/`, M9's "vendored code moves per
-  the standing c_library convention (third_party root)" clause: 11 git
+  (`third_party/plugins/third_party/vendor/`, following the c_library
+  convention that vendored code lives under the third_party root: 11 git
   submodules + 7 plain vendored dirs, .gitmodules repathed): the top-level
   `TinyEngine/`, `TinyEditor/`, and `Sandbox/` trees are gone entirely and
   the workspace matches the spec §0 diagram. The imguizmo c_library host
@@ -449,7 +452,7 @@ choices logged, MUST deviations fixed: none remain):
   ROOT as include dir) were normalized to `imgui.h`: the one place the
   include-shape trick could not apply, because the include root was the
   vendor tree itself.
-- Surviving `../` globs (M10 audit): exactly ONE: the editor's
+- Surviving `../` globs (audited after the move): exactly ONE: the editor's
   workspace-shared `build/gtk3.flags.txt` input, with a `JUSTIFICATION
   (spec §6.4)` comment. Every other manifest path in the workspace is
   plugin-local.
@@ -462,11 +465,11 @@ choices logged, MUST deviations fixed: none remain):
   test K3.4. This is the verifying-traces model working as specified
   (spec §2.2 and spec §5); the previous behavior made any source rename a build failure.
 
-## Per-library vendored split + Kiln dogfood (post-review expansion)
+## Per-library vendored plugins; Kiln as its own workspace
 
-- The amended M1 vendored row and spec §7a.1 residency rule ("each vendored
-  library lives in its own plugin directory with the c_library decl beside
-  its sources") replaced the single-host + shared-vendor-tree shape: the
+- The spec §7a.1 residency rule as amended ("each vendored library lives in
+  its own plugin directory with the c_library decl beside its sources")
+  replaced the single-host + shared-vendor-tree shape: the
   engine's vendored deps are now EIGHTEEN plugins under
   `third_party/plugins/<lib>/` (sources/submodules inside each plugin dir;
   `.gitmodules` repathed, submodule gitdirs moved). Engine/assetio/editor/
@@ -476,14 +479,14 @@ choices logged, MUST deviations fixed: none remain):
   justified at its site: imguizmo's sibling `../imgui/imgui` include
   (c_library is depless: spec §7a.1) and the editor's workspace-shared
   `build/gtk3.flags.txt` input.
-- R6 (Kiln eats the dogfood, spec §7a as amended): kiln/src →
+- Kiln builds itself as a workspace of plugins (spec §7a as amended): kiln/src →
   plugins/kiln/src, kiln/tests → plugins/kiln_tests (incl. fixtures),
   third_party/{luau,sqlite,blake3,cli11,doctest,json} → one plugin each
   (luau's checkout moves into plugins/luau/luau: the extraction story
   registers it as a submodule there; no .gitmodules entry exists in-tree
   yet). Kiln's manifests now contain ZERO `../` escapes. Stage0 CMakeLists
-  repathed; boundary lint scan roots became kiln/plugins + kiln/skills and
-  the include-escape check now resolves `../` includes lexically against the
+  repathed; the boundary lint now scans `kiln/plugins` instead of `kiln/src`,
+  and the include-escape check now resolves `../` includes lexically against the
   repo root (vendored internals like isocline's `../include/isocline.h` are
   legal; anything resolving outside kiln/ is still a violation).
 - Bootstrap chain renamed stage0/stage1/stage2/fixed-point →
@@ -492,8 +495,8 @@ choices logged, MUST deviations fixed: none remain):
   same-builder determinism: a different property); bare gerund names
   ("building kiln…": the names label artifacts, not processes; gerunds
   moved to log lines); seed/selfhost/witness (canonical
-  bootstrap-literature vocabulary, but purpose-nouns are more
-  self-describing to readers new to the code). "Fixed point" retained twice as a
+  bootstrap-literature vocabulary, but purpose-nouns explain themselves to a
+  reader new to the repository, without the literature at hand). "Fixed point" retained twice as a
   parenthetical anchor to the literature. Deliverable clarified as a side
   effect: self-build goes on PATH; proof-build is a disposable check
   artifact.
@@ -501,8 +504,8 @@ choices logged, MUST deviations fixed: none remain):
   engine-side escape-hatch cache dir `kiln/build/stage0` (created by
   `scripts/ensure_kiln.sh`) became `kiln/build/external-build`, with the
   matching `kiln/.gitignore` entry, script comments, and README
-  mentions updated in lockstep: otherwise the acceptance grep still hits
-  the old name and the dir would fall out of `.gitignore`. Historical docs
+  mentions updated in lockstep: otherwise the old name would linger in the
+  tree and the dir would fall out of `.gitignore`. Historical docs
   (prior decisions entries) stay as written.
 
 ## cluau manifests
@@ -535,7 +538,7 @@ choices logged, MUST deviations fixed: none remain):
   solver types a list literal from its first entry, so a string list with
   a trailing optional entry needs an annotated local; the engine
   workspace's define lists were hoisted into `const x: { string? }`
-  (DeclSets unchanged). A smoke step.
+  (DeclSets unchanged). `kiln smoke` runs it.
 
 ## Dead cooked outputs
 
@@ -551,5 +554,5 @@ choices logged, MUST deviations fixed: none remain):
   `interface`, `provider`, `pch:...`, `reflect:...`) that never exist on disk -
   a generic "primary is gone" rule would delete live outputs. Dead object
   files stay (nothing scans for them; `kiln clean` removes them).
-- Cost: one indexed-free scan of the trace table filtered by the rule suffix
+- Cost: one unindexed scan of the trace table filtered by the rule suffix
   plus one stat per cook trace - within noise of a no-op build.

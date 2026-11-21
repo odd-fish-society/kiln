@@ -1,16 +1,29 @@
 # Kiln: Implementation Specification (v1)
 
-This document is Kiln's specification: its contracts, formats, hashing rules and
-invariants. Where the spec says MUST/MUST NOT, deviation is a
-bug. Where it says SHOULD, use judgment but document deviations in `docs/decisions.md`.
+This document is Kiln's reference specification: the contracts, formats, hashing rules
+and invariants the implementation follows. Where the spec says MUST/MUST NOT, deviation is
+a bug. Where it says SHOULD, use judgment but document deviations in `docs/decisions.md`.
 Anything not specified here: choose the simplest option consistent with the invariants,
-and record the choice.
-
+and record the choice in `docs/decisions.md`.
 
 ---
 
 ## 0. Global conventions
 
+- **Architecture invariants:**
+  1. Task identity = `(rule_name, primary_input, config_hash)`. Never positional, never
+     parent-derived.
+  2. Action digest = `hash(input content hashes, params, tool/rule version, config tuple)`.
+  3. Trace store maps identity → `(action_digest, output_hashes, dynamic_deps)`. SQLite.
+  4. Rebuilder: verifying traces + recorded dynamic deps (depfile model) + early cutoff.
+  5. Scheduler: applicative topological worker pool. No suspending/coroutine scheduler
+     in v1.
+  6. Two evaluation contexts, one language: manifest env (declaration-only) and rule env
+     (host primitives). Determinism is API-enforced: no io/os, no wall clock, no
+     `math.random`, inputs passed in.
+  7. Expansion (Luau evaluation) is itself a memoized task; its digest covers manifest
+     content, all `require`d files, rule versions, and the resolved config tuple
+     (including the enabled-plugin set).
 - **Language/std:** C++20. No exceptions across module boundaries: internal code may use
   them, but public core APIs return `Result<T>` (see spec §2.6). No RTTI requirements.
 - **Build of Kiln itself:** CMake + Ninja, single `kiln` executable plus `kiln_core` static
@@ -28,11 +41,12 @@ and record the choice.
   a submodule or release binary) is the documented contingency, triggered only by:
   open-sourcing Kiln, a second source-level consumer, or engine CI load exceeding what
   path filters handle. Kiln MUST NOT reference the consuming engine: no engine header
-  includes and no engine-identifying paths or strings anywhere under `kiln/plugins`: enforced by the boundary lint in spec §14; all
+  includes and no engine-identifying paths or strings anywhere under `kiln/plugins`:
+  enforced by the boundary lint in spec §14; all
   engine-specific content lives in the engine's workspace files. Luau is a submodule of
   Kiln ⇒ document `git submodule update --init --recursive` in the README. Kiln's
-  documentation (spec §16) lives under `kiln/` so it is always at the same commit as
-  the tool it describes.
+  documentation (spec §16) lives under `kiln/` so it is always at the same commit as the
+  tool it describes.
 - **Repo layout:**
 
 ```
@@ -50,7 +64,7 @@ kiln/
                           cmd_why_dirty.cpp cmd_daemon.cpp
   src/console/            renderer.{h,cpp} ansi.{h,cpp}
   types/build.d.luau      (Luau typedefs for the manifest/rule API)
-  tests/                  one file per phase: k1_core_loop.cpp, k2_scheduler.cpp, ...
+  tests/                  one file per area: k1_core_loop.cpp, k2_scheduler.cpp, ...
   tests/fixtures/         miniature workspaces used by integration tests
   docs/decisions.md
 ```
@@ -85,9 +99,9 @@ kiln/
   vendored library sources (inside the plugin hosting their `c_library` decl, upstream
   submodules included). The workspace root holds only non-graph files: the workspace
   file, `build/` (target files and shared helpers: targets are graph roots and
-  compositions, not dependency units), docs and skill files, the bootstrap escape
+  compositions, not dependency units), docs, the bootstrap escape
   hatch, and `.kiln/` state. A source tree at workspace root that plugins reach via
-  `../` globs is a migration state, not a destination (§6.4).
+  `../` globs is a migration state, not a destination (spec §6.4).
 
 - **Plugin roots & layers:** `kiln.workspace.luau` MAY declare:
 
@@ -117,12 +131,12 @@ workspace {
     one layer per root (two roots sharing a layer is a config error; if that need ever
     arises, it is a spec change, not a loophole). Declaration order of `plugin_roots`
     is the layer order, index 0 lowest. When no root declares a layer, layering is
-    disabled and no layer validation runs. Layer semantics: §7.3.
+    disabled and no layer validation runs. Layer semantics: spec §7.3.
   - Plugin NAMES remain a single global namespace across all roots (deps reference
     names, never paths: unchanged). A name collision across roots ⇒ error listing
-    both manifest paths, same voice as the duplicate-name error (§6.2).
+    both manifest paths, same voice as the duplicate-name error (spec §6.2).
   - Hashing: `layer` strings and the root list itself MUST NOT enter any digest
-    (precedent: `version`, §6.2: informational/validation-time fields are unhashed).
+    (precedent: `version`, spec §6.2: informational/validation-time fields are unhashed).
     Moving a plugin between roots changes its manifest path ⇒ expansion identity ⇒
     rebuild of that plugin's tasks; that is the path mechanism working as designed,
     not layer data being hashed.
@@ -144,7 +158,7 @@ struct Hash256 {                 // BLAKE3 output
   auto operator<=>(const Hash256&) const = default;
 };
 
-// A canonical hasher: the ONLY way structured data becomes a hash. See §2.3.
+// A canonical hasher: the ONLY way structured data becomes a hash. See spec §2.3.
 class CanonicalHasher { public:
   void field(std::string_view key, std::string_view val);
   void field(std::string_view key, uint64_t val);
@@ -160,7 +174,7 @@ class CanonicalHasher { public:
 struct TaskId {                  // identity: see invariant 1
   std::string rule;              // e.g. "compile_cpp"
   std::string primary_input;     // workspace-relative, e.g. "plugins/audio/src/mixer.cpp"
-  Hash256     config_hash;       // hash of the ConfigTuple (§4)
+  Hash256     config_hash;       // hash of the ConfigTuple (spec §4)
   Hash256     stable_hash() const;   // CanonicalHasher over the three fields
   std::string display() const;   // "plugins/audio/compile_cpp:src/mixer.cpp@win64-dev"
 };
@@ -183,7 +197,7 @@ struct TaskDecl {
 struct TaskCtx {
   const TaskDecl& decl;
   fs::path out_dir;                                  // pre-created, task-private
-  std::function<void(std::string_view)> log;          // buffered, see K2
+  std::function<void(std::string_view)> log;          // buffered, see spec §3
   // Report a discovered input (dynamic dep). Path must exist; recorded in trace.
   std::function<void(std::string_view path)> report_dep;
   std::function<bool()> cancelled;                    // poll in long tasks
@@ -207,7 +221,7 @@ CREATE TABLE IF NOT EXISTS file_hash (
 
 `hash_of(path)`: stat; on `(mtime_ns,size)` match return cached; else rehash, upsert.
 Missing file ⇒ distinguished error (not a zero hash). Directory hashing is NOT a thing;
-globs are resolved to file lists at expansion time (§6.4).
+globs are resolved to file lists at expansion time (spec §6.4).
 
 ### 2.2 Action digest
 
@@ -221,7 +235,7 @@ action_digest = CanonicalHasher {
                           item(p); item(hash_of(p));                          end_list
   begin_list "deps";    for t in sorted(dep_tasks by stable_hash):
                           item(t.stable_hash());
-                          item(output_summary_hash(t));   // §2.5
+                          item(output_summary_hash(t));   // spec §2.5
                         end_list
 }
 ```
@@ -237,8 +251,8 @@ model); on first build the set is empty.
   same way plus begin/end sentinels. No JSON, no printf, no locale anywhere near it.
 - All lists hashed MUST be sorted with `std::sort` on byte value (no locale collation).
 - Floats never enter digests. Timestamps never enter digests. Absolute paths never enter
-  digests. Env vars enter only via the config tuple's explicit allowlist (§4).
-- Layer names and the `plugin_roots` configuration never enter digests (§0): layers are
+  digests. Env vars enter only via the config tuple's explicit allowlist (spec §4).
+- Layer names and the `plugin_roots` configuration never enter digests (spec §0): layers are
   validation-time data; root paths act only through discovered manifest paths, which
   task identity already covers.
 
@@ -284,7 +298,7 @@ run_task(decl):
 output_summary_hash(t) = CanonicalHasher over sorted (path, hash) pairs of t's outputs.
 ```
 
-Downstream tasks embed `output_summary_hash` of each dep in their digest (§2.2), so
+Downstream tasks embed `output_summary_hash` of each dep in their digest (spec §2.2), so
 `outputs_changed == false` automatically yields cache hits downstream: early cutoff
 falls out of the digest structure; there is no separate dirty-propagation code path.
 This is intentional: do NOT implement a boolean dirty-bit system.
@@ -361,7 +375,7 @@ struct ConfigTuple {
   std::string platform;         // "linux" | "windows" (extensible)
   std::string config;           // "dev" | "release" | "editor" | "shipping"
   std::map<std::string,std::string> features;    // free-form flags from target/CLI
-  std::vector<std::string> enabled_plugins;      // RESOLVED set, sorted (K6)
+  std::vector<std::string> enabled_plugins;      // RESOLVED set, sorted (spec §8)
   std::map<std::string,std::string> env_allow;   // explicit allowlisted env (e.g. VULKAN_SDK)
   Hash256 hash() const;         // CanonicalHasher over all of the above
   std::string name() const;     // "linux-dev": used in .kiln/out/<name>/
@@ -376,12 +390,21 @@ game:linux-release`); their graphs coexist keyed by config_hash.
 - `TaskCtx::report_dep(path)`: thread-safe append; paths validated (exist, inside
   workspace or an allowlisted SDK root from `env_allow`), normalized, deduped, sorted
   before storing in trace.
-- Built-in helpers rules use: (a) clang `-MD -MF` depfile parsing (Make syntax, handle
-  escaped spaces/backslash-newlines); (b) a naive `#include "..."` scanner for GLSL
-  (recursive, cycle-guarded) used by `compile_shader`.
-- Semantics: dynamic deps affect the NEXT digest computation (§2.2). Document in code:
+- Semantics: dynamic deps affect the NEXT digest computation (spec §2.2). Document in code:
   first build after a dep-set change may schedule conservatively; correctness holds
   because digest is computed at run time with current dep set.
+
+Built-in rules discover dynamic deps with two helpers (§5a, §5b).
+
+### 5a. Depfile parsing
+
+clang `-MD -MF` depfile parsing: Make syntax, handling escaped spaces and
+backslash-newlines.
+
+### 5b. GLSL include scanner
+
+A naive `#include "..."` scanner for GLSL (recursive, cycle-guarded) used by
+`compile_shader`.
 
 **Acceptance:** transitive shader include edit ⇒ exactly the right shader tasks rerun
 on next build; removing an include ⇒ dep disappears from trace after one rebuild;
@@ -478,10 +501,10 @@ walking the glob root upward): REQUIRED as a migration ramp, so trees can move i
 plugins incrementally while builds stay green: but every resolved result MUST be
 validated to lie inside the workspace; matches outside it are an error naming the
 pattern. Sources and content live inside the plugin directory per the residency
-principle (`src/`, `include/`, `content/`: §0); a `../` glob is a migration state or a
+principle (`src/`, `include/`, `content/`: spec §0); a `../` glob is a migration state or a
 rare, justified exception, never the steady state: self-contained plugins move between
 roots as a plain `git mv`, while `../`-escaped inputs are depth-sensitive and derive
-AssetIDs from the resolved workspace path (§9). Returns a FileSet
+AssetIDs from the resolved workspace path (spec §9). Returns a FileSet
 userdata carrying the SORTED matched list AND the pattern. The expansion node's digest includes the pattern plus the
 hash of the sorted result list (so file adds/removes re-expand). Symlinks not followed.
 Empty glob ⇒ warning by default, error if `strict_globs=true` in workspace file.
@@ -492,23 +515,23 @@ Test: evaluate every fixture manifest twice in fresh VMs; assert byte-identical
 serialized declaration sets and identical expansion digests. Note this canary does NOT
 detect table-iteration-order dependence (both evaluations share the same layout/order);
 that risk is covered structurally instead: declarations are collected in call order and
-every key-iterated emission is sorted before hashing (§2.3): and end-to-end by the
-bootstrap convergence check (§7a.2; note the division of labor: this canary asks "same
+every key-iterated emission is sorted before hashing (spec §2.3): and end-to-end by the
+bootstrap convergence check (spec §7a.2; note the division of labor: this canary asks "same
 builder twice, same output?", the convergence check asks "successive builders, same
-output?"). A `--shuffle` iteration-seed mode is NOT
-required (removed: prior revisions asked for it; the mitigations above supersede it).
+output?"). There is no `--shuffle` iteration-seed mode; the mitigations above cover
+that risk.
 
 ### 6.6 build.d.luau
 
-Ship complete luau-lsp typedefs for §6.2 in `types/build.d.luau` + a `.luaurc` template
+Ship complete luau-lsp typedefs for spec §6.2 in `types/build.d.luau` + a `.luaurc` template
 for the workspace. Keep in lockstep with the C++ API (a test greps exported names).
-`kiln check` (§6.7) loads them for every manifest, so they are real Luau definitions
+`kiln check` (spec §6.7) loads them for every manifest, so they are real Luau definitions
 (`declare x: T`, never `declare const`), `any`-free, and describe what the evaluator
 accepts: a FileSet nests (`{ [number]: string | FileSet }`), a string list is
 `{ string? }` (a nil entry is skipped), and `require` is Luau's own (declaring it would
 replace the built-in the checker types a resolved require through).
 
-### 6.7 cluau manifests (amendment)
+### 6.7 cluau manifests
 
 Every manifest role may be written in cluau (C-syntax-flavoured Luau, the
 vendored `plugins/cluau` translator): `kiln.workspace.cluau`,
@@ -516,17 +539,17 @@ vendored `plugins/cluau` translator): `kiln.workspace.cluau`,
 helpers `build/<name>.cluau`. One manifest per role per directory (both
 names is an error), and `require "build/x"` finds `x.cluau` or `x.luau`
 (both is an error). A `.cluau` file is translated in manifest mode (no
-`function` / `while` / `do { } while` / `class`) before the §6.2 AST lint
+`function` / `while` / `do { } while` / `class`) before the spec §6.2 AST lint
 and the compile; the translation keeps every line on its line, so every
 `file:line` diagnostic points at the cluau source unmapped. The
 expansion task's params carry the translator version, so a translator
 change re-expands every manifest; the determinism canary covers cluau
-fixtures (K4.14). The `.luau` names stay readable. Kiln's own manifests
-are cluau. `kiln check` type-checks every manifest role against §6.6's
+fixtures. The `.luau` names stay readable. Kiln's own manifests
+are cluau. `kiln check` type-checks every manifest role against spec §6.6's
 definitions before anything evaluates it: `.cluau` in strict mode plus
 cluau's strict rules (`cluau_check`, vendored beside the translator),
 `.luau` nonstrict; `require "build/x"` resolves to the helper module so its
-type flows on; diagnostics are on the cluau lines (K4.16). `kiln smoke`
+type flows on; diagnostics are on the cluau lines. `kiln smoke`
 runs it.
 
 **Acceptance:** fixture plugin builds end-to-end from a manifest; comment edit in
@@ -572,7 +595,7 @@ is what unblocks dependents' compiles.
 ```
 
 **Implementation record**: depends on the plugin's link task (and its cook tasks, for
-`asset_manifest`: K7). This gates dependents' LINK tasks, and only those.
+`asset_manifest`: spec §9). This gates dependents' LINK tasks, and only those.
 
 ```json
 { "plugin": "audio",
@@ -600,9 +623,8 @@ This realizes relink-without-recompile mechanically through the digest structure
 cross-plugin compile overlap: in a chain core←audio←game, game's compiles start as soon
 as core's and audio's interface records exist, long before their links finish. A
 monolithic provider that depends on the dep's link task reintroduces plugin-chain
-serialization and is NON-COMPLIANT (this supersedes the earlier single-record wording;
-the mini-wave orchestration may remain, but waves must be gated on interface records,
-not implementation records).
+serialization and is NON-COMPLIANT. Mini-wave orchestration is permitted, but waves
+MUST be gated on interface records, not implementation records.
 
 **Acceptance (cross-plugin overlap):** fixture chain core←audio←game with core's
 link made artificially slow (sleeping fake tool): assert via executor event timestamps
@@ -616,7 +638,7 @@ Tarjan SCC; any SCC >1 ⇒ error:
 `plugin dependency cycle: audio -> dsp -> audio (audio/plugin.build.luau:3, dsp/plugin.build.luau:5)`.
 Module-level deps within a plugin form a sub-DAG, same treatment, error names modules.
 
-**Layer check (same pass, only when layering is enabled: §0):** each plugin's layer is
+**Layer check (same pass, only when layering is enabled: spec §0):** each plugin's layer is
 derived from the root it lives under; there is no per-plugin layer field. For every dep
 edge: `public_deps`, `private_deps`, AND `optional_deps` (an optional upward dep is
 still an upward dep): the dependency's layer index MUST be ≤ the dependent's.
@@ -638,8 +660,8 @@ lists audio, game.
 
 ## 7a. Self-hosting
 
-Kiln's own repo becomes a Kiln workspace, laid out per its own residency principle
-(§0): `kiln.workspace.luau` at repo root; `plugins/kiln/` holding the tool's sources as
+Kiln's own repo is a Kiln workspace, laid out per its own residency principle
+(spec §0): the workspace manifest at repo root; `plugins/kiln/` holding the tool's sources as
 modules with public/private deps mirroring the source-dir map; `plugins/kiln_tests/`
 holding test code and fixtures; one plugin per vendored library (`plugins/luau/`:
 upstream as a submodule inside the plugin dir: `plugins/sqlite/`, `plugins/blake3/`),
@@ -651,13 +673,13 @@ satisfied. Kiln eats exactly the dogfood it serves.
 
 `c_library(name){ sources: FileSet*, includes: {string}?, public_includes: {string}?,
 defines: {string}?, c_std: string?, cpp_std: string? }`: legal in any manifest; produces
-a static archive + the two provider records of §7.2 (`impl_artifact` = the `.a`).
+a static archive + the two provider records of spec §7.2 (`impl_artifact` = the `.a`).
 Depless in v1: no `deps` field; each library lists every include dir it needs explicitly
 (dep support may be added when it earns its keep). Header-only libraries are expressed
 as a `c_library` with empty `sources`: the archive task is skipped and the interface
 record still flows (empty `impl_artifact`). Compiles C and C++ TUs by extension.
 rule_version starts at 1. This rule is REQUIRED for sqlite/blake3/luau and later for the
-engine's vendored deps. Residency (§0): each vendored library lives in its own plugin
+engine's vendored deps. Residency (spec §0): each vendored library lives in its own plugin
 directory with the `c_library` decl beside its sources: not in a shared root-level tree
 reached by `../` globs.
 
@@ -673,14 +695,14 @@ directories name the artifact):
   clean checkout on every push (escape-hatch job). A comment in the top-level
   CMakeLists.txt says why.
 - **self-build:** kiln built by kiln: `external-build/kiln build kiln:linux-release` ⇒
-  `self-build/kiln`. THE deliverable: this is the binary that goes on PATH.
+  `self-build/kiln`. This is the binary that goes on PATH.
 - **proof-build:** kiln rebuilt BY the self-build (fresh `.kiln` state dir):
   `self-build/kiln build kiln:linux-release` ⇒ `proof-build/kiln`. Exists solely to be
   compared; a disposable check artifact, never shipped.
 - **Convergence check:** `cmp self-build/kiln proof-build/kiln`: byte identity REQUIRED
   (byte-identity at the fixed point of the build function, for readers coming from the
   compiler-bootstrap literature). Deliberately NOT called a determinism check: that name
-  belongs to §6.5, which tests a different property. On mismatch, bootstrap exits 3 with
+  belongs to spec §6.5, which tests a different property. On mismatch, bootstrap exits 3 with
   `convergence FAILED: proof-build differs from self-build` and prints a diff summary of
   section hashes (`readelf -S` + per-section BLAKE3; sha256 where `b3sum` is not
   installed) to localize the nondeterminism. Every stage runs on every invocation
@@ -741,10 +763,10 @@ resolve_enabled(all_plugins, target, platform, config, cli_enable[], cli_disable
   Return sorted enabled list + reason map.
 ```
 
-`enabled_plugins` (sorted) goes into ConfigTuple (§4) ⇒ correct precise invalidation.
+`enabled_plugins` (sorted) goes into ConfigTuple (spec §4) ⇒ correct precise invalidation.
 
 CLI: `kiln plugins --target=game --platform=linux --config=dev [--json]`
-Text output: aligned table `NAME  STATE  DECIDED-BY`; when layering is enabled (§0) a
+Text output: aligned table `NAME  STATE  DECIDED-BY`; when layering is enabled (spec §0) a
 LAYER column is inserted after NAME (`NAME  LAYER  STATE  DECIDED-BY`), and omitted
 entirely otherwise. JSON schema:
 `[{"name","state":"enabled|disabled","reason","decided_by_layer":1..4,
@@ -769,11 +791,11 @@ resolved tool's file hash folded into digests as param `tool_hash` (tool upgrade
 Asset ID = BLAKE3(plugin name + "/" + plugin-relative source path), hex. The rename
 story, stated plainly: an ID changes when its source moves relative to its plugin, moves
 between plugins, or its plugin is renamed: and does NOT change when the plugin's
-directory moves between roots (§0). Deliberate ID changes are audited by diffing the
+directory moves between roots (spec §0). Deliberate ID changes are audited by diffing the
 `.kpak.json` index before/after. Pack step
 `pack_target`: reads all enabled plugins' asset_manifests, writes `<target>.kpak`
-(format: header, sorted id→offset table, zstd-framed blobs: spec in
-`docs/kpak-format.md`, to be written with the implementation) + `<target>.kpak.json` index.
+(format: header, id-sorted table, blobs: specified in `docs/kpak-format.md`) +
+`<target>.kpak.json` index.
 
 **Acceptance:** cross-plugin texture reference; edit PNG ⇒ one recook + one repack;
 tool binary swap ⇒ recook of that rule's tasks only.
@@ -781,7 +803,7 @@ tool binary swap ⇒ recook of that rule's tasks only.
 ## 10. Daemon & forensics
 
 - `kiln daemon --target=... `: inotify recursive watch over EVERY configured plugin
-  root (§0; default `plugins/`), `build/`, the workspace file, and every top-level
+  root (spec §0; default `plugins/`), `build/`, the workspace file, and every top-level
   `<dir>/content` tree; ignore `.kiln/`; 150 ms debounce; rebuild wave; renderer
   collapses between waves to `watching… last: ✓ 3.2s (12 tasks)`.
 - Hot reload socket: Unix socket `.kiln/hotreload.sock`, newline-delimited JSON
@@ -790,9 +812,8 @@ tool binary swap ⇒ recook of that rule's tasks only.
 - `kiln why-dirty <task-display-or-path>`: explains the LAST COMPLETED build only:
   implemented via `.kiln/logs/last_why.json`, written during the build from in-session
   per-task why-records (input diffs use the per-input hashes stored in traces from day
-  one, §2.4; dep causes use the session's outputs_changed flags). This scope limitation
-  MUST be stated in the documentation verbatim: "why-dirty answers for the
-  most recent build; run the build first, then ask." Output, exactly this shape:
+  one, spec §2.4; dep causes use the session's outputs_changed flags). why-dirty answers
+  for the most recent build; run the build first, then ask. Output, exactly this shape:
 
 ```
 plugins/game/link:game@linux-dev  REBUILT because:
@@ -819,10 +840,10 @@ rules MUST be clang-style `path:line:col: error: msg` (map tool formats where ne
 
 Kotlin, IntelliJ Platform Gradle plugin, `sinceBuild` CLion 2024.2. Strictly a client of:
 `kiln plugins --json`, `kiln build`, `kiln query --json`, the serialized DeclSets, and
-`why-dirty`. Feature order: (1) ToolWindow: target/config combo + build/clean buttons +
+`why-dirty`. Features: (1) ToolWindow: target/config combo + build/clean buttons +
 console with `path:line:col` filter; (2) plugin checkbox tree writing
-`build/kiln.local.luau` overrides (a documented L3.5 layer between target and CLI:
-add this layer to §8 when S2 starts) then re-running S1 generation; (3) LSP client for
+`build/kiln.local.luau` overrides (an L3.5 layer between target and CLI, not part of
+spec §8's resolution) then re-running the spec §11 generation; (3) LSP client for
 luau-lsp on `*.luau` build files; (4) why-dirty context action. NO project-model or
 indexing code: CLion's compilation-database support owns that.
 
@@ -846,7 +867,7 @@ Exit codes: 0 ok, 1 task failures, 2 usage/config errors, 3 internal error.
 - doctest; unit tests colocated per module + integration tests driving the real binary
   against `tests/fixtures/*` workspaces (tiny: 2-3 plugins, 1 shader, 1 texture, stub
   tools: a fake `glslc` shell script that concatenates inputs, so tests don't need SDKs).
-- Every acceptance item in §§2-10 is a named test. CI (GitHub Actions, Linux): dev preset
+- Every acceptance item in spec sections 2-10 is a named test. CI (GitHub Actions, Linux): dev preset
   (sanitizers) + release, both run full suite.
 - Golden-output tests compare normalized text (strip timings): helper provided.
 - Boundary lint: a test asserts nothing under `kiln/plugins`
@@ -860,7 +881,7 @@ Exit codes: 0 ok, 1 task failures, 2 usage/config errors, 3 internal error.
   separate repository would have provided.
 - Performance guardrail test: 1000-task no-op build < 300 ms (excluding process start).
 
-## 15. Non-goals for v1
+## 15. Non-goals for v1 (do not implement)
 
 Remote/CAS cache; suspending scheduler; sandboxed execution enforcement (strace verify);
 Windows watcher; distributed builds; Luau-defined rules (`declare_task` from Luau: the

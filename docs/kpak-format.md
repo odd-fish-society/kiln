@@ -54,7 +54,8 @@ One id names one blob: a duplicate fails the pack. The blobs stream from
 their files into the pack (the writer never holds them in memory).
 
 `id` is stable across moves that keep the plugin-relative source path; a
-rename changes the id (documented rename story: stable relpath, not content).
+rename changes the id (a build-cooked asset's identity derives from its
+plugin-relative source path, not its content).
 Offsets are the v2 layout's blob positions; the index stays the runtime's
 id→path source (the table carries no paths).
 
