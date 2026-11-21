@@ -201,6 +201,17 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
         {"--scene", "plugins/game/game_content/content/scenes/physics_demo.tasset", "--ticks", "300",
          "--workers", "1,4", "--out", (root / ".kiln" / "out" / "smoke" / "physbench").string()},
         "dev");
+    // The generated joint and character scenes at a tiny size: the same gate,
+    // plus the save/restore replay with joints and characters in the state and
+    // (character) no character above a ramp steeper than it may walk.
+    run("tinyphysbench",
+        {"--scene", "builtin:chains", "--bodies", "64", "--ticks", "240", "--tickrate", "60",
+         "--workers", "1,4", "--out", (root / ".kiln" / "out" / "smoke" / "physbench_chains").string()},
+        "dev");
+    run("tinyphysbench",
+        {"--scene", "builtin:character", "--bodies", "8", "--ticks", "600", "--tickrate", "60",
+         "--workers", "1,4", "--out", (root / ".kiln" / "out" / "smoke" / "physbench_character").string()},
+        "dev");
 
     // M-D: the two-window standing gate - a torn-out panel window must boot,
     // run VUID-free, and shut down cleanly on every smoke pass (the
