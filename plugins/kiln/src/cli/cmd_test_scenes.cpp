@@ -34,6 +34,9 @@ const std::vector<LightingCase>& lighting_cases() {
         {"light_test_point_spot.tasset", "point_spot"},
         {"light_test_all.tasset", "all"},
         {"light_test_ambient.tasset", "ambient"},
+        // Skinned meshes held at fixed clip times (paused Animators, so the
+        // pose does not depend on how many frames the capture waits).
+        {"anim_test_fox.tasset", "animation"},
     };
     return kCases;
 }
