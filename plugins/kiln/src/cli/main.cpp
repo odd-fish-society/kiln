@@ -128,7 +128,10 @@ int main(int argc, char** argv) {
     auto* smoke = app.add_subcommand("smoke", "Scheduled detection run");
     std::string s2_workspace;
     int s2_jobs = 0;
+    bool s2_nightly = false;
     smoke->add_option("-j", s2_jobs, "worker count");
+    smoke->add_flag("--nightly", s2_nightly,
+                    "the full matrix: adds shipping, dev-tsan, the slow live-reload scripts, the docs site and the 4K verify (also SMOKE_NIGHTLY=1)");
     smoke->add_option("--workspace", s2_workspace, "workspace root (default: auto-detect)");
 
     // ---- docs -----------------------------------------------------------------------
@@ -304,7 +307,7 @@ int main(int argc, char** argv) {
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
         } else if (*smoke) {
-            auto r = cmd_smoke(fs::path(s2_workspace), s2_jobs);
+            auto r = cmd_smoke(fs::path(s2_workspace), s2_jobs, s2_nightly);
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());

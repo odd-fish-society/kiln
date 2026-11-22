@@ -79,7 +79,7 @@ void run_gated(const fs::path& root, const fs::path& bin,
 
 } // namespace
 
-Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
+Result<int> cmd_smoke(const fs::path& root_in, int jobs, bool nightly) {
     fs::path root = root_in;
     if (root.empty()) {
         auto found = find_workspace_root(fs::current_path());
@@ -96,20 +96,35 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
     const std::vector<std::string> kApps = {"tinycook", "tinyreflect", "protoc", "tinycrash", "tinycrashreport",
                                             "tinyeditor", "sandbox", "tinyserver", "tinytest",
                                             "tinyscriptcheck", "tinysignal", "tinyphysbench", "tinydoc"};
-    const std::vector<std::string> kConfigs = {"dev", "dev-asan"};
-    // The sanitizer matrix: the concurrency bugs found so far are TSAN
-    // territory and are now fixed - run tinytest under TSAN and UBSAN
-    // too (the headless test targets only; instrumenting the GUI apps
-    // under TSAN is neither cheap nor a stable signal).
-    const std::vector<std::string> kTestConfigs = {"dev-tsan", "dev-ubsan"};
+    // Two tiers. The fast one is every check a change can break in the day's
+    // work; the nightly one adds the slow or rarely-moved ones: the shipping
+    // build and its audit, the TSAN suite, the live-reload scripts beyond
+    // Tier 1, the docs site and the 4K verify.
+    if (std::getenv("SMOKE_NIGHTLY"))
+        nightly = true;
+    std::vector<std::string> skipped;
+    auto nightly_only = [&](const std::string& step) {
+        if (!nightly)
+            skipped.push_back(step);
+        return nightly;
+    };
+
+    const std::vector<std::string> kConfigs = {"dev"};
+    // The sanitizer matrix runs tinytest only, so only the headless test
+    // apps build under it (the GUI apps were never run instrumented: it is
+    // neither cheap nor a stable signal). ASAN and UBSAN share one build;
+    // TSAN cannot combine with ASAN and runs on the nightly.
+    std::vector<std::string> kTestConfigs = {"dev-asan-ubsan"};
+    if (nightly_only("tinytest (dev-tsan)"))
+        kTestConfigs.push_back("dev-tsan");
     const std::vector<std::string> kTestApps = {"tinycook", "tinyreflect", "protoc", "tinytest"};
 
     json findings = json::array();
     std::map<std::string, std::string> cfgdirs;
     std::map<std::string, bool> built_ok;
 
-    // Build every app in dev and dev-asan (tinycook first in each list),
-    // then the headless test tier in dev-tsan and dev-ubsan.
+    // Build every app in dev (tinycook first in each list), then the
+    // headless test tier under the sanitizers.
     auto build_configs = [&](const std::vector<std::string>& apps, const std::vector<std::string>& configs) {
         for (const auto& config : configs) {
             auto dir = config_dir(root, apps.front(), config);
@@ -178,23 +193,23 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
         run_gated(root, bin(target, config), args, target, config, findings, &checks);
     };
 
-    // Tinytest under both configs (the sanitizer signal lives in the asan run),
-    // plus the TSAN/UBSAN tier (the sanitizer matrix).
-    // The TSAN run skips the fork-based process tests - the fork+signal path
-    // is TSAN-unsafe and hangs the suite under the sanitizer (the
-    // TE_SKIP_PROCESS_TESTS mechanism in SubsystemTests.h).
+    // Tinytest in dev and under the sanitizers. The TSAN run skips the
+    // fork-based process tests - the fork+signal path is TSAN-unsafe and
+    // hangs the suite under the sanitizer (the TE_SKIP_PROCESS_TESTS
+    // mechanism in SubsystemTests.h).
     run("tinytest", {}, "dev");
-    run("tinytest", {}, "dev-asan");
-    setenv("TE_SKIP_PROCESS_TESTS", "1", 1);
-    run("tinytest", {}, "dev-tsan");
-    unsetenv("TE_SKIP_PROCESS_TESTS");
-    run("tinytest", {}, "dev-ubsan");
+    run("tinytest", {}, "dev-asan-ubsan");
+    if (nightly) {
+        setenv("TE_SKIP_PROCESS_TESTS", "1", 1);
+        run("tinytest", {}, "dev-tsan");
+        unsetenv("TE_SKIP_PROCESS_TESTS");
+    }
 
-    // Scripted app runs (dev only - the GUI apps are built under dev-asan
-    // but not run under ASAN: environment noise and doubled wall time).
+    // Scripted app runs (dev only). The server's 300 ticks are 5 s at its
+    // 60 Hz: past its start, a steady state and a clean stop.
     run("tinyeditor", {"--frames", "600"}, "dev");
     run("sandbox", {"--frames", "600"}, "dev");
-    run("tinyserver", {"--ticks", "1000"}, "dev");
+    run("tinyserver", {"--ticks", "300"}, "dev");
     // Both backends on the physics demo at 1 and 4 workers. Exit 1 is a
     // backend whose hashes depend on the worker count.
     run("tinyphysbench",
@@ -436,11 +451,18 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
             findings.push_back(std::move(f));
         }
     };
+    // Tier 1 (a body change, a revert, a refused layout change) runs on
+    // every pass; Tiers 2-3, the live additions and the shader reload on
+    // the nightly.
     run_script("verify-livecode.sh", {"1"}, "livecode");
-    run_script("verify-livecode-reflection.sh", {}, "livecode_reflection");
-    run_script("verify-livecode-additions.sh", {}, "livecode_additions");
-    run_script("verify-livecode-additions.sh", {"--editor"}, "livecode_additions_editor");
-    run_script("verify-shader-reload.sh", {}, "shader_reload");
+    if (nightly_only("verify-livecode-reflection.sh"))
+        run_script("verify-livecode-reflection.sh", {}, "livecode_reflection");
+    if (nightly_only("verify-livecode-additions.sh")) {
+        run_script("verify-livecode-additions.sh", {}, "livecode_additions");
+        run_script("verify-livecode-additions.sh", {"--editor"}, "livecode_additions_editor");
+    }
+    if (nightly_only("verify-shader-reload.sh"))
+        run_script("verify-shader-reload.sh", {}, "shader_reload");
     // The default scene offset by 2^20 m and 2^23 m must capture
     // byte-identically to the origin in both apps.
     run_script("verify-far-origin.sh", {}, "far_origin");
@@ -547,8 +569,9 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
     }
 
     // The static site renders from the cooked databases with no dead link
-    // (one finding per dead link).
-    if (built_ok["dev"]) {
+    // (one finding per dead link). Nightly: every build's doc cook already
+    // fails an unresolved [[id]] link.
+    if (built_ok["dev"] && nightly_only("tinydoc render")) {
         checks++;
         std::printf("kiln smoke: tinydoc render (dev)\n");
         std::fflush(stdout);
@@ -595,13 +618,12 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
 
     // The editor-vs-game A/B verify - both apps run the Offscreen
     // render-target capture against the default scene and tinycompare
-    // reports the pixel verdict. 1080p on every pass, 4K on the nightly
-    // (SMOKE_NIGHTLY=1).
+    // reports the pixel verdict. 1080p on every pass, 4K on the nightly.
     if (built_ok["dev"]) {
         const fs::path scene = root / "plugins" / "game" / "game_content" / "content" / "scenes" / "default.tasset";
         const std::vector<std::string> resolutions =
-            std::getenv("SMOKE_NIGHTLY") ? std::vector<std::string>{"1920x1080", "3840x2160"}
-                                         : std::vector<std::string>{"1920x1080"};
+            nightly_only("verify-render 3840x2160") ? std::vector<std::string>{"1920x1080", "3840x2160"}
+                                                    : std::vector<std::string>{"1920x1080"};
         const fs::path outDir = root / ".kiln" / "out" / "smoke" / "verify";
         for (const std::string& res : resolutions) {
             checks++;
@@ -707,12 +729,12 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
         }
     }
 
-    // Shipping-shape audit + run gate: build the shipping config, run
-    // `shipping-audit`, then the run gate (sandbox --frames 600 +
-    // tinyserver --ticks 1000, both exit-0 and log-gate-clean; the
+    // Shipping-shape audit + run gate (nightly): build the shipping config,
+    // run `shipping-audit`, then the run gate (sandbox --frames 600 +
+    // tinyserver --ticks 300, both exit-0 and log-gate-clean; the
     // final-colour golden is compared against dev's through the
     // sandbox's --final-only mode below).
-    {
+    if (nightly_only("shipping build, shipping-audit, run gate and final-only golden")) {
         const std::string shipping = "shipping";
         auto dir = config_dir(root, "sandbox", shipping);
         if (dir.ok()) {
@@ -766,7 +788,7 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
 
             // The run gate.
             run("sandbox", {"--frames", "600"}, shipping);
-            run("tinyserver", {"--ticks", "1000"}, shipping);
+            run("tinyserver", {"--ticks", "300"}, shipping);
 
             // The shipping Final Colour golden (the three debug views do
             // not exist in shipping, hence --final-only): byte-identical
@@ -813,7 +835,9 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
     fs::create_directories(runDir, ec);
     json report;
     report["run"] = runDir.filename().string();
+    report["tier"] = nightly ? "nightly" : "fast";
     report["checks"] = checks;
+    report["skipped"] = skipped;
     report["findings"] = findings;
     auto write = util::write_file(runDir / "findings.json", report.dump(2) + "\n");
     if (!write.ok())
@@ -827,8 +851,13 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs) {
         std::fprintf(stderr, "kiln: warning: could not update the 'latest' symlink: %s\n",
                      ec.message().c_str());
 
-    std::printf("kiln smoke: %zu checks, %zu findings -> %s\n", checks, findings.size(),
-                runDir.generic_string().c_str());
+    if (!skipped.empty()) {
+        std::printf("kiln smoke: the fast tier skipped (run `kiln smoke --nightly` for them):\n");
+        for (const auto& step : skipped)
+            std::printf("  %s\n", step.c_str());
+    }
+    std::printf("kiln smoke (%s): %zu checks, %zu findings -> %s\n", nightly ? "nightly" : "fast", checks,
+                findings.size(), runDir.generic_string().c_str());
     return Result<int>::success(findings.empty() ? 0 : 1);
 }
 

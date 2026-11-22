@@ -29,7 +29,9 @@ Result<int> cmd_setup_clion(const fs::path& root, const std::string& config);
 Result<int> cmd_clean(const fs::path& root, bool traces, bool dead);
 Result<int> cmd_test(const fs::path& root, const std::string& target, int jobs,
                      const std::string& platform, const std::string& config);
-Result<int> cmd_smoke(const fs::path& root, int jobs);
+// nightly: the full matrix; otherwise the fast tier (the nightly-only steps
+// are listed as skipped in the report).
+Result<int> cmd_smoke(const fs::path& root, int jobs, bool nightly);
 // `kiln docs`: build `target` (its cook_docs tasks), run `<tool> render`, and
 // with serve_port > 0 `<tool> serve` on localhost.
 Result<int> cmd_docs(const fs::path& root, const std::string& target, const std::string& tool, int serve_port, int jobs);
