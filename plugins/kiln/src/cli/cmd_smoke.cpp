@@ -479,7 +479,7 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs, bool nightly) {
         auto log = util::read_file(root / "saved" / "logs" / "latest.log");
         const std::string text = log.ok() ? *log : std::string();
         for (const char* verdict : {"RHI SELFTEST: PASS", "RHI SELFTEST PIPELINE CACHE: PASS", "RHI SELFTEST SHADER RELOAD: PASS",
-                                    "RHI SELFTEST COMPUTE: PASS"}) {
+                                    "RHI SELFTEST COMPUTE: PASS", "RHI SELFTEST MORPH: PASS"}) {
             if (text.find(verdict) == std::string::npos) {
                 json f;
                 f["app"] = "sandbox";
