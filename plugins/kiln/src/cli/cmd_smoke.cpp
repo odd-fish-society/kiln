@@ -466,6 +466,9 @@ Result<int> cmd_smoke(const fs::path& root_in, int jobs, bool nightly) {
     // The default scene offset by 2^20 m and 2^23 m must capture
     // byte-identically to the origin in both apps.
     run_script("verify-far-origin.sh", {}, "far_origin");
+    // The audio demo's offline mix: identical twice and 2^23 m from the
+    // origin, and equal to the platform's committed golden.
+    run_script("verify-audio.sh", {}, "audio_golden");
 
     // The RHI self-test as a gate (the Retiring-slot / retire-queue /
     // pipeline-cache rules it checks were only verified when someone ran it
