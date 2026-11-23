@@ -143,11 +143,16 @@ const std::vector<CheckDef>& checks() {
         // DocDatabase (TinyAssetType 13).
         {"A21", "no DocDatabase asset in a runtime pack", {}, {}, {}, {"sandbox", "tinyserver"}, ""}, // pack check, handled specially
         // Sound is presentation: the server links no audio library at all
-        // (its AudioDevice is an inert shell).
-        {"A22", "tinyserver: no audio library (Lyre, miniaudio, Opus) symbols or sound-server libs", {"lyre::", "ma_device", "ma_context", "opus_decode", "opus_encode"}, {}, {"libpulse", "libasound", "libjack"}, {"tinyserver"}, ""},
+        // (its AudioDevice is an inert shell). miniaudio opens the sound
+        // servers with dlopen, so their names show as strings, never in ldd.
+        {"A22", "tinyserver: no audio library (Lyre, miniaudio, Opus, Ogg) symbols or sound-server names",
+         {"lyre::", "ma_device", "ma_context", "opus_decode", "opus_encode", "ogg_sync", "op_test"},
+         {"libpulse", "libasound", "libjack"}, {}, {"tinyserver"}, ""},
         // Sounds arrive cooked: a client decodes Opus but never encodes it, and
-        // reads no source file (lyre/import and opusfile are the cook's).
-        {"A23", "no audio import symbols (the Opus encoder, opusfile, lyre::import)", {"lyre::import::", "opus_encode", "op_open_file", "op_read_float"}, {}, {}, {"sandbox"}, ""},
+        // reads no source file (lyre/import, opusfile and libogg are the
+        // cook's).
+        {"A23", "no audio import symbols (the Opus encoder, opusfile, libogg, lyre::import)",
+         {"lyre::import::", "opus_encode", "op_open_file", "op_read_float", "op_test", "ogg_sync"}, {}, {}, {"sandbox"}, ""},
     };
     return kChecks;
 }
