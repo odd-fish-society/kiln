@@ -7,3 +7,4 @@ cmake-build-*/
 compile_commands.json
 *.tmp
 build/external-build/
+build/tests/

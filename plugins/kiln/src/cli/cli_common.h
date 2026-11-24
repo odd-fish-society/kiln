@@ -29,9 +29,10 @@ Result<int> cmd_setup_clion(const fs::path& root, const std::string& config);
 Result<int> cmd_clean(const fs::path& root, bool traces, bool dead);
 Result<int> cmd_test(const fs::path& root, const std::string& target, int jobs,
                      const std::string& platform, const std::string& config);
-// nightly: the full matrix; otherwise the fast tier (the nightly-only steps
-// are listed as skipped in the report).
-Result<int> cmd_smoke(const fs::path& root, int jobs, bool nightly);
+// The workspace's hamr suite (hamr.cluau) under hamr, the nightly tier or the
+// fast one; `extra` goes to `hamr run` as it is (--only, --changed, ...).
+// Replaces the process with hamr's on success.
+Result<int> cmd_smoke(const fs::path& root, int jobs, bool nightly, const std::vector<std::string>& extra);
 // `kiln docs`: build `target` (its cook_docs tasks), run `<tool> render`, and
 // with serve_port > 0 `<tool> serve` on localhost.
 Result<int> cmd_docs(const fs::path& root, const std::string& target, const std::string& tool, int serve_port, int jobs);
@@ -49,9 +50,5 @@ Result<int> cmd_mint_content(const fs::path& root, const std::vector<std::string
 // committed goldens instead of comparing.
 Result<int> cmd_test_scenes(const fs::path& root, const std::string& scene,
                             bool update, int jobs);
-// The smoke-internal stage (the same cases, compare-only) - declared here
-// so cmd_smoke can call it without rebuilding the run/gate logic.
-void run_test_scenes(const fs::path& root, const fs::path& sandbox_bin,
-                     nlohmann::json& findings, size_t* checks);
 
 } // namespace kiln

@@ -115,15 +115,6 @@ void run_lighting_case(const fs::path& root, const fs::path& sandbox_bin,
 
 } // namespace
 
-// The smoke-internal stage: every committed lighting case against its
-// golden set (the regression net for the map-wall / camera-relative
-// occlusion class of lighting bug).
-void run_test_scenes(const fs::path& root, const fs::path& sandbox_bin,
-                     json& findings, size_t* checks) {
-    for (const LightingCase& scene : lighting_cases())
-        run_lighting_case(root, sandbox_bin, scene, false, findings, checks);
-}
-
 Result<int> cmd_test_scenes(const fs::path& root_in, const std::string& scene,
                             bool update, int jobs) {
     fs::path root = root_in;

@@ -125,13 +125,15 @@ int main(int argc, char** argv) {
     shipping_audit->add_option("--workspace", sa_workspace, "workspace root (default: auto-detect)");
 
     // ---- smoke ----------------------------------------------------------------------
-    auto* smoke = app.add_subcommand("smoke", "Scheduled detection run");
+    auto* smoke = app.add_subcommand("smoke", "Run the workspace's hamr suite (hamr.cluau): builds, checks and their timings");
     std::string s2_workspace;
     int s2_jobs = 0;
     bool s2_nightly = false;
-    smoke->add_option("-j", s2_jobs, "worker count");
+    std::vector<std::string> s2_extra;
+    smoke->add_option("-j", s2_jobs, "hamr's core budget (and the suite's build jobs)");
     smoke->add_flag("--nightly", s2_nightly,
-                    "the full matrix: adds shipping, dev-tsan, the slow live-reload scripts, the docs site and the 4K verify (also SMOKE_NIGHTLY=1)");
+                    "the nightly tier of the workspace's hamr suite (also SMOKE_NIGHTLY=1)");
+    smoke->add_option("hamr_args", s2_extra, "after --: arguments for `hamr run` (--only <glob>, --skip <glob>, --changed, ...)");
     smoke->add_option("--workspace", s2_workspace, "workspace root (default: auto-detect)");
 
     // ---- docs -----------------------------------------------------------------------
@@ -307,7 +309,7 @@ int main(int argc, char** argv) {
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
         } else if (*smoke) {
-            auto r = cmd_smoke(fs::path(s2_workspace), s2_jobs, s2_nightly);
+            auto r = cmd_smoke(fs::path(s2_workspace), s2_jobs, s2_nightly, s2_extra);
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());

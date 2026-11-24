@@ -556,3 +556,22 @@ as above (SHOULD choices logged, MUST deviations fixed: none remain):
   files stay (nothing scans for them; `kiln clean` removes them).
 - Cost: one unindexed scan of the trace table filtered by the rule suffix
   plus one stat per cook trace - within noise of a no-op build.
+
+## `kiln smoke` runs the workspace's hamr suite
+
+- `kiln smoke` was about 900 lines of C++ naming the engine's apps, scripts,
+  scenes and configs, run strictly in sequence, with no timings. Every new
+  check was a Kiln edit. Kiln is the generic build tool; what a workspace
+  checks belongs to the workspace.
+- The checks are now the workspace's `hamr.cluau`, run by hamr
+  (github.com/Aosiee/hamr): a test runner whose suites, scheduler and
+  reports are cluau. Each step declares its budget, timeout, resources and
+  needs; hamr times every process (wall, CPU, peak RSS), runs independent
+  steps side by side, writes the `hamr/1` report and keeps the history.
+- `kiln smoke [--nightly] [-j N] [-- <hamr run args>]` only finds hamr
+  (`scripts/ensure_hamr.sh` when the workspace has it, else
+  `<workspace>/hamr/build/hamr`, else PATH), picks the tier, puts the run
+  under `.kiln/out/smoke`, and becomes hamr's process. The suite's report
+  hook writes the `findings.json` the workspace's tooling reads.
+- `kiln test-scenes` and `kiln shipping-audit` stay Kiln commands for now:
+  they still name engine content, and the suite calls them or repeats them.
