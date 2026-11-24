@@ -68,6 +68,11 @@ export type CLibrarySpec = {
     -- output) before this library's compiles; required together.
     proto_sources: FileSet?,
     proto_tool: string?,
+    -- .fbs schemas compiled to <stem>.fbs.h by fbs_tool (a flatc build
+    -- output: --cpp --scoped-enums) before this library's compiles;
+    -- required together.
+    fbs_sources: FileSet?,
+    fbs_tool: string?,
 }
 
 export type TargetSpec = {

@@ -86,6 +86,10 @@ struct CLibraryDecl {
     // library, the gen dir joins its private includes.
     std::vector<std::string> proto_sources;
     std::string proto_tool;
+    // .fbs schemas an fbs_gen task turns into <stem>.fbs.h with fbs_tool (a
+    // flatc build output); the gen dir joins the library's private includes.
+    std::vector<std::string> fbs_sources;
+    std::string fbs_tool;
     std::string file;
     int line = 0;
 };

@@ -248,6 +248,9 @@ std::vector<TargetSpec> tool_targets(const Workspace& ws, const ResolutionResult
         for (auto& c : ds.c_libraries)
             if (!c.proto_tool.empty())
                 paths.insert(c.proto_tool);
+        for (auto& c : ds.c_libraries)
+            if (!c.fbs_tool.empty())
+                paths.insert(c.fbs_tool);
         for (auto& c : ds.cooks) {
             auto t = c.params.find("tool");
             if (t != c.params.end() && !t->second.empty())
@@ -327,7 +330,7 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
 
     // Host rule: expansion as a memoized task.
     rules::register_host_rule(
-        "expand_plugin", 4, // v4: c_library proto_sources/proto_tool; v3: declset JSON gained plugin reflect_tool; v2: module/c_library public_link_flags
+        "expand_plugin", 5, // v5: c_library fbs_sources/fbs_tool; v4: c_library proto_sources/proto_tool; v3: declset JSON gained plugin reflect_tool; v2: module/c_library public_link_flags
         [&ws, platform = ct.platform, config = ct.config, features = ct.features](
             TaskCtx& ctx) -> TaskResult {
             TaskResult r;

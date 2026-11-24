@@ -370,6 +370,75 @@ TEST_CASE("K7.8 proto_sources without proto_tool is a manifest error") {
     CHECK(r.out.find("proto_sources needs proto_tool") != std::string::npos);
 }
 
+TEST_CASE("K7.8b fbs_gen: schemas become <stem>.fbs.h the library's compiles include; a schema edit regenerates") {
+    TempDir tmp;
+    fs::path tool = tmp.path / "fake_flatc.sh";
+    // A fake flatc: -o <dir>, -I <dir> pairs and flags skipped, then each
+    // schema becomes <stem>.fbs.h defining fbs_<stem>() as its line count.
+    {
+        std::ofstream f(tool);
+        f << "#!/bin/sh\n"
+             "out=''\n"
+             "while [ $# -gt 0 ]; do\n"
+             "  case \"$1\" in\n"
+             "    -o) out=$2; shift 2;;\n"
+             "    -I|--filename-suffix) shift 2;;\n"
+             "    --*) shift;;\n"
+             "    *) stem=$(basename \"$1\" .fbs); n=$(wc -l < \"$1\");\n"
+             "       mkdir -p \"$out\";\n"
+             "       printf 'inline int fbs_%s() { return %s; }\\n' \"$stem\" \"$n\" > \"$out/$stem.fbs.h\"; shift;;\n"
+             "  esac\n"
+             "done\n";
+    }
+    chmod(tool.c_str(), 0755);
+    write_tree(tmp.path, {
+        {"kiln.workspace.luau", "workspace \"k7\" {\n  strict_globs = true,\n}\n"},
+        {"build/app.target.luau",
+         "target \"app\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
+         "  link = { \"thing/main\" },\n}\n"},
+        {"plugins/thing/plugin.build.luau",
+         "plugin \"thing\" {}\n"
+         "c_library \"scene\" {\n  sources = { \"lib/uses.cpp\" },\n"
+         "  fbs_sources = { \"schema/mesh.fbs\" },\n"
+         "  fbs_tool = \"" + tool.generic_string() + "\",\n"
+         "  public_includes = { \"lib\" },\n}\n"
+         "module \"main\" {\n  sources = glob(\"src/*.cpp\"),\n"
+         "  deps = { public = { \"thing/scene\" } },\n}\n"},
+        {"plugins/thing/schema/mesh.fbs", "table Mesh {}\n"},
+        {"plugins/thing/lib/uses.cpp", "#include \"mesh.fbs.h\"\nint uses() { return fbs_mesh(); }\n"},
+        {"plugins/thing/lib/uses.h", "int uses();\n"},
+        {"plugins/thing/src/main.cpp", "#include \"uses.h\"\nint main() { return uses() - 1; }\n"},
+    });
+
+    auto r = run_kiln(tmp.path, build_args());
+    INFO(r.out);
+    REQUIRE(r.code == 0);
+    const fs::path header = tmp.path / ".kiln/out/linux-dev/gen/thing/fbs/scene/mesh.fbs.h";
+    CHECK(file_exists(header));
+    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/bin/app"));
+
+    auto r2 = run_kiln(tmp.path, build_args());
+    INFO(r2.out);
+    REQUIRE(r2.code == 0);
+    CHECK(r2.out.find("] ok plugins/thing/fbs:scene/fbs_gen") == std::string::npos);
+
+    write_tree(tmp.path, {{"plugins/thing/schema/mesh.fbs", "table Mesh {}\ntable Other {}\n"}});
+    auto r3 = run_kiln(tmp.path, build_args());
+    INFO(r3.out);
+    REQUIRE(r3.code == 0);
+    CHECK(r3.out.find("] ok plugins/thing/fbs:scene/fbs_gen") != std::string::npos);
+    CHECK(read_file(header).find("return 2;") != std::string::npos);
+
+    // fbs_sources without fbs_tool is a manifest error.
+    write_tree(tmp.path, {{"plugins/thing/plugin.build.luau",
+         "plugin \"thing\" {}\n"
+         "c_library \"scene\" {\n  sources = {},\n  fbs_sources = { \"schema/mesh.fbs\" },\n}\n"
+         "module \"main\" {\n  sources = glob(\"src/*.cpp\"),\n}\n"}});
+    auto r4 = run_kiln(tmp.path, build_args());
+    CHECK(r4.code != 0);
+    CHECK(r4.out.find("fbs_sources needs fbs_tool") != std::string::npos);
+}
+
 TEST_CASE("K7.9 a tool pinned at a target's bin output builds that target first, and rebuilds it when stale") {
     TempDir tmp;
     // The protoc is a real build output (target "genproto"), pinned by path like

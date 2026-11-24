@@ -577,7 +577,8 @@ int spec_c_library(lua_State* L) {
     validate_fields(L, 2, st,
                     {"sources", "includes", "public_includes", "defines", "platforms",
                      "configs", "c_std", "cpp_std", "syslibs", "public_syslibs",
-                     "public_link_flags", "flags", "proto_sources", "proto_tool"},
+                     "public_link_flags", "flags", "proto_sources", "proto_tool",
+                     "fbs_sources", "fbs_tool"},
                     {});
     if (st->decls.c_libraries.empty())
         luaL_error(L, "internal: c_library spec without declaration");
@@ -618,6 +619,13 @@ int spec_c_library(lua_State* L) {
     c.proto_tool = get_string_field(L, 2, "proto_tool", false, present);
     if (!c.proto_sources.empty() && c.proto_tool.empty())
         luaL_error(L, "c_library '%s': proto_sources needs proto_tool", c.name.c_str());
+    lua_getfield(L, 2, "fbs_sources");
+    if (!lua_isnil(L, -1) && !read_fileset(L, -1, st, "fbs_sources", c.fbs_sources))
+        luaL_typeerrorL(L, -1, "fbs_sources");
+    lua_pop(L, 1);
+    c.fbs_tool = get_string_field(L, 2, "fbs_tool", false, present);
+    if (!c.fbs_sources.empty() && c.fbs_tool.empty())
+        luaL_error(L, "c_library '%s': fbs_sources needs fbs_tool", c.name.c_str());
     return 0;
 }
 

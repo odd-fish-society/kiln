@@ -101,6 +101,8 @@ std::string decl_set_to_json(const DeclSet& decls) {
                          {"flags", strvec(c.flags)},
                          {"proto_sources", strvec(c.proto_sources)},
                          {"proto_tool", c.proto_tool},
+                         {"fbs_sources", strvec(c.fbs_sources)},
+                         {"fbs_tool", c.fbs_tool},
                          {"file", c.file},
                          {"line", c.line}});
     }
@@ -235,6 +237,8 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
             c.flags = to_strvec(v.value("flags", json::array()));
             c.proto_sources = to_strvec(v.value("proto_sources", json::array()));
             c.proto_tool = v.value("proto_tool", "");
+            c.fbs_sources = to_strvec(v.value("fbs_sources", json::array()));
+            c.fbs_tool = v.value("fbs_tool", "");
             c.file = v.value("file", "");
             c.line = v.value("line", 0);
             out.c_libraries.push_back(std::move(c));

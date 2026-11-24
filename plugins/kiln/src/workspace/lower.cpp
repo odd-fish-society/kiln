@@ -376,6 +376,10 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         for (auto& c : declset.c_libraries) {
             for (auto& d : c.public_includes)
                 own_includes.push_back(d);
+            // Generated FlatBuffers headers are part of the library's
+            // interface (its public headers include them).
+            if (!c.fbs_sources.empty() && passes_filter(c.platforms, c.configs, ctx.ct))
+                own_includes.push_back(".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/fbs/" + c.name);
             for (auto& d : c.defines)
                 own_defines.push_back(d);
             for (auto& d : c.syslibs)
@@ -409,6 +413,38 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         eff.syslibs = sorted_uniq(std::move(eff.syslibs));
         eff.link_flags = sorted_uniq(std::move(eff.link_flags));
         ctx.effective[plugin] = eff;
+    }
+
+    // ---- flatbuffers generation (before the interface) ------------------------
+    // One fbs_gen task per c_library with fbs_sources runs fbs_tool (flatc)
+    // over every schema of the library (they include each other) into
+    // .kiln/out/<cfg>/gen/<plugin>/fbs/<clib>/<stem>.fbs.h. The gen dir is a
+    // public include of the plugin and its interface task waits for the
+    // generation, so every compile that can include a generated header (the
+    // library's own, and its dependents' through their interface deps)
+    // runs after it.
+    std::map<std::string, TaskId> fbs_gen_tasks;
+    for (auto& c : declset.c_libraries) {
+        if (c.fbs_sources.empty() || !passes_filter(c.platforms, c.configs, ctx.ct))
+            continue;
+        std::string gen_dir = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/fbs/" + c.name;
+        std::vector<std::string> fbs_paths;
+        std::vector<std::string> outputs;
+        for (auto& fbs : c.fbs_sources) {
+            fbs_paths.push_back(fs::path(fbs).parent_path().generic_string());
+            outputs.push_back(gen_dir + "/" + fs::path(fbs).stem().generic_string() + ".fbs.h");
+        }
+        std::map<std::string, std::string> params;
+        params["tool"] = c.fbs_tool;
+        params["out_dir"] = gen_dir;
+        set_indexed(params, "fbs", c.fbs_sources);
+        set_indexed(params, "include_path", sorted_uniq(fbs_paths));
+        set_indexed(params, "output", outputs);
+        set_tool_hash(ctx, params, c.fbs_tool);
+        TaskDecl d = make_task(ctx, "fbs_gen", pdir + "/fbs:" + c.name, params,
+                               c.fbs_sources, {}, outputs);
+        fbs_gen_tasks[c.name] = d.id;
+        KILN_TRY(void_result(sched.add(std::move(d))));
     }
 
     // ---- plugin interface ----------------------------------------------------
@@ -448,6 +484,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             dep_ifaces.push_back(ctx.tasks[dep].interface_path);
         }
         set_indexed(params, "dep_interface", dep_ifaces);
+        for (auto& [name, task] : fbs_gen_tasks)
+            iface_deps.push_back(task);
 
         TaskDecl d = make_task(ctx, "interface", pdir + "/interface", params,
                                headers, iface_deps, {pt.interface_path});
@@ -789,6 +827,14 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             KILN_TRY(void_result(sched.add(std::move(d))));
         }
 
+        // Its fbs_gen task (lowered before the interface, above).
+        std::optional<TaskId> fbs_gen_task;
+        std::string fbs_gen_dir;
+        if (auto it = fbs_gen_tasks.find(c.name); it != fbs_gen_tasks.end()) {
+            fbs_gen_task = it->second;
+            fbs_gen_dir = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/fbs/" + c.name;
+        }
+
         std::vector<std::string> clib_sources = c.sources;
         for (auto& cc : proto_ccs)
             clib_sources.push_back(cc);
@@ -815,6 +861,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
                 incs.push_back(p);
             if (!proto_gen_dir.empty())
                 incs.push_back(proto_gen_dir);
+            if (!fbs_gen_dir.empty())
+                incs.push_back(fbs_gen_dir);
             set_indexed(params, "include", sorted_uniq(incs));
             set_indexed(params, "define", sorted_uniq(c.defines));
             set_indexed(params, "flag", c.flags);
@@ -823,6 +871,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             std::vector<TaskId> compile_deps;
             if (proto_gen_task)
                 compile_deps.push_back(*proto_gen_task);
+            if (fbs_gen_task)
+                compile_deps.push_back(*fbs_gen_task);
             TaskDecl d =
                 make_task(ctx, is_c ? "compile_c" : "compile_cpp", src, params, {src},
                           compile_deps, {obj});

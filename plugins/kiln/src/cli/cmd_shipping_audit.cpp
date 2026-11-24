@@ -145,14 +145,18 @@ const std::vector<CheckDef>& checks() {
         // Sound is presentation: the server links no audio library at all
         // (its AudioDevice is an inert shell). miniaudio opens the sound
         // servers with dlopen, so their names show as strings, never in ldd.
-        {"A22", "tinyserver: no audio library (Lyre, miniaudio, Opus, Ogg) symbols or sound-server names",
-         {"lyre::", "ma_device", "ma_context", "opus_decode", "opus_encode", "ogg_sync", "op_test"},
+        {"A22", "tinyserver: no audio library (Lyre, miniaudio, Opus, Ogg, RNNoise) symbols or sound-server names",
+         {"lyre::", "ma_device", "ma_context", "opus_decode", "opus_encode", "ogg_sync", "op_test", "rnnoise_"},
          {"libpulse", "libasound", "libjack"}, {}, {"tinyserver"}, ""},
-        // Sounds arrive cooked: a client decodes Opus but never encodes it, and
-        // reads no source file (lyre/import, opusfile and libogg are the
-        // cook's).
-        {"A23", "no audio import symbols (the Opus encoder, opusfile, libogg, lyre::import)",
-         {"lyre::import::", "opus_encode", "op_open_file", "op_read_float", "op_test", "ogg_sync"}, {}, {}, {"sandbox"}, ""},
+        // Sounds arrive cooked: a client reads no source file (lyre/import,
+        // opusfile and libogg are the cook's). It does encode Opus - its
+        // voice chat's speech - so the encoder is not checked here.
+        {"A23", "no audio import symbols (opusfile, libogg, lyre::import)",
+         {"lyre::import::", "op_open_file", "op_read_float", "op_test", "ogg_sync"}, {}, {}, {"sandbox"}, ""},
+        // Lyre Spatial (the fork of Steam Audio) and its libraries are the
+        // presenting apps': the server never places a sound.
+        {"A24", "tinyserver: no Lyre Spatial (the Steam Audio fork, libmysofa, PFFFT, FlatBuffers) symbols",
+         {"ipl::", "mysofa_", "pffft_", "flatbuffers::"}, {}, {}, {"tinyserver"}, ""},
     };
     return kChecks;
 }
