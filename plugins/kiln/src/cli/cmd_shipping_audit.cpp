@@ -119,11 +119,12 @@ const std::vector<CheckDef>& checks() {
         {"A13", "asserts compiled out, TE_FATAL machinery present", {}, {"destroying an invalid/stale RHI", "maxPushConstantsSize is below", "mesh_unlit.vert's push constant doesn't match"}, {}, {"sandbox", "tinyserver"}, ""},
         {"A14", "no .tasset reader symbols", {"TassetDocument", "ReadTasset", "DecookTasset", "WriteTasset"}, {}, {}, {"sandbox", "tinyserver"}, ""},
         {"A15", "no Preview-flagged cvars in Runtime/Server registries", {"Preview"}, {}, {}, {"sandbox", "tinyserver"}, "the Preview cvar flag has not landed"},
-        // The TE_TOOL subset build stays a subset (a Wisp tool links no renderer
-        // stack, no asset manager, no importers).
-        {"A16", "tinycrashreport: no renderer/asset-manager/importer symbols (the TE_TOOL subset)",
-         {"VulkanRenderer3D", "VulkanRenderer2D", "Renderer3D::", "Renderer2D::", "DebugBackend", "AssetManager",
-          "AssetRegistry", "TinyAssetCooker", "CgltfImporter", "FbxImporter", "MeshOptimizer", "SceneSerializer"},
+        // The crash reporter is an applet (hearth::App + wisp::Applet): it
+        // links no engine code at all, so it opens when the engine is what
+        // broke. The anchors are the engine's core types (the workspace's
+        // own boundary audit checks the namespace itself).
+        {"A16", "tinycrashreport: no engine core symbols (an applet)",
+         {"CVarRegistry", "LayerStack", "RendererSubsystem", "AssetManager", "SceneSerializer", "CrashHandler::", "LoomPool"},
          {}, {}, {"tinycrashreport"}, ""},
         // Scripts arrive as cooked bytecode - the runtime links the Luau
         // VM only, never the compiler (the A6 rule for shaders, applied
