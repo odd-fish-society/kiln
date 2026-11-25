@@ -7,7 +7,7 @@
 
 #include "core/hash.h"
 #include "core/util.h"
-#include "doctest.h"
+#include "hamr/test.h"
 
 namespace fs = std::filesystem;
 

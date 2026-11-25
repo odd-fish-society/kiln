@@ -1,5 +1,5 @@
 // K7 acceptance (spec §9): cook rules, tool discovery, asset IDs, pack.
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include <fstream>
 #include <sys/stat.h>

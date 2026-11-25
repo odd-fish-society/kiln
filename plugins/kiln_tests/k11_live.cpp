@@ -1,7 +1,7 @@
 // K11: the live link record and the daemon's per-process code
 // patches - a late launch, two processes, a failed compile that sends
 // nothing, a revert.
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include <csignal>
 #include <fstream>

@@ -1,6 +1,6 @@
 // Migration features: KILN-1 indexed flags, KILN-2 PCH, KILN-3
 // syslibs/link_flags, KILN-4 check_pkg_config.
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include <algorithm>
 #include <fstream>

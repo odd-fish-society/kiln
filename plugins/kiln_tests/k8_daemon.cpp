@@ -1,5 +1,5 @@
 // K8 smoke test (spec §10): daemon watches and rebuilds on change.
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include <csignal>
 #include <fstream>

@@ -6,7 +6,7 @@
 //
 // Fixture roots are named base/app (layers "base"/"app") — the boundary lint
 // forbids the consuming engine's real root-path strings under kiln/tests.
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include <csignal>
 #include <fstream>

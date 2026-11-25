@@ -1,5 +1,5 @@
 // K3 tests: depfile parsing (spec §5) and glob semantics (spec §6.4).
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include "core/depfile.h"
 #include "core/util.h"

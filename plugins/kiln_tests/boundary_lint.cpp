@@ -3,7 +3,7 @@
 // escaping kiln/ + third_party/ + system paths, and no engine-identifying
 // strings. This replaces the physical enforcement a separate repository
 // would have provided; grep-level detection is deliberate.
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include <filesystem>
 #include <fstream>

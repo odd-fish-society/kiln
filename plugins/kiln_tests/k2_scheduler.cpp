@@ -1,5 +1,5 @@
 // K2 acceptance (spec §3): parallel scheduler, pools, keep-going, logs.
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include <chrono>
 #include <thread>

@@ -1,7 +1,7 @@
 // cook_tinyasset rule + tool-hash
 // churn acceptance: the cook tool is itself a build output of an earlier
 // target in the same invocation; tool edits recook, unrelated edits do not.
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include <fstream>
 #include <sys/stat.h>

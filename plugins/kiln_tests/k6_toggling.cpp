@@ -1,5 +1,5 @@
 // K6 tests (spec §8): the four-layer resolution, table-driven.
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include <map>
 

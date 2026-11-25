@@ -1,5 +1,5 @@
 // K1 acceptance tests (spec §2.6): the digest→trace→run→record loop.
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include "core/digest.h"
 #include "core/executor.h"

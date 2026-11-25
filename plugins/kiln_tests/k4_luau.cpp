@@ -1,5 +1,5 @@
 // K4 tests (spec §6): Luau embedding, manifest env, determinism canary.
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include <algorithm>
 #include <cstdlib>

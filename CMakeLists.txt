@@ -59,7 +59,7 @@ target_compile_features(cluau_check PRIVATE cxx_std_17)
 # ---- third_party: header-only ----------------------------------------------
 add_library(kiln_headers INTERFACE)
 target_include_directories(kiln_headers INTERFACE
-  plugins/cli11 plugins/doctest plugins/json)
+  plugins/cli11 plugins/json)
 
 # ---- kiln_core -------------------------------------------------------------
 file(GLOB_RECURSE KILN_CORE_SOURCES CONFIGURE_DEPENDS
@@ -93,6 +93,8 @@ if(KILN_BUILD_TESTS)
   file(GLOB KILN_TEST_SOURCES CONFIGURE_DEPENDS plugins/kiln_tests/*.cpp)
   add_executable(kiln_tests ${KILN_TEST_SOURCES})
   target_link_libraries(kiln_tests PRIVATE kiln_core)
+  # hamr's C++ test library (header-only), from the hamr submodule.
+  target_include_directories(kiln_tests PRIVATE plugins/hamr/hamr/include)
   target_compile_definitions(kiln_tests PRIVATE
     KILN_BINARY_PATH="$<TARGET_FILE:kiln>"
     KILN_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

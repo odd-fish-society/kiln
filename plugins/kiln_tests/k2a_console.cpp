@@ -1,5 +1,5 @@
 // K2a acceptance (spec §3a): console renderer modes.
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include <chrono>
 #include <fcntl.h>

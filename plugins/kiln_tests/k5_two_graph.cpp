@@ -1,6 +1,6 @@
 // K5 acceptance (spec §7.3): two-plugin graphs, early cutoff, providers,
 // relink-without-recompile, query. CLI-level against a fixture workspace.
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include <fstream>
 #include <mutex>

@@ -1,5 +1,5 @@
 // K6 acceptance (spec §8): four-layer resolution via CLI, precise invalidation.
-#include "doctest.h"
+#include "hamr/test.h"
 
 #include <fstream>
 

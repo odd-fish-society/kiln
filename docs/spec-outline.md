@@ -29,7 +29,7 @@ and record the choice in `docs/decisions.md`.
 - **Build of Kiln itself:** CMake + Ninja, single `kiln` executable plus `kiln_core` static
   lib (so tests link the lib). Presets: `dev` (ASan+UBSan), `release`.
 - **Third-party (vendored, pinned in `third_party/`):** BLAKE3 (C impl), SQLite amalgamation,
-  Luau (git submodule, pinned tag), CLI11 (header-only), doctest (tests), `nlohmann/json`
+  Luau (git submodule, pinned tag), CLI11 (header-only), hamr's C++ test library (`hamr/test.h`, from the hamr submodule; tests), `nlohmann/json`
   (serialization; used ONLY at edges: never in hash paths, see spec §2.3).
 - **Platforms:** Linux first (inotify, TIOCGWINSZ). Windows support is designed-for but
   may stub the watcher/console specifics behind `#ifdef` with TODO markers. No macOS work.
@@ -52,7 +52,7 @@ and record the choice in `docs/decisions.md`.
 ```
 kiln/
   CMakeLists.txt
-  third_party/            blake3/ sqlite/ luau/ cli11/ doctest/ json/
+  third_party/            blake3/ sqlite/ luau/ cli11/ hamr/ json/
   src/core/               hash.{h,cpp} trace_store.{h,cpp} task.{h,cpp} graph.{h,cpp}
                           scheduler.{h,cpp} executor.{h,cpp} config.{h,cpp} result.h
   src/workspace/          workspace loading, plugin resolution, expansion orchestration,
@@ -864,7 +864,7 @@ Exit codes: 0 ok, 1 task failures, 2 usage/config errors, 3 internal error.
 
 ## 14. Testing & quality bar
 
-- doctest; unit tests colocated per module + integration tests driving the real binary
+- hamr's C++ test library (`hamr/test.h`), run by hamr; unit tests colocated per module + integration tests driving the real binary
   against `tests/fixtures/*` workspaces (tiny: 2-3 plugins, 1 shader, 1 texture, stub
   tools: a fake `glslc` shell script that concatenates inputs, so tests don't need SDKs).
 - Every acceptance item in spec sections 2-10 is a named test. CI (GitHub Actions, Linux): dev preset

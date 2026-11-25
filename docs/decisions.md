@@ -18,8 +18,9 @@ cover one piece of work.
   ~1.5 GB/s which is ample for a build system. SIMD paths can be restored by
   dropping the defines and adding the per-arch sources (see the CMake blake3
   target).
-- SQLite amalgamation `3.46.1`, CLI11 `2.4.2`, doctest `2.4.11`,
-  nlohmann/json `3.11.3` (edges only: never in hash paths, per spec §2.3).
+- SQLite amalgamation `3.46.1`, CLI11 `2.4.2`, nlohmann/json `3.11.3`
+  (edges only: never in hash paths, per spec §2.3), and for the tests
+  hamr's `hamr/test.h` (a submodule, at the workspace's hamr pin).
 - Kiln lives in-tree as a `kiln/` subfolder laid out as a standalone
   repository would be: canonized, spec §0.
 - `src/workspace/`: canonized, spec §0.
@@ -481,7 +482,7 @@ as above (SHOULD choices logged, MUST deviations fixed: none remain):
   `build/gtk3.flags.txt` input.
 - Kiln builds itself as a workspace of plugins (spec §7a as amended): kiln/src →
   plugins/kiln/src, kiln/tests → plugins/kiln_tests (incl. fixtures),
-  third_party/{luau,sqlite,blake3,cli11,doctest,json} → one plugin each
+  third_party/{luau,sqlite,blake3,cli11,hamr,json} → one plugin each
   (luau's checkout moves into plugins/luau/luau: the extraction story
   registers it as a submodule there; no .gitmodules entry exists in-tree
   yet). Kiln's manifests now contain ZERO `../` escapes. Stage0 CMakeLists
@@ -575,3 +576,16 @@ as above (SHOULD choices logged, MUST deviations fixed: none remain):
   hook writes the `findings.json` the workspace's tooling reads.
 - `kiln test-scenes` and `kiln shipping-audit` stay Kiln commands for now:
   they still name engine content, and the suite calls them or repeats them.
+
+## Kiln's tests on hamr's test library
+
+- `kiln_tests` is written against `hamr/test.h`, hamr's own C++ test
+  library (the hamr repository, a submodule at `plugins/hamr/hamr`, pinned
+  with the workspace's other hamr checkout). The tests' sources changed
+  only in their include and their main; no third-party test framework is
+  vendored any more.
+- In the smoke the binary runs through hamr's case scheduler: its 114
+  cases go to worker processes side by side (about 6 s instead of 30), a
+  crash or a hang costs only its case, and each case's time is in the
+  report.
+
