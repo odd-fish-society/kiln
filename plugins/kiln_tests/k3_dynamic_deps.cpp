@@ -97,7 +97,9 @@ TEST_CASE("K3.4 a moved/deleted recorded dynamic dep does not fail the digest") 
     auto r1 = run_kiln(tmp.path, args);
     INFO(r1.out);
     REQUIRE(r1.code == 0);
-    REQUIRE(run_kiln(tmp.path, args).code == 0); // settle dep discovery
+    auto settled = run_kiln(tmp.path, args); // discovered deps are in the trace's digest
+    REQUIRE(settled.code == 0);
+    CHECK(count_executed(settled.out) == 0);
 
     // MOVE the header AND update its referrers (the real file-rename shape:
     // the previous run's depfile still records the old path).
@@ -113,9 +115,7 @@ TEST_CASE("K3.4 a moved/deleted recorded dynamic dep does not fail the digest") 
     REQUIRE(r2.code == 0); // the stale dynamic dep must not fail the digest
     CHECK(r2.out.find("plugins/app/src/main.cpp/compile_cpp") != std::string::npos);
 
-    // First build after the dep-set change may over-schedule (spec §5); the
-    // NEXT one must be fully cached once the new dep set is recorded.
-    REQUIRE(run_kiln(tmp.path, args).code == 0);
+    // The new dep set is in the trace's digest: the next build is cached.
     auto r4 = run_kiln(tmp.path, args);
     REQUIRE(r4.code == 0);
     CHECK(count_executed(r4.out) == 0);

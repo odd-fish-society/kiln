@@ -30,6 +30,9 @@ Result<int> cmd_build(const BuildOptions& opts, console::Renderer& renderer) {
         std::printf("kiln: removed %zu stale cooked output%s (their sources are gone)\n",
                     outcome->pruned_outputs, outcome->pruned_outputs == 1 ? "" : "s");
 
+    for (auto& w : outcome->warnings)
+        std::printf("kiln: warning: %s\n", w.c_str());
+
     if (opts.explain) {
         for (auto& w : outcome->why) {
             if (w.state != TaskState::Succeeded && w.state != TaskState::Failed)

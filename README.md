@@ -314,6 +314,10 @@ delete: worst case is a clean rebuild), `compile_commands/` for IDEs,
 - Deleted an output by hand? Next build restores exactly it. Corrupted state? Delete
   `.kiln/` entirely; you lose nothing but warm caches.
 - Header dependencies are discovered, not declared: don't list them in manifests.
+- Targets of one config share `.kiln/out/<platform>-<config>/`. Two targets that build a
+  shared plugin with different features overwrite each other's objects, so building both
+  is never a no-op; Kiln warns and names them when it happens. Give them the same features where they
+  share code, or build them in different configs.
 - Unknown manifest fields are errors: typos can't silently drop a dependency.
 - A plugin's layer is derived from the root it lives in; moving it between roots is
   the only way to change it. Dependencies must not point to a higher layer.

@@ -667,6 +667,19 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             set_indexed(pch_params, "define", sorted_uniq(defines));
             set_indexed(pch_params, "sdk_root", sdk_roots);
             set_indexed(pch_params, "flag", m.flags);
+            // A Clang PCH records its headers' mtimes, and the header is
+            // copied fresh every run, so no two gch files were alike: two
+            // targets sharing this one path (equal params, different task
+            // ids) rewrote it in turn and reran each other forever. Without
+            // the timestamps the gch is byte-reproducible; validation then
+            // rests on the task's content-hashed inputs.
+            {
+                auto [it, inserted] = ctx.toolchain_clang.try_emplace(cxx);
+                if (inserted)
+                    it->second = toolchain_is_clang(cxx, ctx.ws->root);
+                if (it->second)
+                    pch_params["pch_timestamp"] = "0";
+            }
             // Identity note: two modules may share one pch header (engine +
             // engine_editor both use tepch.h) but need DIFFERENT gch artifacts
             // (different defines). The identity must be module-qualified —

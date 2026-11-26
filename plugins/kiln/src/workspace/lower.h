@@ -76,6 +76,7 @@ struct LowerCtx {
     // The toolchain fingerprint per tool spelling, computed
     // once per lowering (it spawns the driver).
     std::map<std::string, std::string> toolchain_fingerprints;
+    std::map<std::string, bool> toolchain_clang; // per C++ driver, probed once
 };
 
 // A plugin's graph files (its DeclSet, interface, provider, clib

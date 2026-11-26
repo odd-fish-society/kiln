@@ -45,6 +45,10 @@ TaskResult run_compile_pch(TaskCtx& ctx) {
     argv.push_back("-MD");
     argv.push_back("-MF");
     argv.push_back(depfile);
+    if (param(*ctx.decl, "pch_timestamp") == "0") {
+        argv.push_back("-Xclang");
+        argv.push_back("-fno-pch-timestamp");
+    }
     argv.push_back("-x");
     argv.push_back("c++-header");
     argv.push_back("-c");
@@ -70,8 +74,9 @@ TaskResult run_compile_pch(TaskCtx& ctx) {
 }
 
 void register_pch() {
-    // outputs_opaque: gch bytes are NOT reproducible across builds (a PCH is
-    // a compiler-state dump). Dependents key on this
+    // outputs_opaque: gch bytes are NOT reproducible across builds for GCC (a
+    // PCH is a compiler-state dump; Clang's is, without its timestamps).
+    // Dependents key on this
     // task's INPUT digest instead — see decisions.md (migration pass).
     register_rule("compile_pch", 1, run_compile_pch, /*always_run=*/false,
                   /*outputs_opaque=*/true);

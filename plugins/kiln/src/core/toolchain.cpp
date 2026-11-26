@@ -92,4 +92,15 @@ std::string toolchain_fingerprint(const std::string& tool, const fs::path& works
     return h.finish().hex();
 }
 
+bool toolchain_is_clang(const std::string& tool, const fs::path& workspace_root) {
+    fs::path driver = resolve_tool(tool, workspace_root);
+    std::error_code ec;
+    if (driver.empty() || !fs::is_regular_file(driver, ec))
+        return false;
+    std::string banner;
+    if (util::run_process({driver.generic_string(), "--version"}, workspace_root, &banner) != 0)
+        return false;
+    return banner.find("clang version") != std::string::npos;
+}
+
 } // namespace kiln

@@ -123,10 +123,8 @@ TEST_CASE("R1.2 a workspace rule library: exec with env, depfile and dyndep; cac
     CHECK(read_file(out) == "alpha\ngreeting=hello\nextra-1\n");
     CHECK(read_file(graph_file(tmp.path, "linux-dev", "content.provider.json")).find("a.gen") != std::string::npos);
 
-    // The first build after a task's dependency set changes may rerun it
-    // (spec §5: the digest a trace stores is the one computed before the run
-    // discovered its dynamic inputs); the build after that is a no-op.
-    REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
+    // The trace's digest covers the inputs the run discovered (spec §5), so
+    // the next build is a no-op.
     auto again = run_kiln(tmp.path, build_args());
     INFO(again.out);
     CHECK(again.code == 0);
@@ -256,4 +254,40 @@ TEST_CASE("R1.4 rule errors name the cook, the rule and what is wrong") {
 
     e = eval_error({{"plugins/p/plugin.build.luau", "plugin \"p\" {}\nrule \"x\" { version = 1 }\n"}});
     CHECK(e.find("`rule` is only allowed in a rule library") != std::string::npos);
+}
+
+TEST_CASE("R1.5 an input discovered by a run that edits it during the run reruns the task") {
+    TempDir tmp;
+    fs::path tool = tmp.path / "gen.sh";
+    // Reads late.txt (reported through the dyndep), then edits it while the
+    // task is still running - once, while the `edit-once` marker exists.
+    write_script(tool, R"SH(#!/bin/sh
+in="$1"; out="$2"; dep="$3"; dyn="$4"
+mkdir -p "$(dirname "$out")"
+{ cat "$in"; cat plugins/content/content/late.txt; } > "$out"
+printf '%s: %s\n' "$out" "$in" > "$dep"
+printf '{"inputs": ["plugins/content/content/late.txt"]}\n' > "$dyn"
+if [ -f edit-once ]; then rm edit-once; echo late-2 > plugins/content/content/late.txt; fi
+)SH");
+    auto files = library_fixture(tool);
+    files["edit-once"] = "";
+    write_tree(tmp.path, files);
+
+    auto first = run_kiln(tmp.path, build_args());
+    INFO(first.out);
+    REQUIRE(first.code == 0);
+    const fs::path out = tmp.path / ".kiln/out/linux-dev/assets/content/content/a.gen";
+    CHECK(read_file(out) == "alpha\nlate-1\n");
+
+    // late.txt changed after the tool read it: its post-run content must not
+    // enter the stored digest, or this build would wrongly be a no-op.
+    auto second = run_kiln(tmp.path, build_args());
+    INFO(second.out);
+    REQUIRE(second.code == 0);
+    CHECK(ran(second.out, "a.txt/gen_txt"));
+    CHECK(read_file(out) == "alpha\nlate-2\n");
+
+    auto third = run_kiln(tmp.path, build_args());
+    REQUIRE(third.code == 0);
+    CHECK(!ran(third.out, "gen_txt"));
 }

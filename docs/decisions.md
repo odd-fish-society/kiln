@@ -78,6 +78,14 @@ cover one piece of work.
 
 - Depfile parsing: Make syntax with `\␣` escaping, `\\\n` continuation
   (continuation indentation ignored), and `\#`, `\:` escapes.
+- The stored digest is recomputed after the run over the discovered dep set.
+  Storing the pre-run digest (the original rule) was correct but reran every
+  task with dynamic deps on the build after its first - every C++ compile:
+  a fresh checkout compiled everything twice. The post-run digest reuses the
+  pre-run hashes and trusts a NEW dep's current content only when its mtime
+  predates the task's start (less 50 ms for the kernel's coarse file clock,
+  2 s for whole-second mtimes); otherwise it keeps the pre-run digest, so an
+  input edited while the tool ran still reruns the task (test R1.5).
 
 ## Luau
 
@@ -220,6 +228,25 @@ as above (SHOULD choices logged, MUST deviations fixed: none remain):
   output summary. This is a documented per-rule deviation from
   output-summary semantics; the rule's own cache-hit still verifies outputs
   exist (deleting the copied header/gch repairs with exactly one task).
+- With Clang the gch IS reproducible once its header timestamps are left
+  out (`-Xclang -fno-pch-timestamp`, passed when the C++ driver's banner says
+  Clang). It matters across targets: each target's pch task has its own id
+  but the one output path, and with timestamps (whole seconds) the gch
+  differed whenever two targets compiled it in different seconds - each then
+  saw the other's file as modified and both reran on every build (TinyEngine's
+  `scripts/build.sh` reran its engine, headless and Wisp PCHs every time).
+  Clang then checks no mtimes when it loads the PCH; the task's content-hashed
+  inputs already rebuild it on any edit. GCC's gch stays non-reproducible.
+- Targets of one configuration share output paths (`.kiln/out/<platform>-
+  <config>/`), so two that compile a module with different settings (a
+  feature that adds a define) overwrite each other's objects and archives:
+  correct - each target runs its own tasks before its link - but never a
+  no-op. A multi-target build warns, one line per target pair, naming a file,
+  when a task actually reran because another target of the build rewrote its
+  output (differing params alone are no signal: most defines leave most
+  objects byte-identical).
+  Variant-keyed output paths (and one task per identical compile across
+  targets) would remove the case; not done yet.
 - The pch depfile lists the copied header (its own output) as a prerequisite;
   `report_depfile_deps` gained an exclude list so a task never becomes a
   dynamic dep of itself.

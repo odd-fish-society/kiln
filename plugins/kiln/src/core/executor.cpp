@@ -1,6 +1,8 @@
 #include "core/executor.h"
 
 #include <algorithm>
+#include <chrono>
+#include <map>
 #include <mutex>
 #include <set>
 
@@ -49,6 +51,22 @@ struct DepCollector {
     }
 };
 
+// Whether `p` was last written before `started`. File times come from the
+// kernel's coarse clock, which lags the fine one by up to a tick, so a write
+// just after the start can carry a slightly earlier time: the margin covers
+// it. A whole-second mtime suggests a file system that keeps only seconds
+// (or two), where the margin is that granularity.
+bool written_before(const fs::path& p, fs::file_time_type started) {
+    std::error_code ec;
+    auto mtime = fs::last_write_time(p, ec);
+    if (ec)
+        return false;
+    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(mtime.time_since_epoch()).count();
+    auto margin = (ns % 1000000000) == 0 ? std::chrono::milliseconds(2000)
+                                         : std::chrono::milliseconds(50);
+    return mtime + margin < started;
+}
+
 } // namespace
 
 Executor::Executor(fs::path workspace_root, fs::path kiln_dir, FileHashCache& hash_cache,
@@ -79,10 +97,17 @@ Executor::Result Executor::run_task(const TaskDecl& decl,
     for (auto& d : dep_info)
         dep_summaries.push_back({d.id, d.output_summary});
 
+    // Every input hash the pre-run digest read: the post-run digest reuses
+    // them, so an input edited while the task ran keeps its old hash in the
+    // trace and the next build reruns the task.
+    std::map<std::string, Hash256> hashed_before;
     auto digest = compute_action_digest(
         decl, dyn_deps,
         [&](const std::string& p) -> kiln::Result<Hash256> {
-            return hash_cache_.hash_of(workspace_root_, p);
+            auto hv = hash_cache_.hash_of(workspace_root_, p);
+            if (hv.ok())
+                hashed_before[p] = *hv;
+            return hv;
         },
         dep_summaries);
     if (!digest.ok()) {
@@ -143,6 +168,7 @@ Executor::Result Executor::run_task(const TaskDecl& decl,
         return hash_cache_.hash_of(workspace_root_, rel);
     };
 
+    const auto started = fs::file_time_type::clock::now();
     uint64_t t0 = util::now_ms();
     TaskResult tr = fn(ctx);
     uint64_t wall_ms = util::now_ms() - t0;
@@ -194,10 +220,41 @@ Executor::Result Executor::run_task(const TaskDecl& decl,
         }
     }
 
+    // The digest the trace keeps covers the dependency set this run
+    // discovered, so the next build matches it (no rerun because the set
+    // changed). A newly discovered input has no pre-run hash: its current
+    // content is trusted only if it was last written before the task started;
+    // one written during the run may not be what the tool read, and the trace
+    // then keeps the pre-run digest (the next build reruns the task).
+    Hash256 stored_digest = *digest;
+    if (collected_deps != dyn_deps) {
+        bool trusted = true;
+        for (auto& p : collected_deps)
+            if (!hashed_before.count(p) && !written_before(workspace_root_ / p, started)) {
+                trusted = false;
+                break;
+            }
+        if (trusted) {
+            auto after = compute_action_digest(
+                decl, collected_deps,
+                [&](const std::string& p) -> kiln::Result<Hash256> {
+                    if (auto it = hashed_before.find(p); it != hashed_before.end())
+                        return kiln::Result<Hash256>::success(it->second);
+                    auto hv = hash_cache_.hash_of(workspace_root_, p);
+                    if (hv.ok())
+                        hashed_before[p] = *hv;
+                    return hv;
+                },
+                dep_summaries);
+            if (after.ok())
+                stored_digest = *after;
+        }
+    }
+
     Trace new_trace;
     new_trace.task_hash = th;
     new_trace.task_display = decl.id.display();
-    new_trace.action_digest = *digest;
+    new_trace.action_digest = stored_digest;
     new_trace.outputs = outputs;
     new_trace.dynamic_deps = collected_deps;
     new_trace.params_json = params_to_json(decl.params);
@@ -213,6 +270,10 @@ Executor::Result Executor::run_task(const TaskDecl& decl,
     for (auto& p : collected_deps)
         all_inputs.insert(p);
     for (auto& p : all_inputs) {
+        if (auto it = hashed_before.find(p); it != hashed_before.end()) {
+            new_trace.inputs.push_back({p, it->second});
+            continue;
+        }
         auto hv = hash_cache_.hash_of(workspace_root_, p);
         if (!hv.ok())
             continue;

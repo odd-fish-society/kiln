@@ -3,8 +3,11 @@
 #include "hamr/test.h"
 
 #include <algorithm>
+#include <chrono>
 #include <fstream>
+#include <map>
 #include <sys/stat.h>
+#include <thread>
 
 #include "core/executor.h"
 #include "core/file_hash_cache.h"
@@ -314,4 +317,93 @@ TEST_CASE("check_scripts passes the defs and every script, fails on the checker'
     auto fail = h.run(make_decl());
     REQUIRE(fail.state == TaskState::Failed);
     CHECK(fail.why.find("TypeError: bad") != std::string::npos);
+}
+
+namespace {
+
+// Two targets linking one module with a PCH. `feature_b` is the second
+// target's `x` feature: the module defines X=1 under it (which changes the
+// objects), so a differing value makes the targets write the same files with
+// different settings.
+std::map<std::string, std::string> two_target_pch_tree(const std::string& cxx,
+                                                       const std::string& feature_b) {
+    return {
+        {"kiln.workspace.luau",
+         "workspace \"k2\" { strict_globs = true, tools = { cxx = \"" + cxx + "\" } }\n"},
+        {"build/a.target.luau",
+         "target \"a\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"app/main\" } }\n"},
+        {"build/b.target.luau",
+         "target \"b\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"app/main\" }, "
+         "features = { x = \"" + feature_b + "\" } }\n"},
+        {"plugins/app/plugin.build.luau",
+         "plugin \"app\" {}\nmodule \"main\" {\n  sources = glob(\"src/*.cpp\"),\n"
+         "  pch = \"src/pch.h\",\n  private_includes = { \"src\" },\n"
+         "  private_defines = { config.features.x == \"1\" and \"X=1\" or nil },\n}\n"},
+        {"plugins/app/src/pch.h", "#pragma once\n#include <string>\n"},
+        {"plugins/app/src/a.cpp",
+         "#include \"pch.h\"\n#ifdef X\nint a() { return 2; }\n#else\nint a() { return 1; }\n#endif\n"},
+        {"plugins/app/src/main.cpp", "int a();\nint main() { return a() > 0 ? 0 : 1; }\n"},
+    };
+}
+
+std::vector<std::string> build_ab() {
+    return {"build", "a", "b", "--progress=plain", "--workspace", "."};
+}
+
+} // namespace
+
+TEST_CASE("KILN-2 two targets sharing a Clang PCH: the second multi-target build is a no-op") {
+    if (util::find_in_path("clang++").empty()) {
+        MESSAGE("clang++ not on PATH: nothing to check");
+        return;
+    }
+    TempDir tmp;
+    write_tree(tmp.path, two_target_pch_tree("clang++", "0"));
+    // Each target compiles the PCH as its own task into the one path. A gch
+    // with timestamps (whole seconds) differed whenever the two ran in
+    // different seconds, so each target's task saw the other's file and both
+    // reran on every build.
+    auto ra = run_kiln(tmp.path, {"build", "a", "--progress=plain", "--workspace", "."});
+    INFO(ra.out);
+    REQUIRE(ra.code == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    auto rb = run_kiln(tmp.path, {"build", "b", "--progress=plain", "--workspace", "."});
+    INFO(rb.out);
+    REQUIRE(rb.code == 0);
+    auto r2 = run_kiln(tmp.path, build_ab());
+    INFO(r2.out);
+    REQUIRE(r2.code == 0);
+    CHECK(count_executed(r2.out) == 0);
+    CHECK(r2.out.find("warning") == std::string::npos);
+}
+
+TEST_CASE("KILN-2 two targets writing one file differently: a warning names them") {
+    TempDir tmp;
+    write_tree(tmp.path, two_target_pch_tree("c++", "1"));
+    // The first build writes each target's files in turn; the second finds
+    // each target's objects rewritten by the other and reruns them.
+    auto r1 = run_kiln(tmp.path, build_ab());
+    INFO(r1.out);
+    REQUIRE(r1.code == 0);
+    CHECK(r1.out.find("kiln: warning:") == std::string::npos);
+    auto r2 = run_kiln(tmp.path, build_ab());
+    INFO(r2.out);
+    REQUIRE(r2.code == 0);
+    CHECK(r2.out.find("kiln: warning: targets 'a' and 'b' (linux-dev) write") != std::string::npos);
+    CHECK(r2.out.find("(e.g. .kiln/out/linux-dev/") != std::string::npos);
+
+    // The same settings: the files agree, nothing reruns, no warning. (With
+    // GCC the shared gch alone still differs run to run - a real collision
+    // the warning reports - so this half needs Clang.)
+    if (util::find_in_path("clang++").empty()) {
+        MESSAGE("clang++ not on PATH: the same-settings half is not checked");
+        return;
+    }
+    write_tree(tmp.path, two_target_pch_tree("clang++", "0"));
+    REQUIRE(run_kiln(tmp.path, build_ab()).code == 0);
+    REQUIRE(run_kiln(tmp.path, build_ab()).code == 0);
+    auto r3 = run_kiln(tmp.path, build_ab());
+    INFO(r3.out);
+    REQUIRE(r3.code == 0);
+    CHECK(r3.out.find("kiln: warning:") == std::string::npos);
 }

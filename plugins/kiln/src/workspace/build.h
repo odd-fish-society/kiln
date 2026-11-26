@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -39,6 +40,17 @@ struct BuildOutcome {
     std::vector<std::string> built; // target:config strings built
     std::vector<WhyRecord> why;     // per-task rebuild reasons (--explain)
     size_t pruned_outputs = 0;      // dead cook outputs deleted (prune_dead_cooks)
+    // One line per pair of targets that write the same files with different
+    // settings: each build of one makes the other's tasks rerun.
+    std::vector<std::string> warnings;
+
+    // Every output path this build's tasks declare, by the target that first
+    // declared it and its task (the collision check).
+    struct OutputClaim {
+        std::string target;
+        Hash256 task;
+    };
+    std::map<std::string, OutputClaim> output_claims;
 };
 
 // The outputs of every cook_tinyasset trace whose source file is gone (a

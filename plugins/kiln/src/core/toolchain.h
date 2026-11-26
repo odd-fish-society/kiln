@@ -24,4 +24,7 @@ std::string toolchain_fingerprint(const std::string& tool,
                                   const std::filesystem::path& workspace_root,
                                   bool probe_driver);
 
+// Whether the driver is Clang (its `--version` banner says so).
+bool toolchain_is_clang(const std::string& tool, const std::filesystem::path& workspace_root);
+
 } // namespace kiln

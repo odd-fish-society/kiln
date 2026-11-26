@@ -74,7 +74,6 @@ TEST_CASE("K6.2 toggling devtools off→on rebuilds only what references it") {
     TempDir tmp;
     write_tree(tmp.path, fixture());
     REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
-    REQUIRE(run_kiln(tmp.path, build_args()).code == 0); // settle dep discovery
     // devtools disabled by target: its sources were never compiled.
     CHECK(!file_exists(tmp.path / ".kiln/out/linux-dev/obj/devtools/dt/src/dt.cpp.o"));
 

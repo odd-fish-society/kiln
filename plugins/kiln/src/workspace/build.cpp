@@ -283,6 +283,51 @@ std::vector<TargetSpec> tool_targets(const Workspace& ws, const ResolutionResult
     return out;
 }
 
+// Records which target first declared each output path in this build.
+void claim_outputs(const std::string& target, const TaskGraph& graph, BuildOutcome& outcome) {
+    for (const TaskNode& node : graph.nodes())
+        for (const std::string& out : node.decl.declared_outputs)
+            outcome.output_claims.try_emplace(
+                out, BuildOutcome::OutputClaim{target, node.decl.id.stable_hash()});
+}
+
+// Two targets of one configuration whose tasks write the same file
+// differently (a module both link, compiled with different defines; a
+// non-reproducible output) overwrite each other: every build reruns both.
+// Builds stay correct - each target runs its own tasks before its link - so
+// this warns, one line per target pair, when a task of this target reran
+// because its output was not what it wrote and another target of this build
+// declares that file. gen_compile_commands is the one intended shared file
+// (the last target built owns the IDE's view).
+void note_output_collisions(const std::string& target, const std::string& config,
+                            const std::vector<WhyRecord>& why, BuildOutcome& outcome) {
+    struct Pair {
+        size_t files = 0;
+        std::string example;
+    };
+    std::map<std::string, Pair> pairs; // the other target -> its collisions
+    for (const WhyRecord& w : why) {
+        if (w.kind != "missing_output" || w.state != TaskState::Succeeded)
+            continue;
+        if (w.task_display.ends_with("/gen_compile_commands"))
+            continue;
+        auto it = outcome.output_claims.find(w.path);
+        if (it == outcome.output_claims.end() || it->second.target == target)
+            continue;
+        Pair& pair = pairs[it->second.target];
+        if (pair.files++ == 0)
+            pair.example = w.path;
+    }
+    for (auto& [other, pair] : pairs)
+        outcome.warnings.push_back(
+            "targets '" + other + "' and '" + target + "' (" + config + ") write " +
+            std::to_string(pair.files) + " of the same file" + (pair.files == 1 ? "" : "s") +
+            " differently (e.g. " + pair.example +
+            "): each reran because the other rewrote it, and will on every build of both; "
+            "make the features and plugins they share agree, or build them in different "
+            "configs");
+}
+
 Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
                        const Workspace& ws, const TargetSpec& spec, BuildOutcome& outcome,
                        std::vector<std::string>& building) {
@@ -461,6 +506,8 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
 
     // ---- wave 2: actions -----------------------------------------------------
     KILN_TRY(sched.run());
+    note_output_collisions(target.name, ct.name(), sched.why(), outcome);
+    claim_outputs(target.name, sched.graph(), outcome);
 
     write_graph_json(ws.root, target.name, ct, sched, lctx);
     write_why_json(ws.root, target.name, ct, sched);

@@ -289,6 +289,9 @@ run_task(decl):
   result  = execute(decl)                             # buffered logs, dyn deps collected
   if !result.ok: state = Failed; keep old trace; return
   out_hashes = hash each result.output
+  if collected_dyn_deps != trace.dynamic_deps and every newly discovered dep
+     was last written before the task started (§5):
+      digest = compute_action_digest(decl, collected_dyn_deps)  # pre-run hashes reused
   new_trace  = {digest, out_hashes, collected_dyn_deps, wall_ms}
   # EARLY CUTOFF: compare output_summary_hash(old) vs (new)
   changed = (trace == null) || (summary(old.outputs) != summary(new.outputs))
@@ -384,15 +387,26 @@ struct ConfigTuple {
 
 Multiple ConfigTuples may be built in one invocation (`kiln build game:linux-dev
 game:linux-release`); their graphs coexist keyed by config_hash.
+Targets of one config name share `.kiln/out/<platform>-<config>/`. When a task of target
+B reruns because its output is not what it wrote and target A of the same invocation
+declares that file (A compiles it differently, or its output is not reproducible), the
+build prints `kiln: warning: targets 'A' and 'B' (<config>) write N of the same files
+differently (e.g. <path>)` once per pair: building both reruns those tasks every time.
+The output stays correct. `gen_compile_commands` is exempt (one shared file by design).
 
 ## 5. Dynamic dependencies
 
 - `TaskCtx::report_dep(path)`: thread-safe append; paths validated (exist, inside
   workspace or an allowlisted SDK root from `env_allow`), normalized, deduped, sorted
   before storing in trace.
-- Semantics: dynamic deps affect the NEXT digest computation (spec §2.2). Document in code:
-  first build after a dep-set change may schedule conservatively; correctness holds
-  because digest is computed at run time with current dep set.
+- Semantics: the digest a trace stores covers the dep set the run discovered, so the
+  build after a dep-set change (the first build included) runs nothing. The post-run
+  digest reuses every hash the pre-run digest read; a newly discovered dep is hashed
+  after the run, which is sound only if the tool read that content. So a new dep whose
+  mtime is not before the task's start (less a margin for the kernel's coarse file
+  clock: 50 ms, or 2 s for a whole-second mtime) makes the trace keep the pre-run digest
+  and the next build reruns the task: an input edited mid-run never caches a stale
+  output.
 
 Built-in rules discover dynamic deps with two helpers (§5a, §5b).
 

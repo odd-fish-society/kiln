@@ -74,21 +74,17 @@ TEST_CASE("K5.1 clean build succeeds; rebuild executes nothing") {
     CHECK(count_executed(r1.out) > 0);
     CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/bin/game"));
 
-    // Settle build: the first rebuild re-runs compiles once because depfile-
-    // discovered header deps enter the digest (verifying-traces model).
+    // The depfile-discovered headers are in each compile's stored digest, so
+    // the first rebuild runs nothing.
     auto r2 = run_kiln(tmp.path, build_args());
     REQUIRE(r2.code == 0);
-    CHECK(count_executed(r2.out) == 2); // dep discovery for core + audio compiles
-    auto r3 = run_kiln(tmp.path, build_args());
-    REQUIRE(r3.code == 0);
-    CHECK(count_executed(r3.out) == 0);
+    CHECK(count_executed(r2.out) == 0);
 }
 
 TEST_CASE("K5.2 edit core .cpp ⇒ dependents relink, never recompile") {
     TempDir tmp;
     write_tree(tmp.path, fixture());
     REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
-    REQUIRE(run_kiln(tmp.path, build_args()).code == 0); // settle dep discovery
 
     // Edit core implementation.
     {
@@ -129,7 +125,6 @@ TEST_CASE("K5.2 edit core .cpp ⇒ dependents relink, never recompile") {
          "int first(); int second(); int main() { return first() + second() - 3; }\n"},
     });
     REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
-    REQUIRE(run_kiln(tmp.path, build_args()).code == 0); // settle dep discovery
     std::string before = read_file(tmp.path / ".kiln/out/linux-dev/bin/game");
 
     // Edit the SECOND module: its archive is NOT the provider's impl_artifact
@@ -163,7 +158,6 @@ TEST_CASE("K5.10 removing a source drops its archive member (archive built fresh
         {"plugins/app/src/main.cpp", "int keep(); int main() { return keep() - 1; }\n"},
     });
     REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
-    REQUIRE(run_kiln(tmp.path, build_args()).code == 0); // settle
     auto member_listing = [&]() {
         std::string out;
         int rc = kiln::util::run_process(
@@ -188,7 +182,6 @@ TEST_CASE("K5.3 edit core public header ⇒ dependents recompile") {
     TempDir tmp;
     write_tree(tmp.path, fixture());
     REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
-    REQUIRE(run_kiln(tmp.path, build_args()).code == 0); // settle dep discovery
 
     {
         std::ofstream f(tmp.path / "plugins/core/include/core.h", std::ios::app);
@@ -205,7 +198,6 @@ TEST_CASE("K5.4 comment edit in a manifest re-expands; early cutoff stops downst
     TempDir tmp;
     write_tree(tmp.path, fixture());
     REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
-    REQUIRE(run_kiln(tmp.path, build_args()).code == 0); // settle dep discovery
 
     {
         std::ifstream in(tmp.path / "plugins/audio/plugin.build.luau");
@@ -240,7 +232,6 @@ TEST_CASE("K5.6 why-dirty explains a surprise rebuild") {
     TempDir tmp;
     write_tree(tmp.path, fixture());
     REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
-    REQUIRE(run_kiln(tmp.path, build_args()).code == 0); // settle dep discovery
     {
         std::ofstream f(tmp.path / "plugins/core/include/core.h", std::ios::app);
         f << "// change\n";
@@ -379,8 +370,6 @@ TEST_CASE("K5c.1 toolchain upgrade: a changed compiler reruns compiles + link") 
 
     auto r1 = run_kiln(tmp.path, build_args());
     REQUIRE(r1.code == 0);
-    // The settle build (K5.1): depfile discovery reruns core + audio once.
-    REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
     auto r2 = run_kiln(tmp.path, build_args());
     REQUIRE(r2.code == 0);
     CHECK(count_executed(r2.out) == 0);
@@ -424,7 +413,6 @@ TEST_CASE("K5c.2 the pinned linker (tools.ld): passed as --ld-path, a changed li
     write_tree(tmp.path, files);
 
     REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
-    REQUIRE(run_kiln(tmp.path, build_args()).code == 0); // settle dep discovery
     auto r2 = run_kiln(tmp.path, build_args());
     REQUIRE(r2.code == 0);
     CHECK(count_executed(r2.out) == 0);
@@ -469,7 +457,6 @@ TEST_CASE("K5.10 two targets with different features keep their own graph files 
         return a;
     }();
     REQUIRE(run_kiln(tmp.path, args).code == 0);
-    REQUIRE(run_kiln(tmp.path, args).code == 0); // settle dep discovery
     auto r = run_kiln(tmp.path, args);
     INFO(r.out);
     REQUIRE(r.code == 0);

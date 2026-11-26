@@ -152,7 +152,6 @@ TEST_CASE("K7.2 editing the source PNG re-cooks one asset and repacks one archiv
     chmod(tool.c_str(), 0755);
     write_tree(tmp.path, fixture(tool));
     REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
-    REQUIRE(run_kiln(tmp.path, build_args()).code == 0); // settle dep discovery
 
     {
         std::ofstream f(tmp.path / "plugins/content/content/icon.png");
@@ -181,7 +180,6 @@ TEST_CASE("K7.3 tool binary swap re-cooks that rule's tasks only") {
     chmod(tool.c_str(), 0755);
     write_tree(tmp.path, fixture(tool));
     REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
-    REQUIRE(run_kiln(tmp.path, build_args()).code == 0); // settle dep discovery
 
     {
         std::ofstream f(tool);
