@@ -1,0 +1,110 @@
+// Kiln's standard cook rules. Each lowers a `cook` declaration into one
+// action per input; Kiln runs them through its exec task (or an in-process
+// copy). A cooked file lands at the same plugin-relative path under
+// ctx.out_dir, with the rule's extension, and is the input's asset.
+
+// The plugin-relative path of a workspace-relative input.
+local function plugin_relative(input: string, ctx: RuleCtx): string {
+	return path.relative(path.norm(input), ctx.plugin_dir)
+}
+
+local function cooked(input: string, ctx: RuleCtx, extension: string?): string {
+	let rel = plugin_relative(input, ctx)
+	if (extension != nil) {
+		rel = path.replace_extension(rel, extension)
+	}
+	return ctx.out_dir .. "/" .. rel
+}
+
+// The manifest may pin the tool binary (`params = { tool = "..." }`, e.g. a
+// build output); otherwise the rule names it and Kiln finds it in the
+// workspace `tools` table or on PATH.
+local function with_tool(action: Action, cook: Cook, name: string): Action {
+	if (cook.params.tool != nil) {
+		action.tool_path = cook.params.tool
+	} else {
+		action.tool = name
+	}
+	return action
+}
+
+// glslc: GLSL -> SPIR-V (`.spv`). Params: stage (default frag), entry,
+// define.<n> = "NAME=VALUE" (in key order). `#include "..."` lines are
+// scanned for dependencies.
+local function lower_shader(cook: Cook, ctx: RuleCtx): { Action } {
+	let defines: { string } = {}
+	for (key, _ in cook.params) {
+		if (string.sub(key, 1, 7) == "define.") {
+			table.insert(defines, key)
+		}
+	}
+	table.sort(defines)
+	let actions: { Action } = {}
+	for (_, input in cook.inputs) {
+		let out = cooked(input, ctx, ".spv")
+		let args: { string } = { "--target-env=vulkan1.2", "-fshader-stage=" .. (cook.params.stage || "frag") }
+		if (cook.params.entry != nil) {
+			table.insert(args, "-fentry-point=" .. cook.params.entry)
+		}
+		for (_, key in defines) {
+			table.insert(args, "-D" .. cook.params[key])
+		}
+		table.insert(args, input)
+		table.insert(args, "-o")
+		table.insert(args, out)
+		table.insert(actions, with_tool({ primary = input, args = args, outputs = { out }, asset = out, scan = "quoted_include" }, cook, "glslc"))
+	}
+	return actions
+}
+
+// basisu: an image -> KTX2. Params: srgb ("1"/"0", default 0), mips
+// (default 1), quality (default 128).
+local function lower_texture(cook: Cook, ctx: RuleCtx): { Action } {
+	let actions: { Action } = {}
+	for (_, input in cook.inputs) {
+		let out = cooked(input, ctx, ".ktx2")
+		let args: { string } = { "-ktx2", "-file", input, "-output_file", out }
+		if ((cook.params.srgb || "0") == "1") {
+			table.insert(args, "-srgb")
+		}
+		if ((cook.params.mips || "1") == "1") {
+			table.insert(args, "-mipmap")
+		}
+		table.insert(args, "-q")
+		table.insert(args, cook.params.quality || "128")
+		table.insert(actions, with_tool({ primary = input, args = args, outputs = { out }, asset = out }, cook, "basisu"))
+	}
+	return actions
+}
+
+// msdf-atlas-gen: a font -> an MSDF atlas (`.png`) and its metrics
+// (`.png.json`). Params: size (default 32), charset (default ASCII).
+local function lower_font(cook: Cook, ctx: RuleCtx): { Action } {
+	let actions: { Action } = {}
+	for (_, input in cook.inputs) {
+		let out = cooked(input, ctx, ".png")
+		let metrics = out .. ".json"
+		let args: { string } = {
+			"-font", input, "-type", "msdf", "-format", "png", "-json", metrics,
+			"-size", cook.params.size || "32", "-charset", cook.params.charset || "ASCII", "-imageout", out,
+		}
+		table.insert(actions, with_tool({ primary = input, args = args, outputs = { out, metrics }, asset = out }, cook, "msdf-atlas-gen"))
+	}
+	return actions
+}
+
+// A copy under ctx.out_dir, same name. It reads no params and, as before
+// rule libraries, accepts any (no `params` list: unchecked).
+local function lower_copy(cook: Cook, ctx: RuleCtx): { Action } {
+	let actions: { Action } = {}
+	for (_, input in cook.inputs) {
+		let out = cooked(input, ctx, nil)
+		table.insert(actions, { primary = input, kind = "copy", outputs = { out }, asset = out })
+	}
+	return actions
+}
+
+rule "cook_shader" { version = 1, params = { "stage", "entry", "define", "tool" }, lower = lower_shader }
+rule "cook_texture" { version = 1, params = { "srgb", "mips", "quality", "tool" }, lower = lower_texture }
+rule "cook_font" { version = 1, params = { "size", "charset", "tool" }, lower = lower_font }
+rule "cook_copy" { version = 1, lower = lower_copy }

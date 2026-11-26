@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
@@ -53,6 +54,24 @@ struct ModuleDecl {
     int line = 0;
 };
 
+// One action a cluau rule's `lower` returned for a cook declaration: a
+// process (`exec`) or an in-process copy, with its declared inputs and
+// outputs. Lowered generically - Kiln knows nothing else about the rule.
+struct ActionDecl {
+    std::string primary;              // the task's primary input (unique per rule)
+    std::string kind = "exec";        // "exec" | "copy"
+    std::string tool;                 // a tool NAME: the workspace `tools` table, else PATH
+    std::string tool_path;            // or a path (workspace-relative build output or absolute)
+    std::vector<std::string> args;    // argv after the tool
+    std::map<std::string, std::string> env; // set for the process, on top of Kiln's own
+    std::vector<std::string> inputs;  // declared inputs (workspace-relative)
+    std::vector<std::string> outputs; // declared outputs (under .kiln/out/)
+    std::string depfile;              // a Make-syntax depfile the tool writes (an output path)
+    std::string dyndep;               // a JSON file the tool writes: {"inputs": [...]}
+    std::string scan;                 // a built-in input scanner: "quoted_include"
+    std::string asset;                // the output registered as the primary's asset
+};
+
 struct CookDecl {
     std::string plugin;
     std::string name;
@@ -62,6 +81,10 @@ struct CookDecl {
     std::map<std::string, std::string> params; // flat, hashed
     std::vector<std::string> platforms;
     std::vector<std::string> configs;
+    // Set when a cluau rule lowered this declaration at expansion (the rule's
+    // version, its actions); empty for the C++-lowered rules.
+    uint32_t rule_version = 0;
+    std::vector<ActionDecl> actions;
     std::string file;
     int line = 0;
 };
@@ -133,6 +156,9 @@ struct WorkspaceDecl {
     std::vector<std::string> system_libs;
     std::vector<PluginRootDecl> plugin_roots;
     bool plugin_roots_declared = false; // distinguishes absent from empty
+    // Rule libraries the workspace loads ("build/rules/x", workspace-relative
+    // like require); Kiln's own "std/..." libraries are always available.
+    std::vector<std::string> rules;
 };
 
 // Everything a single file evaluation produced (declaration-only).

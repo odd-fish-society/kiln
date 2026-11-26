@@ -251,6 +251,11 @@ std::string find_in_path(std::string_view name) {
 
 int run_process(const std::vector<std::string>& argv, const fs::path& cwd,
                 std::string* out) {
+    return run_process(argv, cwd, out, {});
+}
+
+int run_process(const std::vector<std::string>& argv, const fs::path& cwd,
+                std::string* out, const std::map<std::string, std::string>& env) {
 #ifdef __linux__
     int pipefd[2];
     if (pipe(pipefd) != 0)
@@ -265,6 +270,8 @@ int run_process(const std::vector<std::string>& argv, const fs::path& cwd,
         close(pipefd[1]);
         if (!cwd.empty())
             chdir(cwd.c_str());
+        for (auto& [k, v] : env)
+            setenv(k.c_str(), v.c_str(), 1);
         std::vector<char*> args;
         args.reserve(argv.size() + 1);
         for (auto& a : argv)
@@ -301,7 +308,7 @@ int run_process(const std::vector<std::string>& argv, const fs::path& cwd,
         return WEXITSTATUS(status);
     return -1;
 #else
-    (void)argv; (void)cwd; (void)out;
+    (void)argv; (void)cwd; (void)out; (void)env;
     return -1;
 #endif
 }

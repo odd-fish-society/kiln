@@ -1,6 +1,8 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
+#include <vector>
 #include <map>
 #include <string>
 
@@ -11,7 +13,7 @@ namespace fs = std::filesystem;
 
 namespace kiln::luau {
 
-enum class FileKind { Workspace, PluginManifest, TargetFile, Helper };
+enum class FileKind { Workspace, PluginManifest, TargetFile, Helper, RuleLibrary };
 
 struct ManifestEnvOptions {
     fs::path workspace_root;
@@ -23,6 +25,11 @@ struct ManifestEnvOptions {
     bool strict_globs = false;
     std::string cpp_std = "c++20";
     std::string c_std = "c11";
+    // Rule libraries a plugin manifest's cooks may use (the workspace's
+    // `rules` list); Kiln's std/ libraries are always available. Loaded only
+    // when a cook names a rule `lowers_in_cpp` does not claim.
+    std::vector<std::string> rule_libraries;
+    std::function<bool(const std::string&)> lowers_in_cpp;
     uint64_t interrupt_budget = 50000000;
     size_t memory_cap = 256ull * 1024 * 1024; // enforced in the VM allocator
 };

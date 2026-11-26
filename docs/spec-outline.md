@@ -452,7 +452,7 @@ module(name: string)(spec: {
 })
 
 cook(name: string)(spec: {
-  rule: string*,                       -- registered cook rule name
+  rule: string*,                       -- a rule a rule library defines (spec §6.8), or a C++ one
   inputs: FileSet*,
   exclude: FileSet?,                   -- removed from inputs after expansion (plugin-relative)
   params: {[string]: string}?,         -- flat, hashed
@@ -466,8 +466,11 @@ target(name: string)(spec: {           -- only legal in build/*.target.luau
   link: {string}?,                     -- root modules to link into the binary
 })
 
-glob(pattern: string) -> FileSet       -- see 6.4
-path.join(...), path.parent(s)         -- pure string helpers
+glob(pattern: string) -> FileSet       -- see 6.4 (not in rule libraries)
+path.join(a, b), path.parent(p), path.basename(p),
+path.norm(p), path.extension(p), path.replace_extension(p, ext),
+path.relative(p, base)                 -- pure string helpers
+rule(name: string)(spec: { ... })      -- only in a rule library, spec §6.8
 config: frozen table {platform, config, features}   -- read-only view for data filters
 ```
 
@@ -482,8 +485,8 @@ Declarations append to a C++-side ordered vector; nothing executes.
 
 **Manifest restriction:** after evaluation, walk the Luau AST (Luau's analysis API) of
 manifest files and reject `function` definitions and `while/repeat` loops (numeric `for`
-over declarations is allowed). Emit as errors with file:line. Rule files (`*.rules.luau`,
-post-v1) are exempt.
+over declarations is allowed). Emit as errors with file:line. Rule libraries (spec §6.8)
+are exempt: they define their rules' functions.
 
 ### 6.3 require()
 
@@ -552,9 +555,59 @@ cluau's strict rules (`cluau_check`, vendored beside the translator),
 type flows on; diagnostics are on the cluau lines. `kiln smoke`
 runs it.
 
+### 6.8 Rule libraries
+
+A rule is cluau (or Luau), not Kiln C++. A **rule library** declares rules:
+
+```
+rule(name: string)(spec: {
+  version: number*,          -- positive integer: the rule's own version (its tasks' rule_version)
+  params: {string}?,         -- the cook params it accepts: a name, or "name." + any suffix;
+                             --   absent ⇒ unchecked; a cook passing another ⇒ error naming the list
+  lower: (cook, ctx) -> {Action}*,
+})
+```
+
+- **Where libraries come from:** Kiln's standard libraries (`std/cook`, sources under
+  `plugins/kiln/std/`) are compiled into the binary and always loaded; a workspace adds
+  its own with `workspace { rules = { "build/rules/x" } }` (workspace-relative, resolved
+  like `require`: `x.cluau` or `x.luau`, both an error). A library file is translated as
+  an ordinary cluau module (functions allowed), evaluated in the manifest sandbox (no I/O,
+  no clock; `glob` and every declaration but `rule` are errors), and may `require` helpers.
+  A rule name defined twice is an error naming both sites.
+- **When lowering runs:** at the end of a plugin manifest's evaluation, for every `cook`
+  whose rule is not one of the C++-lowered rules, the libraries are loaded (once per
+  evaluation, only when such a cook exists) and `lower(cook, ctx)` is called.
+  `cook = {name, rule, inputs (after exclude), params, file}`; `ctx = {plugin,
+  plugin_dir, out_dir = ".kiln/out/<platform>-<config>/assets/<plugin>", platform,
+  config, features}`. The returned actions are recorded on the cook in the DeclSet, so
+  they are part of the expansion's output and digest: the libraries a manifest loaded
+  are expansion inputs (a workspace library as a required file, the standard ones as the
+  `rules.std` param - the hash of their sources), and editing one re-lowers what uses it.
+- **Actions** (validated; an error names the cook, the rule and the field):
+  `{primary?, kind? = "exec" | "copy", tool? | tool_path?, args?, env?, inputs?,
+  outputs*, depfile?, dyndep?, scan?, asset?}`. `primary` defaults to `inputs[1]` and is
+  the task's identity, unique per rule; `inputs` defaults to `{primary}`; an exec action
+  names exactly one of `tool` (a name: the workspace `tools` table, else PATH, resolved at
+  lowering - not found ⇒ error naming the tool) and `tool_path` (a build output or an
+  absolute path); a copy has one output and no tool. Outputs, `depfile` and `dyndep` lie
+  under `.kiln/out/`. `scan = "quoted_include"` reports the primary's `#include "..."`
+  closure (spec §5b); `depfile` is Make syntax (spec §5a); `dyndep` is JSON
+  `{"inputs": [...]}` (paths inside the workspace). `asset` names the output registered
+  as the primary's asset (id = BLAKE3(plugin + "/" + plugin-relative primary), spec §9).
+- **Execution:** every action is one task of rule `<rule name>` run by the built-in
+  `exec` TaskFn; its params carry the whole action (`exec.arg.NNNN`, `exec.env.K`,
+  `tool` + `tool_hash`, ...) plus `exec.version` (bumped when exec's behaviour changes).
+  A failure reads `<rule> failed (<code>): <primary>`; an output the tool did not write
+  fails the task.
+- `kiln check` types a workspace's libraries with its manifests (strict for `.cluau`,
+  spec §6.7); `types/build.d.luau` declares `Cook`, `RuleCtx`, `Action` and `RuleSpec`.
+
 **Acceptance:** fixture plugin builds end-to-end from a manifest; comment edit in
 manifest re-expands but zero tasks run; `require`d helper edit re-expands; AST
-restriction errors fire; canary passes.
+restriction errors fire; canary passes. A workspace rule library's exec action runs
+with its env, its depfile and dyndep inputs rerun it, an edit to the library re-lowers
+it, the standard libraries type-check clean, and every rule error names its cause.
 
 ## 7. Two-graph model
 
@@ -781,13 +834,18 @@ error golden text; toggling `devtools` off then on ⇒ only expansions referenci
 
 ## 9. Cook rules
 
-Each cook rule: C++ `TaskFn` + registered name + rule_version. v1 set:
-- `cook_shader`: `glslc` (params: stage, entry, defines) → `.spv`; deps via include scan.
-- `cook_texture`: `basisu` → `.ktx2` (params: srgb, mips, quality).
-- `cook_copy`: passthrough with hash-rename option.
-- `cook_font`: msdf-atlas-gen → atlas `.ktx2` + metrics JSON (two outputs).
-Tool discovery: workspace file `tools = { glslc = "...", basisu = "..." }` or PATH;
-resolved tool's file hash folded into digests as param `tool_hash` (tool upgrade ⇒ recook).
+Each cook rule is a cluau rule (spec §6.8) or one of the C++ rules still lowered by
+Kiln. The standard set, `std/cook` (one action per input, the output at the input's
+plugin-relative path under `ctx.out_dir`):
+- `cook_shader`: `glslc` (params: stage, entry, define.<n>, tool) → `.spv`; deps via the
+  include scan.
+- `cook_texture`: `basisu` → `.ktx2` (params: srgb, mips, quality, tool).
+- `cook_copy`: a copy, same name (params unchecked).
+- `cook_font`: msdf-atlas-gen → atlas `.png` + metrics `.png.json` (two outputs; params:
+  size, charset, tool).
+Tool discovery: workspace file `tools = { glslc = "...", basisu = "..." }` or PATH (a
+`tool` param pins a path instead); resolved tool's file hash folded into digests as
+param `tool_hash` (tool upgrade ⇒ recook).
 Asset ID = BLAKE3(plugin name + "/" + plugin-relative source path), hex. The rename
 story, stated plainly: an ID changes when its source moves relative to its plugin, moves
 between plugins, or its plugin is renamed: and does NOT change when the plugin's
@@ -884,8 +942,8 @@ Exit codes: 0 ok, 1 task failures, 2 usage/config errors, 3 internal error.
 ## 15. Non-goals for v1 (do not implement)
 
 Remote/CAS cache; suspending scheduler; sandboxed execution enforcement (strace verify);
-Windows watcher; distributed builds; Luau-defined rules (`declare_task` from Luau: the
-interface exists in design, ship C++ rules only); critical-path scheduling; visibility
+Windows watcher; distributed builds; a native rule ABI (rules loaded into Kiln as shared
+objects: rules are cluau, spec §6.8); critical-path scheduling; visibility
 (`sealed` parses but only warns); kpak encryption/patching.
 
 ## 16. Documentation

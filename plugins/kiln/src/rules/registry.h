@@ -33,6 +33,14 @@ void unregister_rule(const std::string& name);
 // Built-in C++ rules.
 void register_builtin_rules();
 
+// A rule a cluau rule library defines: its tasks run through the generic
+// exec TaskFn (rules/builtin_exec.cpp). Registered at lowering, once per
+// name and version.
+void register_cluau_rule(const std::string& name, uint32_t version);
+// The version every cluau rule's tasks fold in beside their own: bumped when
+// exec's behaviour changes.
+inline constexpr uint32_t kExecVersion = 1;
+
 // Host-provided rule registration (workspace layer): expansion + any
 // workspace-bound rules.
 void register_host_rule(std::string name, uint32_t version, TaskFn fn);

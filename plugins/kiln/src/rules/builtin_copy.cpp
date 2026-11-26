@@ -38,7 +38,6 @@ TaskResult run_copy(TaskCtx& ctx) {
 
 void register_copy() {
     register_rule("copy", 1, run_copy);
-    register_rule("cook_copy", 1, run_copy);
 }
 
 } // namespace builtin

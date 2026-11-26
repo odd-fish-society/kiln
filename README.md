@@ -18,6 +18,8 @@ did and why, so it never does anything twice: and it can always explain itself.
   errors on violations before anything builds.
 - **Assets are first-class**: texture/shader/font cooks are ordinary graph tasks with
   the same caching, parallelism, and diagnostics as compiles.
+- **Rules are cluau**: a cook rule is a small cluau library that turns a declaration
+  into actions; add one to your workspace without touching Kiln.
 - **It can explain itself**: `kiln why-dirty` tells you the causal chain behind any
   rebuild, in plain terms.
 
@@ -204,6 +206,41 @@ and are pulled in with `require "build/helpers"`.
 
 Set up editor support once: copy the provided `.luaurc` and point luau-lsp at
 `types/build.d.luau`: you get autocomplete and type errors on every field above.
+
+## Writing rules
+
+A `cook` names a **rule**, and a rule is cluau, not Kiln code. Kiln ships the
+standard cooks (`cook_shader`, `cook_texture`, `cook_font`, `cook_copy`, in
+`plugins/kiln/std/cook.cluau`, built into the binary). A workspace adds its own
+rule libraries:
+
+```
+workspace "game" { rules = { "build/rules/gen" } }
+```
+
+`build/rules/gen.cluau`:
+
+```
+local function lower(cook: Cook, ctx: RuleCtx): { Action } {
+	let actions: { Action } = {}
+	for (_, input in cook.inputs) {
+		let out = ctx.out_dir .. "/" .. path.replace_extension(path.relative(input, ctx.plugin_dir), ".gen")
+		table.insert(actions, { primary = input, tool = "mygen", args = { input, "-o", out }, outputs = { out }, asset = out })
+	}
+	return actions
+}
+
+rule "gen_text" { version = 1, params = { "mode" }, lower = lower }
+```
+
+`lower` runs when the manifest is evaluated, in the same sandbox, and returns
+actions: a process (`tool` from the workspace `tools` table or PATH, or
+`tool_path`), its args, env, inputs and outputs, and optionally a depfile, a
+dyndep JSON file or the built-in `#include` scan for the inputs it discovers.
+Kiln runs each as an ordinary task: content-hashed, cached, parallel,
+explained by `why-dirty`. Editing the library re-lowers what uses it. A cook
+passing a param the rule does not list is an error, and `kiln check` types
+the library with your manifests.
 
 ## Public vs private, in practice
 

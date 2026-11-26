@@ -22,6 +22,53 @@ std::vector<std::string> to_strvec(const json& j) {
             out.push_back(s.get<std::string>());
     return out;
 }
+json strmap(const std::map<std::string, std::string>& m) {
+    json j = json::object();
+    for (auto& [k, v] : m)
+        j[k] = v;
+    return j;
+}
+json actions_json(const std::vector<ActionDecl>& actions) {
+    json j = json::array();
+    for (auto& a : actions)
+        j.push_back({{"primary", a.primary},
+                     {"kind", a.kind},
+                     {"tool", a.tool},
+                     {"tool_path", a.tool_path},
+                     {"args", strvec(a.args)},
+                     {"env", strmap(a.env)},
+                     {"inputs", strvec(a.inputs)},
+                     {"outputs", strvec(a.outputs)},
+                     {"depfile", a.depfile},
+                     {"dyndep", a.dyndep},
+                     {"scan", a.scan},
+                     {"asset", a.asset}});
+    return j;
+}
+std::vector<ActionDecl> actions_from_json(const json& j) {
+    std::vector<ActionDecl> out;
+    if (!j.is_array())
+        return out;
+    for (auto& v : j) {
+        ActionDecl a;
+        a.primary = v.value("primary", "");
+        a.kind = v.value("kind", "exec");
+        a.tool = v.value("tool", "");
+        a.tool_path = v.value("tool_path", "");
+        a.args = to_strvec(v.value("args", json::array()));
+        const json& env = v.value("env", json::object());
+        for (auto it = env.begin(); it != env.end(); ++it)
+            a.env[it.key()] = it.value().get<std::string>();
+        a.inputs = to_strvec(v.value("inputs", json::array()));
+        a.outputs = to_strvec(v.value("outputs", json::array()));
+        a.depfile = v.value("depfile", "");
+        a.dyndep = v.value("dyndep", "");
+        a.scan = v.value("scan", "");
+        a.asset = v.value("asset", "");
+        out.push_back(std::move(a));
+    }
+    return out;
+}
 } // namespace
 
 std::string decl_set_to_json(const DeclSet& decls) {
@@ -79,6 +126,8 @@ std::string decl_set_to_json(const DeclSet& decls) {
                          {"params", params},
                          {"platforms", strvec(c.platforms)},
                          {"configs", strvec(c.configs)},
+                         {"rule_version", c.rule_version},
+                         {"actions", actions_json(c.actions)},
                          {"file", c.file},
                          {"line", c.line}});
     }
@@ -141,6 +190,7 @@ std::string decl_set_to_json(const DeclSet& decls) {
                           {"pools", pools},
                           {"jobs", w.jobs},
                           {"tools", tools},
+                          {"rules", strvec(w.rules)},
                           {"strict_globs", w.strict_globs},
                           {"cpp_std", w.cpp_std},
                           {"c_std", w.c_std},
@@ -215,6 +265,8 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
                 c.params[pit.key()] = pit.value().get<std::string>();
             c.platforms = to_strvec(v.value("platforms", json::array()));
             c.configs = to_strvec(v.value("configs", json::array()));
+            c.rule_version = v.value("rule_version", 0u);
+            c.actions = actions_from_json(v.value("actions", json::array()));
             c.file = v.value("file", "");
             c.line = v.value("line", 0);
             out.cooks.push_back(std::move(c));
@@ -274,6 +326,7 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
             const json& tools = v.value("tools", json::object());
             for (auto tit = tools.begin(); tit != tools.end(); ++tit)
                 w.tools[tit.key()] = tit.value().get<std::string>();
+            w.rules = to_strvec(v.value("rules", json::array()));
             w.strict_globs = v.value("strict_globs", false);
             w.cpp_std = v.value("cpp_std", "c++20");
             w.c_std = v.value("c_std", "c11");

@@ -25,9 +25,12 @@ struct CheckFinding {
 };
 
 // `files` are workspace-relative manifest paths; `definitions` is the text of
-// types/build.d.luau. Fails only when the definitions do not load.
+// types/build.d.luau. The files also in `libraries` are rule libraries
+// (translated as ordinary cluau: they define functions). Fails only when the
+// definitions do not load.
 Result<std::vector<CheckFinding>> check_manifests(const std::filesystem::path& workspace_root,
                                                   const std::vector<std::string>& files,
-                                                  const std::string& definitions);
+                                                  const std::string& definitions,
+                                                  const std::vector<std::string>& libraries = {});
 
 } // namespace kiln::luau

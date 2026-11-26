@@ -589,3 +589,49 @@ as above (SHOULD choices logged, MUST deviations fixed: none remain):
   crash or a hang costs only its case, and each case's time is in the
   report.
 
+
+## Rule libraries: cluau rules over one exec task
+
+- A rule is cluau (spec §6.8): a rule library declares `rule "x" { version,
+  params, lower }`, and Kiln's own cooks (`cook_shader`, `cook_texture`,
+  `cook_font`, `cook_copy`) moved from C++ into `std/cook.cluau`; their
+  TaskFns and their name-by-name lowering are deleted. Kiln builds every
+  language and cook it does not know through that one shape, so a project
+  adds one without a Kiln edit. A native rule ABI (shared objects loaded
+  into Kiln) was considered and declined: it adds an ABI to version, a
+  per-platform build of every rule and a way around the sandbox, and no
+  rule needs it - the C/C++ chain, the one place that is hot, stays built in.
+- `lower` runs at **expansion**, inside the manifest's own sandbox, not at
+  graph lowering: the actions become part of the DeclSet, so the expansion
+  task's digest and cache already cover them and graph lowering only
+  resolves tools (PATH and the `tools` table are not the sandbox's to read)
+  and makes tasks. Pass A evaluates every manifest on every build anyway, so
+  a library is loaded only when a cook names a rule the C++ lowering does
+  not claim (`lowers_in_cpp`) - a workspace whose cooks are all C++ rules
+  (TinyEngine's, until its rules move out) pays nothing.
+- The standard libraries are compiled into the binary with `#embed` (a
+  release is one file; both GCC and Clang list the embedded file in the
+  depfile, so an edit rebuilds the TU) and folded into every expansion as
+  `rules.std` (their sources' hash) - no file input would see a change.
+  `expand_plugin` is v6 (the DeclSet gained each cook's `rule_version` and
+  `actions`).
+- A rule library is translated as an ordinary cluau module (manifest mode
+  rejects `function`), evaluated with `glob` and every declaration but
+  `rule` refused; during `lower` the file kind is the library's, so a rule
+  cannot declare a module or a cook either.
+- `exec` (rules/builtin_exec.cpp) is the one TaskFn behind every action. Its
+  params carry the action whole (argv, env, depfile, dyndep, scan) plus
+  `exec.version`; the task's rule name stays the cluau rule's, so traces,
+  `why-dirty` and the console read as before (`.../a.frag/cook_shader`).
+- The GLSL include scanner moved with it as `scan = "quoted_include"`. The
+  old scanner recursed with an absolute path, so a nested include was
+  recorded (and shown by `why-dirty`) as an absolute path; the scan now
+  stays workspace-relative.
+- `cook_shader` now passes `-fentry-point=` for an `entry` param (it was
+  documented and silently ignored); `cook_copy` keeps accepting any params
+  (it never read them; a list would have broken manifests that pass one).
+- Verified byte-identical: a fixture with every standard cook (shaders with
+  defines and nested includes, textures, a font, a copy) built by the old
+  and the new binary gives the same 16 files under `.kiln/out`, the pack and
+  its index included; the no-op and the nested-include rebuild behave the
+  same.

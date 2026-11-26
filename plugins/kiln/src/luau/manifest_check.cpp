@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <map>
 #include <optional>
+#include <set>
 
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/Config.h"
@@ -34,6 +35,7 @@ struct ManifestConfig : ::Luau::ConfigResolver {
 struct ManifestFiles : ::Luau::FileResolver {
     fs::path root;
     std::map<std::string, cluau::TranslateResult> translations; // by module name (workspace-relative)
+    std::set<std::string> libraries;                             // translated outside manifest mode
 
     std::optional<::Luau::SourceCode> readSource(const ::Luau::ModuleName& name) override {
         auto text = util::read_file(root / name);
@@ -42,7 +44,7 @@ struct ManifestFiles : ::Luau::FileResolver {
         if (!cluau::IsCluauPath(name))
             return ::Luau::SourceCode{*text, ::Luau::SourceCode::Module};
         cluau::TranslateOptions options;
-        options.Manifest = true;
+        options.Manifest = !libraries.count(name);
         cluau::TranslateResult& t = translations[name] = cluau::Translate(*text, options);
         return ::Luau::SourceCode{t.Luau, ::Luau::SourceCode::Module};
     }
@@ -69,9 +71,11 @@ struct ManifestFiles : ::Luau::FileResolver {
 } // namespace
 
 Result<std::vector<CheckFinding>> check_manifests(const fs::path& workspace_root, const std::vector<std::string>& files,
-                                                  const std::string& definitions) {
+                                                  const std::string& definitions,
+                                                  const std::vector<std::string>& libraries) {
     ManifestFiles resolver;
     resolver.root = workspace_root;
+    resolver.libraries.insert(libraries.begin(), libraries.end());
     ManifestConfig config;
     ::Luau::FrontendOptions options;
     options.retainFullTypeGraphs = true; // cluau_check reads the inferred types

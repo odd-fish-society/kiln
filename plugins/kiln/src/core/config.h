@@ -40,6 +40,7 @@ struct WorkspaceConfig {
     std::string default_config = "dev";
     std::vector<std::string> system_libs;     // linked into target binaries
     std::vector<PluginRoot> plugin_roots;     // default: {{ "plugins", "" }}
+    std::vector<std::string> rules;           // rule libraries ("build/rules/x"); std/ is implicit
 };
 
 } // namespace kiln

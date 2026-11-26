@@ -46,6 +46,12 @@ bool passes_filter(const std::vector<std::string>& platforms,
 
 } // namespace
 
+bool lowers_in_cpp(const std::string& rule) {
+    static const std::set<std::string> kCppCookRules = {"cook_tinyasset", "pack_tinyasset", "cook_docs",
+                                                        "check_scripts", "check_pkg_config"};
+    return kCppCookRules.count(rule) != 0;
+}
+
 void apply_exclusions(luau::DeclSet& decls) {
     auto drop = [](std::vector<std::string>& files,
                    const std::vector<std::string>& exclude) {
@@ -1020,22 +1026,60 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             }
             continue;
         }
+        if (!lowers_in_cpp(c.rule)) {
+            // A cluau rule: its actions were lowered at expansion; only the
+            // tools resolve here (the PATH and the tools table are not the
+            // sandbox's to read).
+            if (c.rule_version == 0)
+                return Result<void>::fail(c.file + ": cook '" + c.name + "': rule '" + c.rule +
+                                          "' was not lowered at expansion (an older DeclSet?)");
+            rules::register_cluau_rule(c.rule, c.rule_version);
+            for (auto& a : c.actions) {
+                std::map<std::string, std::string> params;
+                params["exec.version"] = std::to_string(rules::kExecVersion);
+                params["exec.kind"] = a.kind;
+                if (a.kind == "exec") {
+                    std::string tool = a.tool_path;
+                    if (tool.empty()) {
+                        auto tit = ctx.ws->config.tools.find(a.tool);
+                        tool = tit != ctx.ws->config.tools.end() ? tit->second : util::find_in_path(a.tool);
+                        if (tool.empty())
+                            return Result<void>::fail("cook rule '" + c.rule + "' in " + c.file +
+                                                      " requires tool '" + a.tool +
+                                                      "' (not found in PATH; set it in the workspace "
+                                                      "`tools` table)");
+                    }
+                    params["tool"] = tool;
+                    set_tool_hash(ctx, params, tool);
+                    set_indexed(params, "exec.arg", a.args);
+                    for (auto& [k, v] : a.env)
+                        params["exec.env." + k] = v;
+                }
+                if (!a.depfile.empty())
+                    params["exec.depfile"] = a.depfile;
+                if (!a.dyndep.empty())
+                    params["exec.dyndep"] = a.dyndep;
+                if (!a.scan.empty())
+                    params["exec.scan"] = a.scan;
+                TaskDecl d = make_task(ctx, c.rule, a.primary, params, sorted_uniq(a.inputs), {}, a.outputs);
+                auto id = d.id;
+                KILN_TRY(void_result(sched.add(std::move(d))));
+                pt.cooks.push_back(id);
+                for (auto& o : a.outputs)
+                    pt.cook_outputs.push_back(o);
+                if (!a.asset.empty()) {
+                    std::string rel_in = util::norm(a.primary);
+                    if (util::starts_with(rel_in, pdir + "/"))
+                        rel_in = rel_in.substr(pdir.size() + 1);
+                    pt.cook_assets.push_back(Hash256::of_string(plugin + "/" + rel_in).hex() + "=" + a.asset);
+                }
+            }
+            continue;
+        }
         for (auto& primary : c.inputs) {
-        std::string ext;
-        bool append_ext = false;
-        if (c.rule == "cook_shader")
-            ext = ".spv";
-        else if (c.rule == "cook_texture")
-            ext = ".ktx2";
-        else if (c.rule == "cook_font")
-            ext = ".png";
-        else if (c.rule == "cook_tinyasset") {
-            // Engine convention keeps the source extension:
-            // "debug_albedo.frag" → "debug_albedo.frag.ctasset".
-            ext = ".ctasset";
-            append_ext = true;
-        } else
-            ext = fs::path(primary).extension().generic_string();
+        // cook_tinyasset keeps the source extension ("debug_albedo.frag" ->
+        // "debug_albedo.frag.ctasset"); check_pkg_config keeps the name.
+        const bool tinyasset = c.rule == "cook_tinyasset";
         // Lexically resolve any ".." hops FIRST (norm collapses them once
         // preceded by real components): a cook input globbed via a "../"
         // escape (e.g. engine content outside the plugin dir) must land at
@@ -1045,42 +1089,13 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         std::string rel_in = util::norm(primary);
         if (util::starts_with(rel_in, pdir + "/"))
             rel_in = rel_in.substr(pdir.size() + 1);
-        std::string rel_out = append_ext
-                                  ? (rel_in + ext)
-                                  : fs::path(rel_in).replace_extension(ext).generic_string();
+        std::string rel_out = tinyasset ? rel_in + ".ctasset" : rel_in;
         std::string out = ".kiln/out/" + cfg_name(ctx.ct) + "/assets/" + plugin + "/" +
                           rel_out;
-        std::string metrics_out;
-        if (c.rule == "cook_font")
-            metrics_out = out + ".json";
-
-        std::string tool_name;
-        if (c.rule == "cook_shader")
-            tool_name = "glslc";
-        else if (c.rule == "cook_texture")
-            tool_name = "basisu";
-        else if (c.rule == "cook_font")
-            tool_name = "msdf-atlas-gen";
-        std::string tool;
-        if (!tool_name.empty()) {
-            auto tit = ctx.ws->config.tools.find(tool_name);
-            if (tit != ctx.ws->config.tools.end())
-                tool = tit->second;
-            else
-                tool = util::find_in_path(tool_name);
-            if (tool.empty())
-                return Result<void>::fail("cook rule '" + c.rule + "' in " + c.file +
-                                          " requires tool '" + tool_name +
-                                          "' (not found in PATH; set it in "
-                                          "kiln.workspace.luau `tools` table)");
-        }
-
         std::map<std::string, std::string> params = c.params;
         params["out"] = out;
-        if (!metrics_out.empty())
-            params["metrics_out"] = metrics_out;
         set_indexed(params, "input", std::vector<std::string>{primary});
-        if (c.rule == "cook_tinyasset") {
+        if (tinyasset) {
             // Source path for the tool + a DETERMINISTIC AssetID
             // (first 16 bytes of BLAKE3(plugin/relpath) → High/Low), unless
             // the manifest pinned one explicitly.
@@ -1110,9 +1125,6 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             // concurrent cook tasks).
             params["lint_out"] = ".kiln/out/" + cfg_name(ctx.ct) + "/lint/" + plugin + ".json";
         }
-        if (!tool.empty()) {
-            params["tool"] = tool;
-        }
         // tool_hash covers BOTH discovered tools and manifest-pinned tool
         // paths (build outputs like the tinycook binary): upgrading the tool
         // must recook exactly this rule's tasks. Paths resolve against
@@ -1121,8 +1133,6 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             set_tool_hash(ctx, params, params["tool"]);
 
         std::vector<std::string> outputs = {out};
-        if (!metrics_out.empty())
-            outputs.push_back(metrics_out);
 
         TaskDecl d = make_task(ctx, c.rule, primary, params,
                                std::vector<std::string>{primary}, {}, outputs);

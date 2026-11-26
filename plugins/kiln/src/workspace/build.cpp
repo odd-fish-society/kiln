@@ -6,6 +6,7 @@
 #include "cluau/cluau.h"
 #include "core/util.h"
 #include "luau/decl.h"
+#include "luau/std_rules.h"
 #include "nlohmann/json.hpp"
 #include "rules/registry.h"
 #include "workspace/expand.h"
@@ -330,7 +331,7 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
 
     // Host rule: expansion as a memoized task.
     rules::register_host_rule(
-        "expand_plugin", 5, // v5: c_library fbs_sources/fbs_tool; v4: c_library proto_sources/proto_tool; v3: declset JSON gained plugin reflect_tool; v2: module/c_library public_link_flags
+        "expand_plugin", 6, // v6: cook rule_version/actions (cluau rules lowered at expansion); v5: c_library fbs_sources/fbs_tool; v4: c_library proto_sources/proto_tool; v3: declset JSON gained plugin reflect_tool; v2: module/c_library public_link_flags
         [&ws, platform = ct.platform, config = ct.config, features = ct.features](
             TaskCtx& ctx) -> TaskResult {
             TaskResult r;
@@ -412,6 +413,9 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
         // A translator change re-expands every manifest (a .cluau one is
         // translated before it is evaluated).
         d.params["cluau"] = cluau::Version();
+        // So does a change to Kiln's standard rule libraries (built into the
+        // binary, so no file input sees it).
+        d.params["rules.std"] = luau::std_libraries_hash();
         for (size_t i = 0; i < exp.decls.globs.size(); ++i) {
             char key[32];
             snprintf(key, sizeof(key), "glob.%04zu", i);

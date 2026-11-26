@@ -73,6 +73,7 @@ Result<Workspace> load_workspace(const fs::path& root) {
         ws.config.pools = w.pools;
         ws.config.jobs = w.jobs;
         ws.config.tools = w.tools;
+        ws.config.rules = w.rules;
         ws.config.strict_globs = w.strict_globs;
         ws.config.cpp_std = w.cpp_std;
         ws.config.c_std = w.c_std;

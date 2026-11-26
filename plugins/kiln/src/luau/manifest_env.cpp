@@ -10,6 +10,7 @@
 #include "lualib.h"
 #include "luau/ast_lint.h"
 #include "luau/glob.h"
+#include "luau/std_rules.h"
 #include "luau/vm.h"
 
 namespace kiln::luau {
@@ -20,11 +21,11 @@ namespace {
 // mode (no function / while / do-while / class) before the lint and the
 // compile. The translation keeps every line on its line, so every later
 // file:line diagnostic points at the cluau source unmapped.
-Result<std::string> manifest_luau(const std::string& bytes, const std::string& display) {
+Result<std::string> translate_luau(const std::string& bytes, const std::string& display, bool manifest) {
     if (!cluau::IsCluauPath(display))
         return Result<std::string>::success(bytes);
     cluau::TranslateOptions options;
-    options.Manifest = true;
+    options.Manifest = manifest;
     cluau::TranslateResult r = cluau::Translate(bytes, options);
     std::string errors;
     for (auto& d : r.Diagnostics) {
@@ -38,6 +39,16 @@ Result<std::string> manifest_luau(const std::string& bytes, const std::string& d
     if (!errors.empty())
         return Result<std::string>::fail(errors);
     return Result<std::string>::success(std::move(r.Luau));
+}
+
+Result<std::string> manifest_luau(const std::string& bytes, const std::string& display) {
+    return translate_luau(bytes, display, true);
+}
+
+// A rule library defines functions (its rules' `lower`), so it is
+// translated as an ordinary cluau module.
+Result<std::string> library_luau(const std::string& bytes, const std::string& display) {
+    return translate_luau(bytes, display, false);
 }
 
 constexpr int kMaxRequireDepth = 32;
@@ -57,6 +68,10 @@ struct EvalState {
     // Inert-field warnings (once per file, spec §6.2).
     std::set<std::string> warned_inert;
     std::vector<std::string> warnings;
+    // Rule libraries: loaded once, on the first cook that needs one.
+    bool rules_loaded = false;
+    std::string pending_rule;                    // between `rule "x"` and its spec
+    std::map<std::string, std::string> rule_sites; // name -> "file:line"
 };
 
 EvalState* state_from(lua_State* L) {
@@ -75,6 +90,11 @@ FileKind current_kind(EvalState* st) {
 // Call site of the Lua frame that invoked a declaration function.
 std::string call_site(lua_State* L, EvalState* st) {
     lua_Debug ar;
+    if (current_kind(st) == FileKind::RuleLibrary) {
+        if (lua_getinfo(L, 1, "sl", &ar) && ar.currentline > 0)
+            return std::string(ar.short_src) + ":" + std::to_string(ar.currentline);
+        return "rule library";
+    }
     if (lua_getinfo(L, 1, "l", &ar) && ar.currentline > 0)
         return st->primary_file + ":" + std::to_string(ar.currentline);
     return st->primary_file;
@@ -283,6 +303,9 @@ void push_fileset(lua_State* L, FileSetUD* ud) {
 int glob_impl(lua_State* L) {
     EvalState* st = state_from(L);
     const char* pattern = luaL_checkstring(L, 1);
+    if (current_kind(st) == FileKind::RuleLibrary)
+        luaL_error(L, "%s: `glob` is not available in a rule library (its cook's inputs are)",
+                   call_site(L, st).c_str());
     auto res = glob(st->opts.manifest_dir, pattern);
     if (!res.ok())
         luaL_error(L, "%s", res.error.c_str());
@@ -749,7 +772,7 @@ int spec_workspace(lua_State* L) {
     validate_fields(L, 2, st,
                     {"name", "pools", "jobs", "tools", "strict_globs", "cpp_std",
                      "c_std", "env_allow", "default_config", "system_libs",
-                     "plugin_roots"},
+                     "plugin_roots", "rules"},
                     {});
     if (!st->decls.workspace)
         luaL_error(L, "internal: workspace spec without declaration");
@@ -772,6 +795,7 @@ int spec_workspace(lua_State* L) {
     lua_pop(L, 1);
     w.env_allow = get_strvec_field(L, 2, "env_allow");
     w.system_libs = get_strvec_field(L, 2, "system_libs");
+    w.rules = get_strvec_field(L, 2, "rules");
 
     lua_getfield(L, 2, "pools");
     if (lua_istable(L, -1)) {
@@ -819,6 +843,389 @@ int spec_workspace(lua_State* L) {
     }
     lua_pop(L, 1);
     return 0;
+}
+
+// ---- rule libraries -----------------------------------------------------------
+//
+// A rule library declares `rule "name" { version, params, lower }`. A plugin
+// manifest's `cook` naming such a rule is lowered here, at the end of the
+// manifest's evaluation: `lower(cook, ctx)` returns the actions, recorded on
+// the CookDecl, so the DeclSet (and the expansion digest) carries them and
+// the graph lowering only has to resolve tools and make tasks.
+
+int decl_rule(lua_State* L) {
+    EvalState* st = state_from(L);
+    const char* name = luaL_checkstring(L, 1);
+    if (current_kind(st) != FileKind::RuleLibrary)
+        luaL_error(L, "%s: `rule` is only allowed in a rule library", call_site(L, st).c_str());
+    if (auto it = st->rule_sites.find(name); it != st->rule_sites.end())
+        luaL_error(L, "%s: rule '%s' defined twice (first at %s)", call_site(L, st).c_str(), name,
+                   it->second.c_str());
+    st->rule_sites[name] = call_site(L, st);
+    st->pending_rule = name;
+    lua_newuserdatatagged(L, 1, 1);
+    lua_getfield(L, LUA_REGISTRYINDEX, "kiln_rule_mt");
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+int spec_rule(lua_State* L) {
+    EvalState* st = state_from(L);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    validate_fields(L, 2, st, {"version", "params", "lower"}, {});
+    if (st->pending_rule.empty())
+        luaL_error(L, "internal: rule spec without declaration");
+    std::string name = std::move(st->pending_rule);
+    st->pending_rule.clear();
+    std::string site = st->rule_sites[name];
+
+    lua_getfield(L, 2, "version");
+    if (!lua_isnumber(L, -1) || lua_tonumber(L, -1) < 1 ||
+        lua_tonumber(L, -1) != static_cast<double>(static_cast<int64_t>(lua_tonumber(L, -1))))
+        luaL_error(L, "%s: rule '%s': 'version' must be a positive integer", site.c_str(), name.c_str());
+    double version = lua_tonumber(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, 2, "lower");
+    if (!lua_isfunction(L, -1))
+        luaL_error(L, "%s: rule '%s': 'lower' must be a function", site.c_str(), name.c_str());
+    lua_pop(L, 1);
+    std::vector<std::string> params = get_strvec_field(L, 2, "params");
+
+    lua_getfield(L, LUA_REGISTRYINDEX, "kiln_rules");
+    lua_createtable(L, 0, 5);
+    lua_pushnumber(L, version);
+    lua_setfield(L, -2, "version");
+    lua_getfield(L, 2, "lower");
+    lua_setfield(L, -2, "lower");
+    lua_pushboolean(L, !lua_isnil(L, (lua_getfield(L, 2, "params"), -1)));
+    lua_remove(L, -2);
+    lua_setfield(L, -2, "has_params");
+    lua_createtable(L, static_cast<int>(params.size()), 0);
+    for (size_t i = 0; i < params.size(); ++i) {
+        lua_pushstring(L, params[i].c_str());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    lua_setfield(L, -2, "params");
+    lua_pushstring(L, site.c_str());
+    lua_setfield(L, -2, "site");
+    lua_setfield(L, -2, name.c_str());
+    lua_pop(L, 1);
+    return 0;
+}
+
+// Evaluates one library's (translated) source as a RuleLibrary chunk; on
+// error raises it.
+void eval_library(lua_State* L, EvalState* st, const std::string& source, const std::string& display) {
+    auto content = library_luau(source, display);
+    if (!content.ok())
+        luaL_error(L, "%s", content.error.c_str());
+    int rc = eval_source(L, st, *content, st->opts.workspace_root / display, FileKind::RuleLibrary);
+    if (rc != 0)
+        lua_error(L);
+    lua_pop(L, 1);
+}
+
+void load_rule_libraries(lua_State* L, EvalState* st) {
+    if (st->rules_loaded)
+        return;
+    st->rules_loaded = true;
+    for (auto& lib : std_libraries())
+        eval_library(L, st, std::string(lib.source), std::string(lib.display));
+    for (auto& name : st->opts.rule_libraries) {
+        if (util::starts_with(name, "std/")) {
+            bool known = false;
+            for (auto& lib : std_libraries())
+                known = known || lib.name == name;
+            if (!known)
+                luaL_error(L, "workspace rules: no standard rule library '%s'", name.c_str());
+            continue; // always loaded
+        }
+        std::string rel = util::norm(name);
+        if (rel.empty() || rel[0] == '/' || rel == "." || rel == ".." || util::starts_with(rel, "../") ||
+            rel.find("/../") != std::string::npos)
+            luaL_error(L, "workspace rules: '%s' must be a workspace-relative library name", name.c_str());
+        const bool luau = fs::is_regular_file(st->opts.workspace_root / (rel + ".luau"));
+        const bool cluau = fs::is_regular_file(st->opts.workspace_root / (rel + ".cluau"));
+        if (luau && cluau)
+            luaL_error(L, "workspace rules: '%s' is both %s.luau and %s.cluau (one per library)", name.c_str(),
+                       rel.c_str(), rel.c_str());
+        if (!luau && !cluau)
+            luaL_error(L, "workspace rules: cannot find rule library '%s' (looked for %s.cluau and %s.luau)",
+                       name.c_str(), rel.c_str(), rel.c_str());
+        rel += cluau ? ".cluau" : ".luau";
+        auto raw = util::read_file(st->opts.workspace_root / rel);
+        if (!raw.ok())
+            luaL_error(L, "workspace rules: %s", raw.error.c_str());
+        st->required_files.insert(rel);
+        eval_library(L, st, *raw, rel);
+    }
+}
+
+// The site's message prefix for a cook's errors.
+std::string cook_where(const CookDecl& c) { return c.file + ": cook '" + c.name + "'"; }
+
+std::string action_string(lua_State* L, int idx, const char* field, const CookDecl& c) {
+    lua_getfield(L, idx, field);
+    std::string out;
+    if (!lua_isnil(L, -1)) {
+        if (lua_type(L, -1) != LUA_TSTRING)
+            luaL_error(L, "%s: rule '%s': action field '%s' must be a string", cook_where(c).c_str(),
+                       c.rule.c_str(), field);
+        out = lua_tostring(L, -1);
+    }
+    lua_pop(L, 1);
+    return out;
+}
+
+std::vector<std::string> action_list(lua_State* L, int idx, const char* field, const CookDecl& c) {
+    std::vector<std::string> out;
+    lua_getfield(L, idx, field);
+    if (!lua_isnil(L, -1)) {
+        if (!lua_istable(L, -1))
+            luaL_error(L, "%s: rule '%s': action field '%s' must be a list of strings", cook_where(c).c_str(),
+                       c.rule.c_str(), field);
+        int n = lua_objlen(L, -1);
+        for (int i = 1; i <= n; ++i) {
+            lua_rawgeti(L, -1, i);
+            if (lua_type(L, -1) != LUA_TSTRING)
+                luaL_error(L, "%s: rule '%s': action field '%s' must be a list of strings",
+                           cook_where(c).c_str(), c.rule.c_str(), field);
+            out.emplace_back(lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    }
+    lua_pop(L, 1);
+    return out;
+}
+
+bool under_out(const std::string& p) { return util::starts_with(util::norm(p), ".kiln/out/"); }
+
+ActionDecl read_action(lua_State* L, int idx, const CookDecl& c) {
+    if (!lua_istable(L, idx))
+        luaL_error(L, "%s: rule '%s': lower must return a list of action tables", cook_where(c).c_str(),
+                   c.rule.c_str());
+    validate_fields(L, idx, state_from(L),
+                    {"primary", "kind", "tool", "tool_path", "args", "env", "inputs", "outputs", "depfile",
+                     "dyndep", "scan", "asset"},
+                    {});
+    ActionDecl a;
+    a.primary = util::norm(action_string(L, idx, "primary", c));
+    a.kind = action_string(L, idx, "kind", c);
+    if (a.kind.empty())
+        a.kind = "exec";
+    a.tool = action_string(L, idx, "tool", c);
+    a.tool_path = action_string(L, idx, "tool_path", c);
+    a.args = action_list(L, idx, "args", c);
+    a.env = get_flat_map_field(L, idx, "env");
+    a.inputs = action_list(L, idx, "inputs", c);
+    a.outputs = action_list(L, idx, "outputs", c);
+    a.depfile = action_string(L, idx, "depfile", c);
+    a.dyndep = action_string(L, idx, "dyndep", c);
+    a.scan = action_string(L, idx, "scan", c);
+    a.asset = action_string(L, idx, "asset", c);
+
+    const std::string where = cook_where(c) + ": rule '" + c.rule + "'";
+    for (auto& i : a.inputs)
+        i = util::norm(i);
+    if (a.primary.empty()) {
+        if (a.inputs.empty())
+            luaL_error(L, "%s: an action needs a 'primary' (or 'inputs')", where.c_str());
+        a.primary = a.inputs.front();
+    }
+    if (a.inputs.empty())
+        a.inputs.push_back(a.primary);
+    if (a.kind != "exec" && a.kind != "copy")
+        luaL_error(L, "%s: action kind '%s' (expected exec or copy)", where.c_str(), a.kind.c_str());
+    if (a.kind == "exec" && a.tool.empty() == a.tool_path.empty())
+        luaL_error(L, "%s: an exec action names exactly one of 'tool' and 'tool_path'", where.c_str());
+    if (a.kind == "copy" && (!a.tool.empty() || !a.tool_path.empty() || !a.args.empty() || a.outputs.size() != 1))
+        luaL_error(L, "%s: a copy action has one output and no tool or args", where.c_str());
+    if (a.outputs.empty())
+        luaL_error(L, "%s: an action declares at least one output", where.c_str());
+    for (auto& o : a.outputs) {
+        o = util::norm(o);
+        if (!under_out(o))
+            luaL_error(L, "%s: output '%s' is not under .kiln/out/", where.c_str(), o.c_str());
+    }
+    for (std::string* f : {&a.depfile, &a.dyndep})
+        if (!f->empty()) {
+            *f = util::norm(*f);
+            if (!under_out(*f))
+                luaL_error(L, "%s: '%s' is not under .kiln/out/", where.c_str(), f->c_str());
+        }
+    if (!a.scan.empty() && a.scan != "quoted_include")
+        luaL_error(L, "%s: unknown scan '%s' (known: quoted_include)", where.c_str(), a.scan.c_str());
+    if (!a.asset.empty()) {
+        a.asset = util::norm(a.asset);
+        if (std::find(a.outputs.begin(), a.outputs.end(), a.asset) == a.outputs.end())
+            luaL_error(L, "%s: asset '%s' is not one of the action's outputs", where.c_str(), a.asset.c_str());
+    }
+    return a;
+}
+
+void push_strvec(lua_State* L, const std::vector<std::string>& v) {
+    lua_createtable(L, static_cast<int>(v.size()), 0);
+    for (size_t i = 0; i < v.size(); ++i) {
+        lua_pushstring(L, v[i].c_str());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+}
+
+void push_strmap(lua_State* L, const std::map<std::string, std::string>& m) {
+    lua_createtable(L, 0, static_cast<int>(m.size()));
+    for (auto& [k, v] : m) {
+        lua_pushstring(L, v.c_str());
+        lua_setfield(L, -2, k.c_str());
+    }
+}
+
+// Runs inside a protected call (luaL_error is safe): lowers every cook whose
+// rule a rule library defines.
+int lower_cooks_impl(lua_State* L) {
+    EvalState* st = state_from(L);
+    std::set<std::pair<std::string, std::string>> primaries; // (rule, primary) taken
+    for (auto& c : st->decls.cooks) {
+        if (c.rule.empty() || (st->opts.lowers_in_cpp && st->opts.lowers_in_cpp(c.rule)))
+            continue;
+        load_rule_libraries(L, st);
+        lua_getfield(L, LUA_REGISTRYINDEX, "kiln_rules");
+        lua_getfield(L, -1, c.rule.c_str());
+        if (lua_isnil(L, -1)) {
+            std::string known;
+            for (auto& [name, site] : st->rule_sites)
+                known += (known.empty() ? "" : ", ") + name;
+            luaL_error(L, "%s: unknown rule '%s' (rule libraries define: %s)", cook_where(c).c_str(),
+                       c.rule.c_str(), known.empty() ? "none" : known.c_str());
+        }
+        int spec = lua_gettop(L);
+
+        // Params the rule accepts: a name, or a name followed by '.'.
+        lua_getfield(L, spec, "has_params");
+        bool checked = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+        if (checked) {
+            std::vector<std::string> allowed;
+            lua_getfield(L, spec, "params");
+            int n = lua_objlen(L, -1);
+            for (int i = 1; i <= n; ++i) {
+                lua_rawgeti(L, -1, i);
+                allowed.emplace_back(lua_tostring(L, -1));
+                lua_pop(L, 1);
+            }
+            lua_pop(L, 1);
+            for (auto& [key, value] : c.params) {
+                bool ok = false;
+                for (auto& a : allowed)
+                    ok = ok || key == a || (util::starts_with(key, a + ".") && key.size() > a.size() + 1);
+                if (!ok) {
+                    std::string list;
+                    for (auto& a : allowed)
+                        list += (list.empty() ? "" : ", ") + a;
+                    luaL_error(L, "%s: rule '%s' has no param '%s' (its params: %s)", cook_where(c).c_str(),
+                               c.rule.c_str(), key.c_str(), list.empty() ? "none" : list.c_str());
+                }
+            }
+        }
+        lua_getfield(L, spec, "version");
+        c.rule_version = static_cast<uint32_t>(lua_tonumber(L, -1));
+        lua_pop(L, 1);
+
+        std::vector<std::string> inputs = c.inputs;
+        if (!c.exclude.empty()) {
+            std::set<std::string> drop(c.exclude.begin(), c.exclude.end());
+            inputs.erase(std::remove_if(inputs.begin(), inputs.end(),
+                                        [&](const std::string& f) { return drop.count(f) != 0; }),
+                         inputs.end());
+        }
+        const std::string plugin = st->decls.plugin ? st->decls.plugin->name : std::string();
+        if (plugin.empty())
+            luaL_error(L, "%s: a cook needs the manifest's `plugin` declaration first", cook_where(c).c_str());
+
+        lua_getfield(L, spec, "lower");
+        // cook
+        lua_createtable(L, 0, 5);
+        lua_pushstring(L, c.name.c_str());
+        lua_setfield(L, -2, "name");
+        lua_pushstring(L, c.rule.c_str());
+        lua_setfield(L, -2, "rule");
+        push_strvec(L, inputs);
+        lua_setfield(L, -2, "inputs");
+        push_strmap(L, c.params);
+        lua_setfield(L, -2, "params");
+        lua_pushstring(L, c.file.c_str());
+        lua_setfield(L, -2, "file");
+        // ctx
+        lua_createtable(L, 0, 6);
+        lua_pushstring(L, plugin.c_str());
+        lua_setfield(L, -2, "plugin");
+        lua_pushstring(L, st->manifest_dir_rel.c_str());
+        lua_setfield(L, -2, "plugin_dir");
+        std::string out_dir = ".kiln/out/" + st->opts.platform + "-" + st->opts.config + "/assets/" + plugin;
+        lua_pushstring(L, out_dir.c_str());
+        lua_setfield(L, -2, "out_dir");
+        lua_pushstring(L, st->opts.platform.c_str());
+        lua_setfield(L, -2, "platform");
+        lua_pushstring(L, st->opts.config.c_str());
+        lua_setfield(L, -2, "config");
+        push_strmap(L, st->opts.features);
+        lua_setfield(L, -2, "features");
+
+        st->kind_stack.push_back(FileKind::RuleLibrary);
+        int rc = lua_pcall(L, 2, 1, 0);
+        st->kind_stack.pop_back();
+        if (rc != 0) {
+            std::string err = lua_tostring(L, -1) ? lua_tostring(L, -1) : "error";
+            luaL_error(L, "%s: rule '%s' (%s): lower failed: %s", cook_where(c).c_str(), c.rule.c_str(),
+                       [&] {
+                           lua_getfield(L, spec, "site");
+                           std::string site = lua_tostring(L, -1) ? lua_tostring(L, -1) : "";
+                           lua_pop(L, 1);
+                           return site;
+                       }().c_str(),
+                       err.c_str());
+        }
+        if (!lua_istable(L, -1))
+            luaL_error(L, "%s: rule '%s': lower must return a list of actions", cook_where(c).c_str(),
+                       c.rule.c_str());
+        int result = lua_gettop(L);
+        int n = lua_objlen(L, result);
+        c.actions.clear();
+        for (int i = 1; i <= n; ++i) {
+            lua_rawgeti(L, result, i);
+            ActionDecl a = read_action(L, lua_gettop(L), c);
+            lua_pop(L, 1);
+            if (!primaries.insert({c.rule, a.primary}).second)
+                luaL_error(L, "%s: rule '%s': two actions share the primary input '%s'", cook_where(c).c_str(),
+                           c.rule.c_str(), a.primary.c_str());
+            c.actions.push_back(std::move(a));
+        }
+        lua_settop(L, spec - 2); // the rule table and kiln_rules
+    }
+    return 0;
+}
+
+int path_norm_impl(lua_State* L) {
+    lua_pushstring(L, util::norm(luaL_checkstring(L, 1)).c_str());
+    return 1;
+}
+int path_extension_impl(lua_State* L) {
+    lua_pushstring(L, fs::path(luaL_checkstring(L, 1)).extension().generic_string().c_str());
+    return 1;
+}
+int path_replace_extension_impl(lua_State* L) {
+    std::string p = luaL_checkstring(L, 1);
+    std::string ext = luaL_checkstring(L, 2);
+    lua_pushstring(L, fs::path(p).replace_extension(ext).generic_string().c_str());
+    return 1;
+}
+// `p` with `base` + "/" taken off its front, or `p` when it is not under base.
+int path_relative_impl(lua_State* L) {
+    std::string p = luaL_checkstring(L, 1);
+    std::string base = luaL_checkstring(L, 2);
+    if (!base.empty() && util::starts_with(p, base + "/"))
+        p = p.substr(base.size() + 1);
+    lua_pushstring(L, p.c_str());
+    return 1;
 }
 
 int path_join_impl(lua_State* L) {
@@ -952,6 +1359,18 @@ Result<EvalOutput> evaluate_file(const fs::path& file, const ManifestEnvOptions&
     }
     lua_settop(L, top);
 
+    if (opts.kind == FileKind::PluginManifest && !st.decls.cooks.empty()) {
+        lua_pushcfunction(L, lower_cooks_impl, "lower_cooks");
+        if (lua_pcall(L, 0, 0, 0) != 0) {
+            std::string err = lua_tostring(L, -1) ? lua_tostring(L, -1) : "unknown error";
+            lua_settop(L, top);
+            if (vm->memory_cap_exceeded())
+                err = st.primary_file + ": rule lowering exceeded the memory budget (" +
+                      std::to_string(vm->memory_cap() / (1024 * 1024)) + " MiB)";
+            return Result<EvalOutput>::fail(err);
+        }
+    }
+
     EvalOutput out;
     out.decls = std::move(st.decls);
     out.decls.required_files.assign(st.required_files.begin(), st.required_files.end());
@@ -1002,6 +1421,13 @@ void install_api(lua_State* L, EvalState* st) {
     lua_setfield(L, LUA_REGISTRYINDEX, "kiln_workspace_mt");
 
     lua_createtable(L, 0, 1);
+    lua_pushcfunction(L, spec_rule, "spec");
+    lua_setfield(L, -2, "__call");
+    lua_setfield(L, LUA_REGISTRYINDEX, "kiln_rule_mt");
+    lua_newtable(L);
+    lua_setfield(L, LUA_REGISTRYINDEX, "kiln_rules");
+
+    lua_createtable(L, 0, 1);
     lua_setfield(L, LUA_REGISTRYINDEX, "kiln_fileset_mt");
 
     // Register the module/plugin/cook callables with their spec metatables.
@@ -1013,9 +1439,18 @@ void install_api(lua_State* L, EvalState* st) {
     set_field(L, "workspace", decl_workspace);
     set_field(L, "glob", glob_impl);
     set_field(L, "require", require_impl);
+    set_field(L, "rule", decl_rule);
 
     // `path` helper table.
-    lua_createtable(L, 0, 3);
+    lua_createtable(L, 0, 7);
+    lua_pushcfunction(L, path_norm_impl, "norm");
+    lua_setfield(L, -2, "norm");
+    lua_pushcfunction(L, path_extension_impl, "extension");
+    lua_setfield(L, -2, "extension");
+    lua_pushcfunction(L, path_replace_extension_impl, "replace_extension");
+    lua_setfield(L, -2, "replace_extension");
+    lua_pushcfunction(L, path_relative_impl, "relative");
+    lua_setfield(L, -2, "relative");
     lua_pushcfunction(L, path_join_impl, "join");
     lua_setfield(L, -2, "join");
     lua_pushcfunction(L, path_parent_impl, "parent");

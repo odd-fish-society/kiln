@@ -6,6 +6,7 @@
 
 #include "core/util.h"
 #include "luau/manifest_env.h"
+#include "workspace/lower.h"
 
 namespace kiln {
 
@@ -28,6 +29,8 @@ Result<PluginExpansion> expand_plugin(
     env_opts.strict_globs = ws.config.strict_globs;
     env_opts.cpp_std = ws.config.cpp_std;
     env_opts.c_std = ws.config.c_std;
+    env_opts.rule_libraries = ws.config.rules;
+    env_opts.lowers_in_cpp = lowers_in_cpp;
 
     auto res = luau::evaluate_file(ws.root / manifest_rel, env_opts);
     if (!res.ok())

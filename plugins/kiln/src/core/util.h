@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -48,6 +49,9 @@ std::string find_in_path(std::string_view name);
 // Returns the exit code. `out` is capped at 4 MiB (tail kept, marker inserted).
 int run_process(const std::vector<std::string>& argv, const fs::path& cwd,
                 std::string* out);
+// The same, with `env` set in the child on top of the inherited environment.
+int run_process(const std::vector<std::string>& argv, const fs::path& cwd,
+                std::string* out, const std::map<std::string, std::string>& env);
 
 std::string to_upper(std::string_view s);
 

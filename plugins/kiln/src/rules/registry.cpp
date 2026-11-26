@@ -60,8 +60,6 @@ namespace builtin {
 void register_copy();
 void register_cpp();
 void register_pch();
-void register_shader();
-void register_cookers();
 void register_host();
 void register_checks();
 void register_tinyasset();
@@ -74,8 +72,6 @@ void register_builtin_rules() {
     builtin::register_copy();
     builtin::register_cpp();
     builtin::register_pch();
-    builtin::register_shader();
-    builtin::register_cookers();
     builtin::register_host();
     builtin::register_checks();
     builtin::register_tinyasset();

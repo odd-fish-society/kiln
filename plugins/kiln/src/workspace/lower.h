@@ -108,6 +108,10 @@ Result<void> lower_script_checks(Scheduler& sched, LowerCtx& ctx);
 // config adds).
 void apply_exclusions(luau::DeclSet& decls);
 
+// The cook rules Kiln still lowers in C++ (everything else a `cook` names is
+// a cluau rule, lowered at expansion into actions).
+bool lowers_in_cpp(const std::string& rule);
+
 // Target-level tasks: link, pack, compile_commands.
 Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
                                 const luau::TargetDecl& target);
