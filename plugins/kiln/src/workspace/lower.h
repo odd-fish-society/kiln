@@ -51,7 +51,8 @@ struct LowerCtx {
         std::string docdb_path;            // that task's database asset
         std::map<std::string, std::vector<TaskId>> clib_compiles;
         std::map<std::string, TaskId> clib_archive;
-        std::map<std::string, TaskId> clib_interface;
+        std::map<std::string, std::string> clib_archive_paths; // c_library → .a path
+        std::map<std::string, Hash256> module_variant;          // module → its code variant
         std::map<std::string, std::vector<std::string>> module_objs; // module → obj paths
         std::map<std::string, std::vector<TaskId>> module_compiles;  // module → compile ids
         std::vector<std::string> cook_assets; // "id=path"
@@ -79,20 +80,22 @@ struct LowerCtx {
     std::map<std::string, bool> toolchain_clang; // per C++ driver, probed once
 };
 
-// A plugin's graph files (its DeclSet, interface, provider, clib
-// interfaces) live per configuration VARIANT: the DeclSet depends on the
-// target's features and enabled plugins, so two targets sharing one path
-// rewrote each other's files on every multi-target build.
+// A plugin's DeclSet and provider live per configuration VARIANT: the
+// DeclSet depends on the target's features and enabled plugins, so two
+// targets sharing one path rewrote each other's files on every
+// multi-target build.
 // `.kiln/graph/<platform-config>/<first 10 hex of ConfigTuple::hash()>`.
 std::string graph_dir(const ConfigTuple& ct);
 std::string declset_path(const ConfigTuple& ct, const std::string& plugin);
-std::string interface_path(const ConfigTuple& ct, const std::string& plugin);
 std::string provider_path(const ConfigTuple& ct, const std::string& plugin);
-std::string archive_path(const ConfigTuple& ct, const std::string& plugin);
-std::string clib_archive_path(const ConfigTuple& ct, const std::string& plugin,
-                              const std::string& clib);
-std::string clib_interface_path(const ConfigTuple& ct, const std::string& plugin,
-                                const std::string& clib);
+// The code family lives per CODE variant (lower.cpp's code_variant): one
+// copy for every target building it the same way.
+// `.kiln/graph/<platform-config>/code/<variant>/<plugin>.interface.json`.
+std::string interface_path(const ConfigTuple& ct, const std::string& plugin,
+                           const Hash256& variant);
+// `.kiln/out/<platform-config>/lib/<plugin>/<variant>/lib<name>.a`.
+std::string archive_path(const ConfigTuple& ct, const std::string& plugin,
+                         const std::string& name, const Hash256& variant);
 
 // Lowers one plugin's DeclSet into tasks. Dep plugins must already be lowered.
 Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& plugin);

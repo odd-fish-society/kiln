@@ -12,7 +12,8 @@ and record the choice in `docs/decisions.md`.
 
 - **Architecture invariants:**
   1. Task identity = `(rule_name, primary_input, config_hash)`. Never positional, never
-     parent-derived.
+     parent-derived. For the code family (§7.2a) `config_hash` is the task's code
+     variant, not the target's ConfigTuple.
   2. Action digest = `hash(input content hashes, params, tool/rule version, config tuple)`.
   3. Trace store maps identity → `(action_digest, output_hashes, dynamic_deps)`. SQLite.
   4. Rebuilder: verifying traces + recorded dynamic deps (depfile model) + early cutoff.
@@ -174,7 +175,7 @@ class CanonicalHasher { public:
 struct TaskId {                  // identity: see invariant 1
   std::string rule;              // e.g. "compile_cpp"
   std::string primary_input;     // workspace-relative, e.g. "plugins/audio/src/mixer.cpp"
-  Hash256     config_hash;       // hash of the ConfigTuple (spec §4)
+  Hash256     config_hash;       // hash of the ConfigTuple (spec §4); a code variant (§7.2a)
   Hash256     stable_hash() const;   // CanonicalHasher over the three fields
   std::string display() const;   // "plugins/audio/compile_cpp:src/mixer.cpp@win64-dev"
 };
@@ -684,8 +685,9 @@ record's output bytes so dependent links re-run (early cutoff keys downstream
 digests on this task's output summary). Hashing only the first archive leaves
 dependent links stale when a later archive changes.
 
-Dependents' compile tasks list the interface record FILE + dep plugins'
-`interface_hash` param; dependents' link tasks depend on the implementation record.
+Dependents' compile tasks depend on the interface record tasks (the record enters their
+digest as that dependency's output summary; the include and define flags come from
+lowering); dependents' link tasks depend on the implementation record.
 This realizes relink-without-recompile mechanically through the digest structure AND
 cross-plugin compile overlap: in a chain core←audio←game, game's compiles start as soon
 as core's and audio's interface records exist, long before their links finish. A
@@ -697,6 +699,41 @@ MUST be gated on interface records, not implementation records.
 link made artificially slow (sleeping fake tool): assert via executor event timestamps
 that at least one `game` compile STARTS before `core`'s link FINISHES; and assert an
 expansion-only pass (`kiln query "all()"` on a cold cache) executes zero compile tasks.
+
+### 7.2a Code variants
+
+Targets of one config name differ in features and enabled plugins, so a ConfigTuple is
+per target. The code family - `compile_c`/`compile_cpp`, `compile_pch`, `archive`, the
+interface record and the code generators (`fbs_gen`, `proto_gen`, `reflect_gen`) - takes
+a **code variant** as its `config_hash` instead: a CanonicalHasher over the platform, the
+config name, the family kind, the settings its result depends on, and the stable hashes
+of the tasks it depends on (sorted):
+
+| Kind | Settings |
+|---|---|
+| module (its compiles, PCH, generated-TU compiles, archive) | the plugin and module name, std, opt, debug, live, pch header, includes, defines, SDK roots, flags; deps: its interface deps and its plugin's `reflect_gen` |
+| c_library (its compiles and archive) | the plugin and library name, c_std, cpp_std, opt, debug, live, includes, defines, flags; deps: its `proto_gen`/`fbs_gen` |
+| interface record | its params without `out` (headers, includes, defines, syslibs, link flags, the dependencies' record paths); deps: its dependencies' records, its `fbs_gen` tasks |
+| generator | its params; no deps |
+
+`tool`, `tool_hash` and `toolchain_hash` stay out of the variant (they are params, so a new
+tool reruns the task in place). Targets building a module the same way therefore run one
+task for it and share its files; targets building it differently get different variants
+and outputs under different folders:
+
+- objects `.kiln/out/<cfg>/obj/<plugin>/<module>/<v10>/...` (`clib-<name>/<v10>/` for a
+  c_library), PCH `.kiln/out/<cfg>/pch/<plugin>/<module>/<v10>/`, archives
+  `.kiln/out/<cfg>/lib/<plugin>/<v10>/lib<name>.a`, interface records
+  `.kiln/graph/<cfg>/code/<v10>/<plugin>.interface.json`, with `<v10>` the first 10 hex
+  of the variant. Generator outputs keep their paths.
+
+Everything else (cooks, providers, links, packs, checks, `compile_commands.json`,
+expansions) keeps the target's ConfigTuple. A settings edit makes a new variant: its
+tasks have no trace ("first build") and the old variant's files stay on disk.
+
+**Acceptance:** two targets with the same module settings run each of its compiles once
+in `kiln build a b`, and an edit compiles once; two with different defines each keep
+their objects and the next `kiln build a b` runs no compile.
 
 ### 7.3 Plugin-level cycles, layers & lowering
 

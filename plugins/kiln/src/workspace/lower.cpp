@@ -143,10 +143,47 @@ Result<DepRef> parse_dep_ref(const std::string& raw, const LowerCtx& ctx,
     return Result<DepRef>::success(DepRef{plugin, module});
 }
 
+// A code variant (spec §7.2a): a hash of what a code-family task's result depends on -
+// its settings and the variants of the tasks it depends on - and nothing of
+// the target that asked for it. Compiles, PCHs, archives, interface records
+// and the code generators take it as their identity and (where the path
+// would otherwise be shared) as a folder of their outputs, so two targets
+// building a module the same way share one task and one set of files, and
+// two building it differently each keep their own. The tool identity stays
+// out: it is in the params (a new compiler reruns the task in place) and
+// must not leave an old tree behind.
+Hash256 code_variant(const LowerCtx& ctx, const std::string& kind,
+                     const std::map<std::string, std::string>& settings,
+                     const std::vector<TaskId>& deps) {
+    static const std::set<std::string> kToolIdentity = {"tool", "tool_hash", "toolchain_hash"};
+    CanonicalHasher h;
+    h.field("platform", ctx.ct.platform);
+    h.field("config", ctx.ct.config);
+    h.field("kind", kind);
+    h.begin_list("settings");
+    for (auto& [k, v] : settings)
+        if (!kToolIdentity.count(k))
+            h.item(k + "=" + v);
+    h.end_list();
+    std::vector<Hash256> dep_hashes;
+    for (auto& d : deps)
+        dep_hashes.push_back(d.stable_hash());
+    std::sort(dep_hashes.begin(), dep_hashes.end());
+    h.begin_list("deps");
+    for (auto& d : dep_hashes)
+        h.item(d);
+    h.end_list();
+    return h.finish();
+}
+
+// The folder a variant's outputs live in.
+std::string variant_dir(const Hash256& v) { return v.hex().substr(0, 10); }
+
 TaskDecl make_task(LowerCtx& ctx, const std::string& rule, const std::string& primary,
                    std::map<std::string, std::string> params,
                    std::vector<std::string> inputs, std::vector<TaskId> deps,
-                   std::vector<std::string> outputs, std::string pool = "") {
+                   std::vector<std::string> outputs, std::string pool = "",
+                   std::optional<Hash256> variant = std::nullopt) {
     // The C/C++ toolchain rules key on the tool's content
     // identity, not its spelling (a PATH "c++" upgrade must rerun them; the
     // depfile filter drops every header outside the workspace, so nothing
@@ -170,7 +207,7 @@ TaskDecl make_task(LowerCtx& ctx, const std::string& rule, const std::string& pr
     TaskDecl d;
     d.id.rule = rule;
     d.id.primary_input = primary;
-    d.id.config_hash = ctx.ct.hash();
+    d.id.config_hash = variant ? *variant : ctx.ct.hash();
     d.params = std::move(params);
     d.declared_inputs = std::move(inputs);
     d.dep_tasks = std::move(deps);
@@ -286,22 +323,18 @@ std::string graph_dir(const ConfigTuple& ct) {
 std::string declset_path(const ConfigTuple& ct, const std::string& plugin) {
     return graph_dir(ct) + "/" + plugin + ".declset.json";
 }
-std::string interface_path(const ConfigTuple& ct, const std::string& plugin) {
-    return graph_dir(ct) + "/" + plugin + ".interface.json";
+std::string interface_path(const ConfigTuple& ct, const std::string& plugin,
+                           const Hash256& variant) {
+    return ".kiln/graph/" + ct.name() + "/code/" + variant_dir(variant) + "/" + plugin +
+           ".interface.json";
 }
 std::string provider_path(const ConfigTuple& ct, const std::string& plugin) {
     return graph_dir(ct) + "/" + plugin + ".provider.json";
 }
-std::string archive_path(const ConfigTuple& ct, const std::string& plugin) {
-    return ".kiln/out/" + ct.name() + "/lib/" + plugin + "/lib" + plugin + ".a";
-}
-std::string clib_archive_path(const ConfigTuple& ct, const std::string& plugin,
-                              const std::string& clib) {
-    return ".kiln/out/" + ct.name() + "/lib/" + plugin + "/lib" + clib + ".a";
-}
-std::string clib_interface_path(const ConfigTuple& ct, const std::string& plugin,
-                                const std::string& clib) {
-    return graph_dir(ct) + "/" + plugin + ".clib-" + clib + ".interface.json";
+std::string archive_path(const ConfigTuple& ct, const std::string& plugin,
+                         const std::string& name, const Hash256& variant) {
+    return ".kiln/out/" + ct.name() + "/lib/" + plugin + "/" + variant_dir(variant) + "/lib" +
+           name + ".a";
 }
 
 Result<void> lower_script_checks(Scheduler& sched, LowerCtx& ctx) {
@@ -352,7 +385,6 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
     auto& declset = it->second;
     auto& pt = ctx.tasks[plugin];
     pt.declset_path = declset_path(ctx.ct, plugin);
-    pt.interface_path = interface_path(ctx.ct, plugin);
     pt.provider_path = provider_path(ctx.ct, plugin);
     std::string pdir = plugin_dir_of(ctx, plugin);
 
@@ -448,7 +480,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         set_indexed(params, "output", outputs);
         set_tool_hash(ctx, params, c.fbs_tool);
         TaskDecl d = make_task(ctx, "fbs_gen", pdir + "/fbs:" + c.name, params,
-                               c.fbs_sources, {}, outputs);
+                               c.fbs_sources, {}, outputs, "",
+                               code_variant(ctx, "fbs_gen", params, {}));
         fbs_gen_tasks[c.name] = d.id;
         KILN_TRY(void_result(sched.add(std::move(d))));
     }
@@ -474,7 +507,6 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
 
         std::map<std::string, std::string> params;
         params["plugin"] = plugin;
-        params["out"] = pt.interface_path;
         set_indexed(params, "header", headers);
         set_indexed(params, "include", pub_includes);
         set_indexed(params, "define", sorted_uniq(pub_defines));
@@ -493,8 +525,11 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         for (auto& [name, task] : fbs_gen_tasks)
             iface_deps.push_back(task);
 
+        const Hash256 variant = code_variant(ctx, "interface", params, iface_deps);
+        pt.interface_path = interface_path(ctx.ct, plugin, variant);
+        params["out"] = pt.interface_path;
         TaskDecl d = make_task(ctx, "interface", pdir + "/interface", params,
-                               headers, iface_deps, {pt.interface_path});
+                               headers, iface_deps, {pt.interface_path}, "", variant);
         auto id = d.id;
         KILN_TRY(void_result(sched.add(std::move(d))));
         pt.interface_task = id;
@@ -555,7 +590,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         set_tool_hash(ctx, params, params["tool"]);
 
         TaskDecl d = make_task(ctx, "reflect_gen", pdir + "/reflect:" + plugin, params,
-                               scan_headers, {}, {gen_cpp, gen_presentation_cpp, gen_script_cpp, gen_dluau, gen_docs});
+                               scan_headers, {}, {gen_cpp, gen_presentation_cpp, gen_script_cpp, gen_dluau, gen_docs},
+                               "", code_variant(ctx, "reflect_gen", params, {}));
         auto id = d.id;
         KILN_TRY(void_result(sched.add(std::move(d))));
         reflect_gen_task = id;
@@ -644,14 +680,38 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
                 sdk_roots.push_back(v);
         pt.module_compiles[m.name].clear();
 
+        // The module's variant: every setting its compiles share, and the
+        // tasks they depend on (the generated reflection TUs are its own).
+        Hash256 mvariant;
+        {
+            std::map<std::string, std::string> settings;
+            // Two modules with equal settings are still two sets of
+            // objects (their paths name the module).
+            settings["module"] = plugin + "/" + m.name;
+            settings["std"] = m.cpp_std.empty() ? ctx.ws->config.cpp_std : m.cpp_std;
+            settings["opt"] = opt_for(ctx.ct);
+            settings["debug"] = debug_for(ctx.ct);
+            settings["live"] = live::is_live_config(ctx.ct) ? "1" : "0";
+            settings["pch_header"] = m.pch;
+            set_indexed(settings, "include", sorted_uniq(includes));
+            set_indexed(settings, "define", sorted_uniq(defines));
+            set_indexed(settings, "sdk_root", sdk_roots);
+            set_indexed(settings, "flag", m.flags);
+            std::vector<TaskId> vdeps = iface_deps;
+            if (reflect_gen_task)
+                vdeps.push_back(*reflect_gen_task);
+            mvariant = code_variant(ctx, "module", settings, vdeps);
+        }
+        pt.module_variant[m.name] = mvariant;
+        const std::string mdir = m.name + "/" + variant_dir(mvariant);
+
         // PCH (KILN-2): the header is COPIED into the output tree and the gch
         // compiled next to the copy; compiles -include that copy. Flags are
         // byte-identical to the compiles (gch validity + -Werror=invalid-pch).
         std::optional<TaskId> pch_task;
         std::string pch_include_path;
         if (!m.pch.empty()) {
-            std::string pch_dir = ".kiln/out/" + cfg_name(ctx.ct) + "/pch/" + plugin + "/" +
-                                  m.name;
+            std::string pch_dir = ".kiln/out/" + cfg_name(ctx.ct) + "/pch/" + plugin + "/" + mdir;
             std::string out_header = pch_dir + "/" + util::path_basename(m.pch);
             std::string gch = out_header + ".gch";
             std::map<std::string, std::string> pch_params;
@@ -688,7 +748,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             std::string pch_identity = pdir + "/" + m.name + "/pch:" + m.pch;
             TaskDecl pchd =
                 make_task(ctx, "compile_pch", pch_identity, pch_params, {m.pch}, {},
-                          {out_header, gch});
+                          {out_header, gch}, "", mvariant);
             auto pch_id = pchd.id;
             KILN_TRY(void_result(sched.add(std::move(pchd))));
             pch_task = pch_id;
@@ -696,8 +756,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         }
 
         for (auto& src : m.sources) {
-            std::string obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/" +
-                              m.name + "/" + obj_path(src, pdir);
+            std::string obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/" + mdir +
+                              "/" + obj_path(src, pdir);
             std::map<std::string, std::string> params;
             params["std"] = m.cpp_std.empty() ? ctx.ws->config.cpp_std : m.cpp_std;
             params["opt"] = opt_for(ctx.ct);
@@ -716,7 +776,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
                 params["pch"] = pch_include_path;
             }
 
-            TaskDecl d = make_task(ctx, "compile_cpp", src, params, {src}, deps, {obj});
+            TaskDecl d = make_task(ctx, "compile_cpp", src, params, {src}, deps, {obj}, "",
+                                   mvariant);
             auto id = d.id;
             KILN_TRY(void_result(sched.add(std::move(d))));
             pt.compiles.push_back(id);
@@ -736,7 +797,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             std::string gen_src = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/" +
                                   plugin + ".reflection.gen.cpp";
             std::string gen_obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/" +
-                                  m.name + "/" + plugin + ".reflection.gen.cpp.o";
+                                  mdir + "/" + plugin + ".reflection.gen.cpp.o";
             std::map<std::string, std::string> gen_params;
             gen_params["std"] = m.cpp_std.empty() ? ctx.ws->config.cpp_std : m.cpp_std;
             gen_params["opt"] = opt_for(ctx.ct);
@@ -754,13 +815,11 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
                 gen_deps.push_back(*pch_task);
                 gen_params["pch"] = pch_include_path;
             }
-            // Constraint: the compile rule compiles primary_input, so the
-            // gen TU's task identity is the shared source path — a
-            // reflecting plugin may therefore only have ONE
-            // module-with-sources per config (the engine's three-flavor
-            // scheme satisfies this by construction).
+            // The compile rule compiles primary_input, so the gen TU's
+            // identity is the shared generated source plus the module's
+            // variant: each module-with-sources compiles it its own way.
             TaskDecl gd = make_task(ctx, "compile_cpp", gen_src, gen_params, {gen_src},
-                                    gen_deps, {gen_obj});
+                                    gen_deps, {gen_obj}, "", mvariant);
             auto gid = gd.id;
             KILN_TRY(void_result(sched.add(std::move(gd))));
             pt.module_compiles[m.name].push_back(gid);
@@ -772,12 +831,12 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
                 std::string script_src = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/" +
                                          plugin + ".script.gen.cpp";
                 std::string script_obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/" +
-                                         m.name + "/" + plugin + ".script.gen.cpp.o";
+                                         mdir + "/" + plugin + ".script.gen.cpp.o";
                 std::map<std::string, std::string> script_params = gen_params;
                 script_params["out"] = script_obj;
                 script_params["depfile"] = script_obj + ".d";
                 TaskDecl sd = make_task(ctx, "compile_cpp", script_src, script_params, {script_src},
-                                        gen_deps, {script_obj});
+                                        gen_deps, {script_obj}, "", mvariant);
                 auto sid = sd.id;
                 KILN_TRY(void_result(sched.add(std::move(sd))));
                 pt.module_compiles[m.name].push_back(sid);
@@ -792,12 +851,12 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
                 std::string pres_src = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/" +
                                        plugin + ".reflection.presentation.gen.cpp";
                 std::string pres_obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/" +
-                                       m.name + "/" + plugin + ".reflection.presentation.gen.cpp.o";
+                                       mdir + "/" + plugin + ".reflection.presentation.gen.cpp.o";
                 std::map<std::string, std::string> pres_params = gen_params;
                 pres_params["out"] = pres_obj;
                 pres_params["depfile"] = pres_obj + ".d";
                 TaskDecl pd = make_task(ctx, "compile_cpp", pres_src, pres_params, {pres_src},
-                                        gen_deps, {pres_obj});
+                                        gen_deps, {pres_obj}, "", mvariant);
                 auto pid = pd.id;
                 KILN_TRY(void_result(sched.add(std::move(pd))));
                 pt.module_compiles[m.name].push_back(pid);
@@ -841,7 +900,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             set_indexed(params, "output", outputs);
             set_tool_hash(ctx, params, c.proto_tool);
             TaskDecl d = make_task(ctx, "proto_gen", pdir + "/proto:" + c.name, params,
-                                   c.proto_sources, {}, outputs);
+                                   c.proto_sources, {}, outputs, "",
+                                   code_variant(ctx, "proto_gen", params, {}));
             proto_gen_task = d.id;
             KILN_TRY(void_result(sched.add(std::move(d))));
         }
@@ -852,6 +912,37 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         if (auto it = fbs_gen_tasks.find(c.name); it != fbs_gen_tasks.end()) {
             fbs_gen_task = it->second;
             fbs_gen_dir = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/fbs/" + c.name;
+        }
+
+        std::vector<std::string> clib_incs = c.includes;
+        for (auto& p : c.public_includes)
+            clib_incs.push_back(p);
+        if (!proto_gen_dir.empty())
+            clib_incs.push_back(proto_gen_dir);
+        if (!fbs_gen_dir.empty())
+            clib_incs.push_back(fbs_gen_dir);
+        clib_incs = sorted_uniq(std::move(clib_incs));
+        // Every TU of a proto library may include a generated .pb.h, so all
+        // of them wait for the generation, not only the .pb.cc.
+        std::vector<TaskId> compile_deps;
+        if (proto_gen_task)
+            compile_deps.push_back(*proto_gen_task);
+        if (fbs_gen_task)
+            compile_deps.push_back(*fbs_gen_task);
+        // The library's variant (see code_variant).
+        Hash256 cvariant;
+        {
+            std::map<std::string, std::string> settings;
+            settings["library"] = plugin + "/" + c.name;
+            settings["c_std"] = c.c_std.empty() ? ctx.ws->config.c_std : c.c_std;
+            settings["cpp_std"] = c.cpp_std.empty() ? ctx.ws->config.cpp_std : c.cpp_std;
+            settings["opt"] = opt_for(ctx.ct);
+            settings["debug"] = debug_for(ctx.ct);
+            settings["live"] = live::is_live_config(ctx.ct) ? "1" : "0";
+            set_indexed(settings, "include", clib_incs);
+            set_indexed(settings, "define", sorted_uniq(c.defines));
+            set_indexed(settings, "flag", c.flags);
+            cvariant = code_variant(ctx, "c_library", settings, compile_deps);
         }
 
         std::vector<std::string> clib_sources = c.sources;
@@ -865,8 +956,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
                 ext != ".m" && ext != ".mm")
                 continue;
             bool is_c = src.size() >= 2 && src.substr(src.size() - 2) == ".c";
-            std::string obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin +
-                              "/clib-" + c.name + "/" + obj_path(src, pdir);
+            std::string obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/clib-" +
+                              c.name + "/" + variant_dir(cvariant) + "/" + obj_path(src, pdir);
             std::map<std::string, std::string> params;
             params["std"] = is_c ? (c.c_std.empty() ? ctx.ws->config.c_std : c.c_std)
                                  : (c.cpp_std.empty() ? ctx.ws->config.cpp_std : c.cpp_std);
@@ -875,26 +966,12 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             params["tool"] = is_c ? cc : cxx;
             params["out"] = obj;
             params["depfile"] = obj + ".d";
-            std::vector<std::string> incs = c.includes;
-            for (auto& p : c.public_includes)
-                incs.push_back(p);
-            if (!proto_gen_dir.empty())
-                incs.push_back(proto_gen_dir);
-            if (!fbs_gen_dir.empty())
-                incs.push_back(fbs_gen_dir);
-            set_indexed(params, "include", sorted_uniq(incs));
+            set_indexed(params, "include", clib_incs);
             set_indexed(params, "define", sorted_uniq(c.defines));
             set_indexed(params, "flag", c.flags);
-            // Every TU of a proto library may include a generated .pb.h, so
-            // all of them wait for the generation, not only the .pb.cc.
-            std::vector<TaskId> compile_deps;
-            if (proto_gen_task)
-                compile_deps.push_back(*proto_gen_task);
-            if (fbs_gen_task)
-                compile_deps.push_back(*fbs_gen_task);
             TaskDecl d =
                 make_task(ctx, is_c ? "compile_c" : "compile_cpp", src, params, {src},
-                          compile_deps, {obj});
+                          compile_deps, {obj}, "", cvariant);
             auto id = d.id;
             KILN_TRY(void_result(sched.add(std::move(d))));
             clib_compiles.push_back(id);
@@ -902,36 +979,18 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         }
         ctx.tasks[plugin].clib_compiles[c.name] = clib_compiles;
 
-        std::string archive = clib_archive_path(ctx.ct, plugin, c.name);
+        std::string archive = archive_path(ctx.ct, plugin, c.name, cvariant);
         if (!clib_compiles.empty()) {
             std::map<std::string, std::string> params;
             params["tool"] = ar;
             params["out"] = archive;
             set_indexed(params, "obj", clib_objs);
             TaskDecl d = make_task(ctx, "archive", pdir + "/clib:" + c.name,
-                                   params, {}, clib_compiles, {archive});
+                                   params, {}, clib_compiles, {archive}, "", cvariant);
             auto id = d.id;
             KILN_TRY(void_result(sched.add(std::move(d))));
             ctx.tasks[plugin].clib_archive[c.name] = id;
-        }
-
-        std::string iface_path = clib_interface_path(ctx.ct, plugin, c.name);
-        {
-            std::vector<std::string> pub_includes = c.public_includes;
-            if (pub_includes.empty())
-                pub_includes.push_back(util::join_rel(pdir, "include"));
-            auto headers = public_headers_of(ctx, pub_includes);
-            std::map<std::string, std::string> params;
-            params["plugin"] = plugin + "/" + c.name;
-            params["out"] = iface_path;
-            set_indexed(params, "header", headers);
-            set_indexed(params, "include", pub_includes);
-            set_indexed(params, "define", sorted_uniq(c.defines));
-            TaskDecl d = make_task(ctx, "interface", pdir + "/clib:" + c.name,
-                                   params, headers, {}, {iface_path});
-            auto id = d.id;
-            KILN_TRY(void_result(sched.add(std::move(d))));
-            ctx.tasks[plugin].clib_interface[c.name] = id;
+            ctx.tasks[plugin].clib_archive_paths[c.name] = archive;
         }
     }
 
@@ -942,15 +1001,15 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         auto objs_it = pt.module_objs.find(m.name);
         if (objs_it == pt.module_objs.end() || objs_it->second.empty())
             continue;
-        std::string path = ".kiln/out/" + cfg_name(ctx.ct) + "/lib/" + plugin + "/lib" +
-                           m.name + ".a";
+        const Hash256 mvariant = pt.module_variant.at(m.name);
+        std::string path = archive_path(ctx.ct, plugin, m.name, mvariant);
         std::map<std::string, std::string> params;
         params["tool"] = ar;
         params["out"] = path;
         set_indexed(params, "obj", sorted_uniq(objs_it->second));
         std::vector<TaskId> mod_deps = pt.module_compiles[m.name];
         TaskDecl d = make_task(ctx, "archive", pdir + "/" + m.name + "/archive",
-                               params, {}, mod_deps, {path});
+                               params, {}, mod_deps, {path}, "", mvariant);
         auto id = d.id;
         KILN_TRY(void_result(sched.add(std::move(d))));
         pt.module_archives[m.name] = id;
@@ -1185,7 +1244,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             deps.push_back(t);
         for (auto& [name, arch] : pt.clib_archive) {
             params["clib_archive." + name] =
-                name + "=" + clib_archive_path(ctx.ct, plugin, name);
+                name + "=" + pt.clib_archive_paths.at(name);
             deps.push_back(arch);
         }
         set_indexed(params, "asset", pt.cook_assets);
@@ -1235,7 +1294,7 @@ Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
             for (auto& [name, path] : pt.module_archive_paths)
                 archives.push_back(path);
             for (auto& [name, arch] : pt.clib_archive)
-                archives.push_back(clib_archive_path(ctx.ct, plugin, name));
+                archives.push_back(pt.clib_archive_paths.at(name));
             // Gate on the IMPLEMENTATION record (spec §7.2): its output changes
             // exactly when impl_hash/artifact changes ⇒ relink, never recompile.
             if (pt.provider)

@@ -162,7 +162,7 @@ TEST_CASE("K5.10 removing a source drops its archive member (archive built fresh
         std::string out;
         int rc = kiln::util::run_process(
             {"ar", "t",
-             (tmp.path / ".kiln/out/linux-dev/lib/lib/liblib.a").generic_string()},
+             variant_file(tmp.path, ".kiln/out/linux-dev/lib/lib", "liblib.a").generic_string()},
             tmp.path, &out);
         REQUIRE(rc == 0);
         return out;

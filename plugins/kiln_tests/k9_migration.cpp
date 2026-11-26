@@ -128,7 +128,9 @@ TEST_CASE("KILN-2 pch end-to-end: recompiles on header edit, not on output loss"
     REQUIRE(r1.code == 0);
     CHECK(count_executed(r1.out) > 0);
     // The gch must actually exist and the copied header too (M1).
-    REQUIRE(file_exists(tmp.path / ".kiln/out/linux-dev/pch/app/main/pch.h.gch"));
+    const fs::path gch = variant_file(tmp.path, ".kiln/out/linux-dev/pch/app/main", "pch.h.gch");
+    REQUIRE(!gch.empty());
+    const fs::path pch_copy = gch.parent_path() / "pch.h";
 
     // Warm rebuild: everything cached (no settle build — the pch's own
     // outputs are excluded from its dynamic deps, so no one-build lag).
@@ -153,11 +155,11 @@ TEST_CASE("KILN-2 pch end-to-end: recompiles on header edit, not on output loss"
     // Delete the pch outputs (header copy + gch): the pch task repairs them,
     // but the INPUT digest is unchanged ⇒ zero module compiles re-run (M1/M2).
     std::error_code ec;
-    fs::remove(tmp.path / ".kiln/out/linux-dev/pch/app/main/pch.h", ec);
-    fs::remove(tmp.path / ".kiln/out/linux-dev/pch/app/main/pch.h.gch", ec);
+    fs::remove(pch_copy, ec);
+    fs::remove(gch, ec);
     auto r5 = run_kiln(tmp.path, args());
     REQUIRE(r5.code == 0);
-    REQUIRE(file_exists(tmp.path / ".kiln/out/linux-dev/pch/app/main/pch.h.gch"));
+    REQUIRE(file_exists(gch));
     CHECK(count_executed(r5.out) == 1); // exactly the pch task
 }
 
@@ -352,58 +354,158 @@ std::vector<std::string> build_ab() {
 
 } // namespace
 
-TEST_CASE("KILN-2 two targets sharing a Clang PCH: the second multi-target build is a no-op") {
+// Each "] ok <display>" line of a plain-mode build.
+int ran_count(const std::string& out, const std::string& display) {
+    int n = 0;
+    size_t pos = 0;
+    const std::string needle = "] ok " + display;
+    while ((pos = out.find(needle, pos)) != std::string::npos) {
+        ++n;
+        pos += needle.size();
+    }
+    return n;
+}
+
+TEST_CASE("KILN-2 a Clang PCH is byte-reproducible") {
     if (util::find_in_path("clang++").empty()) {
         MESSAGE("clang++ not on PATH: nothing to check");
         return;
     }
     TempDir tmp;
     write_tree(tmp.path, two_target_pch_tree("clang++", "0"));
-    // Each target compiles the PCH as its own task into the one path. A gch
-    // with timestamps (whole seconds) differed whenever the two ran in
-    // different seconds, so each target's task saw the other's file and both
-    // reran on every build.
-    auto ra = run_kiln(tmp.path, {"build", "a", "--progress=plain", "--workspace", "."});
-    INFO(ra.out);
-    REQUIRE(ra.code == 0);
+    const std::vector<std::string> args = {"build", "a", "--progress=plain", "--workspace", "."};
+    auto r1 = run_kiln(tmp.path, args);
+    INFO(r1.out);
+    REQUIRE(r1.code == 0);
+    const fs::path gch = variant_file(tmp.path, ".kiln/out/linux-dev/pch/app/main", "pch.h.gch");
+    REQUIRE(!gch.empty());
+    const std::string before = read_file(gch);
+    // Clang records whole-second header mtimes unless told not to, and the
+    // header is copied fresh on every run.
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
-    auto rb = run_kiln(tmp.path, {"build", "b", "--progress=plain", "--workspace", "."});
-    INFO(rb.out);
-    REQUIRE(rb.code == 0);
+    std::error_code ec;
+    fs::remove(gch, ec);
+    auto r2 = run_kiln(tmp.path, args);
+    INFO(r2.out);
+    REQUIRE(r2.code == 0);
+    CHECK(read_file(gch) == before);
+}
+
+TEST_CASE("KILN-2 two targets building a module the same way share its tasks") {
+    TempDir tmp;
+    write_tree(tmp.path, two_target_pch_tree("c++", "0"));
+    auto r1 = run_kiln(tmp.path, build_ab());
+    INFO(r1.out);
+    REQUIRE(r1.code == 0);
+    // One compile, one PCH, one archive for both targets (each still links).
+    CHECK(ran_count(r1.out, "plugins/app/src/a.cpp/compile_cpp") == 1);
+    CHECK(ran_count(r1.out, "plugins/app/main/pch:plugins/app/src/pch.h/compile_pch") == 1);
+    CHECK(ran_count(r1.out, "plugins/app/main/archive/archive") == 1);
     auto r2 = run_kiln(tmp.path, build_ab());
     INFO(r2.out);
     REQUIRE(r2.code == 0);
     CHECK(count_executed(r2.out) == 0);
-    CHECK(r2.out.find("warning") == std::string::npos);
+
+    // An edit compiles once, not once per target.
+    write_tree(tmp.path, {{"plugins/app/src/a.cpp", "#include \"pch.h\"\nint a() { return 3; }\n"}});
+    auto r3 = run_kiln(tmp.path, build_ab());
+    INFO(r3.out);
+    REQUIRE(r3.code == 0);
+    CHECK(ran_count(r3.out, "plugins/app/src/a.cpp/compile_cpp") == 1);
+}
+
+TEST_CASE("KILN-2 two targets building a module differently keep their own objects") {
+    TempDir tmp;
+    write_tree(tmp.path, two_target_pch_tree("c++", "1"));
+    auto r1 = run_kiln(tmp.path, build_ab());
+    INFO(r1.out);
+    REQUIRE(r1.code == 0);
+    CHECK(ran_count(r1.out, "plugins/app/src/a.cpp/compile_cpp") == 2);
+    int variants = 0;
+    std::error_code ec;
+    for (auto& v : fs::directory_iterator(tmp.path / ".kiln/out/linux-dev/obj/app/main", ec))
+        if (fs::exists(v.path() / "src/a.cpp.o", ec))
+            ++variants;
+    CHECK(variants == 2);
+    // Neither rewrites the other's files: the next build runs nothing but
+    // the two targets' writes of the one compile_commands.json (shared by
+    // design: the last target built is the IDE's view).
+    auto r2 = run_kiln(tmp.path, build_ab());
+    INFO(r2.out);
+    REQUIRE(r2.code == 0);
+    CHECK(count_executed(r2.out) == ran_count(r2.out, "build/a.target.luau/gen_compile_commands") +
+                                        ran_count(r2.out, "build/b.target.luau/gen_compile_commands"));
+    CHECK(r2.out.find("compile_cpp") == std::string::npos);
+    CHECK(r2.out.find("kiln: warning:") == std::string::npos);
 }
 
 TEST_CASE("KILN-2 two targets writing one file differently: a warning names them") {
     TempDir tmp;
-    write_tree(tmp.path, two_target_pch_tree("c++", "1"));
-    // The first build writes each target's files in turn; the second finds
-    // each target's objects rewritten by the other and reruns them.
+    // A cook's output path is fixed (a runtime contract), so a rule whose
+    // output depends on a target feature makes two targets write one file.
+    fs::path tool = tmp.path / "put.sh";
+    {
+        std::ofstream f(tool);
+        f << "#!/bin/sh\nmkdir -p \"$(dirname \"$2\")\"\nprintf '%s\\n' \"$3\" > \"$2\"\n";
+    }
+    chmod(tool.c_str(), 0755);
+    write_tree(tmp.path, {
+        {"kiln.workspace.cluau", "workspace \"k2\" { strict_globs = true, rules = { \"build/rules/put\" } }\n"},
+        {"build/a.target.cluau",
+         "target \"a\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"content/main\" } }\n"},
+        {"build/b.target.cluau",
+         "target \"b\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"content/main\" }, "
+         "features = { x = \"1\" } }\n"},
+        {"build/rules/put.cluau",
+         "local function lower(cook: Cook, ctx: RuleCtx): { Action } {\n"
+         "\tlet out = ctx.out_dir .. \"/v.txt\"\n"
+         "\treturn { { primary = cook.inputs[1], tool_path = \"" + tool.generic_string() + "\",\n"
+         "\t\targs = { cook.inputs[1], out, ctx.features.x || \"none\" }, outputs = { out } } }\n"
+         "}\n"
+         "rule \"put\" { version = 1, lower = lower }\n"},
+        {"plugins/content/plugin.build.cluau",
+         "plugin \"content\" {}\n"
+         "module \"main\" { sources = glob(\"src/*.cpp\") }\n"
+         "cook \"v\" { rule = \"put\", inputs = { \"content/v.in\" } }\n"},
+        {"plugins/content/src/main.cpp", "int main() { return 0; }\n"},
+        {"plugins/content/content/v.in", "v\n"},
+    });
     auto r1 = run_kiln(tmp.path, build_ab());
     INFO(r1.out);
     REQUIRE(r1.code == 0);
     CHECK(r1.out.find("kiln: warning:") == std::string::npos);
+    // The second build finds each target's file rewritten by the other.
     auto r2 = run_kiln(tmp.path, build_ab());
     INFO(r2.out);
     REQUIRE(r2.code == 0);
-    CHECK(r2.out.find("kiln: warning: targets 'a' and 'b' (linux-dev) write") != std::string::npos);
-    CHECK(r2.out.find("(e.g. .kiln/out/linux-dev/") != std::string::npos);
+    CHECK(r2.out.find("kiln: warning: targets 'a' and 'b' (linux-dev) write 1 of the same file") !=
+          std::string::npos);
+    CHECK(r2.out.find("(e.g. .kiln/out/linux-dev/assets/content/v.txt)") != std::string::npos);
+}
 
-    // The same settings: the files agree, nothing reruns, no warning. (With
-    // GCC the shared gch alone still differs run to run - a real collision
-    // the warning reports - so this half needs Clang.)
-    if (util::find_in_path("clang++").empty()) {
-        MESSAGE("clang++ not on PATH: the same-settings half is not checked");
-        return;
-    }
-    write_tree(tmp.path, two_target_pch_tree("clang++", "0"));
-    REQUIRE(run_kiln(tmp.path, build_ab()).code == 0);
-    REQUIRE(run_kiln(tmp.path, build_ab()).code == 0);
-    auto r3 = run_kiln(tmp.path, build_ab());
-    INFO(r3.out);
-    REQUIRE(r3.code == 0);
-    CHECK(r3.out.find("kiln: warning:") == std::string::npos);
+TEST_CASE("KILN-2 two modules compiling one source with equal settings are two tasks") {
+    TempDir tmp;
+    // A flavor pair: the same sources under two module names (one per
+    // target), compiled identically. Each module keeps its own objects.
+    write_tree(tmp.path, {
+        {"kiln.workspace.luau", "workspace \"k2\" { strict_globs = true }\n"},
+        {"build/a.target.luau",
+         "target \"a\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"app/one\" } }\n"},
+        {"build/b.target.luau",
+         "target \"b\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"app/two\" } }\n"},
+        {"plugins/app/plugin.build.luau",
+         "plugin \"app\" {}\n"
+         "module \"one\" { sources = glob(\"src/*.cpp\") }\n"
+         "module \"two\" { sources = glob(\"src/*.cpp\") }\n"},
+        {"plugins/app/src/main.cpp", "int main() { return 0; }\n"},
+    });
+    auto r1 = run_kiln(tmp.path, build_ab());
+    INFO(r1.out);
+    REQUIRE(r1.code == 0);
+    CHECK(!variant_file(tmp.path, ".kiln/out/linux-dev/obj/app/one", "src/main.cpp.o").empty());
+    CHECK(!variant_file(tmp.path, ".kiln/out/linux-dev/obj/app/two", "src/main.cpp.o").empty());
+    auto r2 = run_kiln(tmp.path, build_ab());
+    INFO(r2.out);
+    REQUIRE(r2.code == 0);
+    CHECK(r2.out.find("compile_cpp") == std::string::npos);
 }

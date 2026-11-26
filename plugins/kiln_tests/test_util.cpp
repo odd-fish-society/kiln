@@ -139,6 +139,14 @@ fs::path graph_file(const fs::path& root, const std::string& platform_config, co
     return {};
 }
 
+fs::path variant_file(const fs::path& root, const std::string& dir, const std::string& rest) {
+    std::error_code ec;
+    for (auto& v : fs::directory_iterator(root / dir, ec))
+        if (v.is_directory(ec) && fs::exists(v.path() / rest, ec))
+            return v.path() / rest;
+    return {};
+}
+
 int count_failed(const std::string& out) {
     int n = 0;
     size_t pos = 0;

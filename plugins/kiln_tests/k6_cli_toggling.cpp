@@ -75,7 +75,7 @@ TEST_CASE("K6.2 toggling devtools off→on rebuilds only what references it") {
     write_tree(tmp.path, fixture());
     REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
     // devtools disabled by target: its sources were never compiled.
-    CHECK(!file_exists(tmp.path / ".kiln/out/linux-dev/obj/devtools/dt/src/dt.cpp.o"));
+    CHECK(variant_file(tmp.path, ".kiln/out/linux-dev/obj/devtools/dt", "src/dt.cpp.o").empty());
 
     // Enable via CLI (L4 overrides L3).
     auto r = run_kiln(tmp.path, [&] {
@@ -86,7 +86,7 @@ TEST_CASE("K6.2 toggling devtools off→on rebuilds only what references it") {
     }());
     REQUIRE(r.code == 0);
     // devtools compiles now; app recompiles because KILN_HAS_DEVTOOLS flipped.
-    CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/obj/devtools/dt/src/dt.cpp.o"));
+    CHECK(!variant_file(tmp.path, ".kiln/out/linux-dev/obj/devtools/dt", "src/dt.cpp.o").empty());
     CHECK(ran(r.out, "plugins/app") > 0);
 
     // Disable again: devtools work disappears; only app recompiles.

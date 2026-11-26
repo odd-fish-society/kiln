@@ -45,6 +45,10 @@ int count_cached(const std::string& out);
 // it lives in the configuration variant's folder,
 // .kiln/graph/<platform-config>/<variant>/ (the single match; empty if none).
 fs::path graph_file(const fs::path& root, const std::string& platform_config, const std::string& file);
+// A code output under its variant folder: <root>/<dir>/<variant>/<rest>
+// (the single match; empty if none). Objects, PCHs and archives live in one:
+// `.kiln/out/<cfg>/obj/<plugin>/<module>/<variant>/...`.
+fs::path variant_file(const fs::path& root, const std::string& dir, const std::string& rest);
 int count_failed(const std::string& out);
 
 // Minimal fixture workspace: core + app plugins, one target, one shader cook.

@@ -245,8 +245,22 @@ as above (SHOULD choices logged, MUST deviations fixed: none remain):
   when a task actually reran because another target of the build rewrote its
   output (differing params alone are no signal: most defines leave most
   objects byte-identical).
-  Variant-keyed output paths (and one task per identical compile across
-  targets) would remove the case; not done yet.
+  Code variants (spec §7.2a) removed the case for compiles, PCHs and
+  archives; it remains for cooks, whose paths are a runtime contract.
+- Code variants: a compile-family task's identity and output folder come
+  from its own settings and dependencies (the code variant), not the
+  target's ConfigTuple. Before, every target compiled each shared module
+  again (the TinyEngine trace store held ~42.5k `compile_cpp` traces for
+  1,739 `linux-dev` objects; an engine `.cpp` edit compiled once per target
+  linking it), and two targets compiling it differently overwrote each
+  other. The variant is explicit per family (module, c_library, interface
+  record, generator) rather than derived from params generically: output
+  paths are params, and a module's objects need one folder. A dependency's
+  task id enters a digest, so the whole chain under a compile (interface
+  records, generators, the PCH) is variant-keyed too. The tool identity is
+  left out so a compiler bump reruns in place instead of leaving a tree
+  behind; a settings edit does leave the old variant's files (a sweep is
+  pending). The c_library interface record, which nothing read, is gone.
 - The pch depfile lists the copied header (its own output) as a prerequisite;
   `report_depfile_deps` gained an exclude list so a task never becomes a
   dynamic dep of itself.
