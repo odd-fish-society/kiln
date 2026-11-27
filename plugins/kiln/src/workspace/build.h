@@ -44,8 +44,8 @@ struct BuildOutcome {
     std::vector<std::string> warnings; // printed after the summary
 };
 
-// The outputs of every trace of a pruning rule (`prune_dead_outputs`, and
-// the built-in cook_tinyasset) whose primary input file is gone (a moved,
+// The outputs of every trace of a pruning rule (`prune_dead_outputs`) whose
+// primary input file is gone (a moved,
 // renamed or deleted source), deleted from under .kiln/out with their
 // traces: a runtime that finds its files by scanning a directory would see
 // a dead one as a ghost. Other rules' primaries can be synthetic and are

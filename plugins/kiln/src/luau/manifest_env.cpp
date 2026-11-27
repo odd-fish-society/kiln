@@ -5,6 +5,7 @@
 #include <set>
 
 #include "cluau/cluau.h"
+#include "core/hash.h"
 #include "core/util.h"
 #include "lua.h"
 #include "lualib.h"
@@ -451,8 +452,7 @@ int spec_plugin(lua_State* L) {
     luaL_checktype(L, 2, LUA_TTABLE);
     validate_fields(L, 2, st,
                     {"enabled_by_default", "supported_platforms", "supported_configs",
-                     "public_deps", "private_deps", "optional_deps", "version",
-                     "reflect_tool"},
+                     "public_deps", "private_deps", "optional_deps", "version"},
                     {"sealed"});
     if (!st->decls.plugin)
         luaL_error(L, "internal: plugin spec without declaration");
@@ -465,7 +465,6 @@ int spec_plugin(lua_State* L) {
     p.optional_deps = get_strvec_field(L, 2, "optional_deps");
     bool present = false;
     p.version = get_string_field(L, 2, "version", false, present);
-    p.reflect_tool = get_string_field(L, 2, "reflect_tool", false, present);
     return 0;
 }
 
@@ -730,7 +729,7 @@ int spec_target(lua_State* L) {
     luaL_checktype(L, 2, LUA_TTABLE);
     validate_fields(L, 2, st,
                     {"platforms", "default_config", "enable_plugins", "disable_plugins",
-                     "features", "link", "syslibs", "link_flags", "companions", "pack_types", "pack"},
+                     "features", "link", "syslibs", "link_flags", "companions", "pack"},
                     {});
     if (!st->decls.target)
         luaL_error(L, "internal: target spec without declaration");
@@ -747,11 +746,6 @@ int spec_target(lua_State* L) {
     t.syslibs = get_strvec_field(L, 2, "syslibs");
     t.link_flags = get_strvec_field(L, 2, "link_flags");
     t.companions = get_strvec_field(L, 2, "companions");
-    t.pack_types = get_strvec_field(L, 2, "pack_types");
-    for (auto& type : t.pack_types)
-        if (type.empty() || type.find_first_not_of("0123456789") != std::string::npos || type.size() > 9)
-            luaL_error(L, "target '%s': pack_types entry '%s' is not an asset type number", t.name.c_str(),
-                       type.c_str());
     lua_getfield(L, 2, "pack");
     if (!lua_isnil(L, -1)) {
         if (!lua_istable(L, -1))
@@ -761,8 +755,6 @@ int spec_target(lua_State* L) {
         if (t.pack_tags.empty())
             luaL_error(L, "target '%s': pack.tags is empty (leave 'pack' out to pack every asset)",
                        t.name.c_str());
-        if (!t.pack_types.empty())
-            luaL_error(L, "target '%s': give pack_types or pack.tags, not both", t.name.c_str());
     }
     lua_pop(L, 1);
     return 0;
@@ -1037,7 +1029,8 @@ ActionDecl read_action(lua_State* L, int idx, const CookDecl& c) {
                    c.rule.c_str());
     validate_fields(L, idx, state_from(L),
                     {"primary", "kind", "tool", "tool_path", "args", "env", "inputs", "outputs", "depfile",
-                     "dyndep", "scan", "asset", "optional_inputs", "provides", "asset_id", "asset_tags"},
+                     "dyndep", "scan", "asset", "optional_inputs", "provides", "asset_id", "asset_tags",
+                     "stdout", "scan_dirs", "module_sources"},
                     {});
     ActionDecl a;
     a.primary = util::norm(action_string(L, idx, "primary", c));
@@ -1058,6 +1051,15 @@ ActionDecl read_action(lua_State* L, int idx, const CookDecl& c) {
     a.provides = get_flat_map_field(L, idx, "provides");
     a.asset_id = action_string(L, idx, "asset_id", c);
     a.asset_tags = action_list(L, idx, "asset_tags", c);
+    a.stdout_path = action_string(L, idx, "stdout", c);
+    if (!a.stdout_path.empty())
+        a.stdout_path = util::norm(a.stdout_path);
+    a.scan_dirs = action_list(L, idx, "scan_dirs", c);
+    for (auto& d : a.scan_dirs)
+        d = util::norm(d);
+    a.module_sources = action_list(L, idx, "module_sources", c);
+    for (auto& m : a.module_sources)
+        m = util::norm(m);
 
     const std::string where = cook_where(c) + ": rule '" + c.rule + "'";
     for (auto& i : a.inputs)
@@ -1094,6 +1096,15 @@ ActionDecl read_action(lua_State* L, int idx, const CookDecl& c) {
             if (!under_out(*f))
                 luaL_error(L, "%s: '%s' is not under .kiln/out/", where.c_str(), f->c_str());
         }
+    if (!a.stdout_path.empty() && std::find(a.outputs.begin(), a.outputs.end(), a.stdout_path) == a.outputs.end())
+        luaL_error(L, "%s: stdout '%s' is not one of the action's outputs", where.c_str(), a.stdout_path.c_str());
+    if (!a.stdout_path.empty() && a.kind != "exec")
+        luaL_error(L, "%s: only an exec action has a stdout", where.c_str());
+    if (!a.scan_dirs.empty() && a.scan.empty())
+        luaL_error(L, "%s: scan_dirs needs a 'scan'", where.c_str());
+    for (auto& m : a.module_sources)
+        if (std::find(a.outputs.begin(), a.outputs.end(), m) == a.outputs.end())
+            luaL_error(L, "%s: module source '%s' is not one of the action's outputs", where.c_str(), m.c_str());
     if (!a.scan.empty() && a.scan != "quoted_include")
         luaL_error(L, "%s: unknown scan '%s' (known: quoted_include)", where.c_str(), a.scan.c_str());
     if (!a.asset.empty()) {
@@ -1288,6 +1299,14 @@ int lower_cooks_impl(lua_State* L) {
         lua_settop(L, spec - 2); // the rule table and kiln_rules
     }
     return 0;
+}
+
+// BLAKE3 of a string, 64 lowercase hex digits.
+int hash_blake3_impl(lua_State* L) {
+    size_t n = 0;
+    const char* s = luaL_checklstring(L, 1, &n);
+    lua_pushstring(L, Hash256::of_string(std::string_view(s, n)).hex().c_str());
+    return 1;
 }
 
 int path_norm_impl(lua_State* L) {
@@ -1584,6 +1603,12 @@ void install_api(lua_State* L, EvalState* st) {
     lua_pushcfunction(L, path_basename_impl, "basename");
     lua_setfield(L, -2, "basename");
     lua_setglobal(L, "path");
+
+    // `hash` helper table (pure: a rule's ids the tool must be told).
+    lua_createtable(L, 0, 1);
+    lua_pushcfunction(L, hash_blake3_impl, "blake3");
+    lua_setfield(L, -2, "blake3");
+    lua_setglobal(L, "hash");
 }
 
 } // namespace

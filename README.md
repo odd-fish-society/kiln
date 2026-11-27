@@ -254,6 +254,12 @@ What a rule's actions can also say:
   or reported by the tool, and tags a target's `pack = { tags = {...} }`
   filters on. `asset` may name an input, to pack a file as it is.
 
+- `module_sources` compiles generated C++ outputs into the plugin's
+  modules (each with its own settings); `stdout` captures the process's
+  output into an output; `scan_dirs` widens the `#include` scan; an arg's
+  `{workspace}` becomes the absolute root when it runs; `hash.blake3(s)`
+  computes an id in the rule.
+
 And the rule itself: `kind = "aggregate"` lowers its cooks once per target
 after every plugin, with `ctx.plugins` and `ctx.outputs` (every named
 output); `prune_dead_outputs = true` deletes the outputs of an action whose

@@ -50,8 +50,7 @@ bool passes_filter(const std::vector<std::string>& platforms,
 } // namespace
 
 bool lowers_in_cpp(const std::string& rule) {
-    static const std::set<std::string> kCppCookRules = {"cook_tinyasset", "pack_tinyasset", "cook_docs",
-                                                        "check_scripts", "check_pkg_config"};
+    static const std::set<std::string> kCppCookRules = {"check_pkg_config"};
     return kCppCookRules.count(rule) != 0;
 }
 
@@ -258,77 +257,6 @@ std::string obj_path(const std::string& src, const std::string& pdir) {
     return rel + ".o";
 }
 
-// A .tasset source document names its own identity (`"asset": {"id": ...}`,
-// 32 lowercase hex) and its cooked asset carries that id, so the pack indexes
-// it under the document's id rather than the path-derived one. Empty when
-// the file has none (the caller keeps the path-derived id).
-std::string tasset_document_id(const fs::path& file) {
-    auto text = util::read_file(file);
-    if (!text.ok())
-        return {};
-    auto doc = nlohmann::json::parse(*text, nullptr, /*allow_exceptions=*/false, /*ignore_comments=*/true);
-    if (!doc.is_object() || !doc.contains("asset") || !doc["asset"].is_object())
-        return {};
-    const auto& id = doc["asset"].value("id", nlohmann::json());
-    if (!id.is_string())
-        return {};
-    std::string hex = id.get<std::string>();
-    if (hex.size() != 32 || hex.find_first_not_of("0123456789abcdef") != std::string::npos)
-        return {};
-    return hex;
-}
-
-// A committed TinyAsset container's identity (chunk 100: AssetID {u64
-// High, u64 Low}, LE) as the 32-hex id, read from the header and chunk
-// table only. v2-v3 headers are 20 bytes, v4 adds the byte-order field; v1
-// has no identity. Empty + `why` when there is none.
-std::string tinyasset_identity(const fs::path& file, std::string& why) {
-    std::ifstream in(file, std::ios::binary);
-    char head[24] = {};
-    if (!in.read(head, 20) || std::memcmp(head, "TASSET1\0", 8) != 0) {
-        why = "not a TinyAsset container";
-        return {};
-    }
-    auto u32 = [](const char* p) {
-        uint32_t v = 0;
-        for (int i = 0; i < 4; ++i)
-            v |= (uint32_t)(uint8_t)p[i] << (8 * i);
-        return v;
-    };
-    auto u64 = [](const char* p) {
-        uint64_t v = 0;
-        for (int i = 0; i < 8; ++i)
-            v |= (uint64_t)(uint8_t)p[i] << (8 * i);
-        return v;
-    };
-    const uint32_t version = u32(head + 8), chunks = u32(head + 16);
-    if (version < 2) {
-        why = "container v" + std::to_string(version) + " has no identity chunk (re-import it)";
-        return {};
-    }
-    const std::streamoff table = version >= 4 ? 24 : 20;
-    in.seekg(table);
-    for (uint32_t i = 0; i < chunks && i < 4096; ++i) {
-        char entry[20];
-        if (!in.read(entry, 20))
-            break;
-        if (u32(entry) != 100 || u64(entry + 12) != 16)
-            continue;
-        char id[16];
-        in.seekg((std::streamoff)u64(entry + 4));
-        if (!in.read(id, 16))
-            break;
-        char hex[33];
-        std::snprintf(hex, sizeof(hex), "%016llx%016llx", (unsigned long long)u64(id),
-                      (unsigned long long)u64(id + 8));
-        if (std::string(hex) == std::string(32, '0'))
-            break;
-        return hex;
-    }
-    why = "no identity chunk";
-    return {};
-}
-
 std::string opt_for(const ConfigTuple& ct) {
     return (ct.config == "release" || ct.config == "shipping") ? "2" : "0";
 }
@@ -436,13 +364,15 @@ Result<std::string> resolve_uses(const LowerCtx& ctx, const std::string& plugin,
     return Result<std::string>::success(std::move(out));
 }
 
-// The asset-record entry of an action's asset: "id=path", the id stated,
-// else the dyndep's identity (resolved by the asset record, falling back to
-// the path-derived id), plus "\t<tag>,<tag>" when tagged.
+// The asset-record entry of an action's asset: "id=path", plus
+// "\t<tag>,<tag>" when tagged. With a dyndep the asset record reads it at run
+// time: "dyndep:<fallback>:<file>" takes its identity (else the fallback,
+// the path-derived id) and its tags; "dyntags:<id>:<file>" (an id the
+// action states) only its tags.
 std::string action_asset_entry(const luau::ActionDecl& a, const std::string& path_id) {
-    std::string id = !a.asset_id.empty() ? a.asset_id
-                   : !a.dyndep.empty()   ? "dyndep:" + path_id + ":" + a.dyndep
-                                         : path_id;
+    std::string id = a.dyndep.empty()     ? (a.asset_id.empty() ? path_id : a.asset_id)
+                   : a.asset_id.empty()   ? "dyndep:" + path_id + ":" + a.dyndep
+                                          : "dyntags:" + a.asset_id + ":" + a.dyndep;
     std::string entry = id + "=" + a.asset;
     if (!a.asset_tags.empty()) {
         std::string tags;
@@ -456,7 +386,7 @@ std::string action_asset_entry(const luau::ActionDecl& a, const std::string& pat
 // Lowers one cluau rule action into its task (the tools resolve here: the
 // PATH and the tools table are not the sandbox's to read).
 Result<void> lower_action(Scheduler& sched, LowerCtx& ctx, const std::string& plugin, const luau::CookDecl& c,
-                          const luau::ActionDecl& a, bool any_plugin) {
+                          const luau::ActionDecl& a, bool any_plugin, TaskId* id_out = nullptr) {
     auto& pt = ctx.tasks[plugin];
     const std::string pdir = plugin_dir_of(ctx, plugin);
     const std::string where = c.file + ": cook '" + c.name + "' (rule '" + c.rule + "')";
@@ -498,6 +428,10 @@ Result<void> lower_action(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         params["exec.dyndep"] = a.dyndep;
     if (!a.scan.empty())
         params["exec.scan"] = a.scan;
+    if (!a.scan_dirs.empty())
+        set_indexed(params, "exec.scan_dir", a.scan_dirs);
+    if (!a.stdout_path.empty())
+        params["exec.stdout"] = a.stdout_path;
 
     std::vector<std::string> inputs;
     for (auto& i : a.inputs) {
@@ -515,6 +449,8 @@ Result<void> lower_action(Scheduler& sched, LowerCtx& ctx, const std::string& pl
     TaskDecl d = make_task(ctx, c.rule, a.primary, params, inputs, deps, a.outputs);
     d.optional_inputs = sorted_uniq(a.optional_inputs);
     auto id = d.id;
+    if (id_out)
+        *id_out = id;
     KILN_TRY(void_result(sched.add(std::move(d))));
     pt.cooks.push_back(id);
     for (auto& o : a.outputs)
@@ -532,7 +468,7 @@ Result<void> lower_action(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         pt.cook_assets.push_back(action_asset_entry(a, Hash256::of_string(plugin + "/" + rel_in).hex()));
         // The asset record reads the identity the tool wrote, and packs an
         // input asset verbatim: both are its inputs.
-        if (a.asset_id.empty() && !a.dyndep.empty())
+        if (!a.dyndep.empty())
             pt.packed_inputs.push_back(a.dyndep);
         if (std::find(a.outputs.begin(), a.outputs.end(), a.asset) == a.outputs.end())
             pt.packed_inputs.push_back(a.asset);
@@ -571,47 +507,6 @@ Result<void> lower_aggregates(Scheduler& sched, LowerCtx& ctx, const std::vector
             ctx.prune_rules[c.rule] = c.prune_dead_outputs;
             for (auto& a : *actions)
                 KILN_TRY(lower_action(sched, ctx, plugin, c, a, true));
-        }
-    }
-    return Result<void>::success();
-}
-
-Result<void> lower_script_checks(Scheduler& sched, LowerCtx& ctx) {
-    for (auto& [plugin, declset] : ctx.declsets) {
-        for (auto& c : declset.cooks) {
-            if (c.rule != "check_scripts" || !passes_filter(c.platforms, c.configs, ctx.ct))
-                continue;
-            std::string site = c.file + ":" + std::to_string(c.line);
-            if (c.inputs.empty())
-                continue; // nothing to check (a glob matching no scripts yet)
-            std::map<std::string, std::string> params = c.params;
-            std::vector<TaskId> deps;
-            std::vector<std::string> defs;
-            std::string names = params["defs"];
-            params.erase("defs");
-            for (size_t at = 0; at < names.size();) {
-                size_t comma = names.find(',', at);
-                std::string name = names.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
-                at = comma == std::string::npos ? names.size() : comma + 1;
-                if (name.empty())
-                    continue;
-                auto pit = ctx.tasks.find(name);
-                if (pit == ctx.tasks.end() || !pit->second.reflect_gen)
-                    return Result<void>::fail(site + ": check_scripts '" + c.name + "': plugin '" + name +
-                                              "' has no reflect_gen task in this target (is it enabled, "
-                                              "with a reflect_tool?)");
-                deps.push_back(*pit->second.reflect_gen);
-                defs.push_back(pit->second.reflect_dluau);
-            }
-            std::string out = ".kiln/out/" + cfg_name(ctx.ct) + "/check/" + plugin + "/" + c.name + ".txt";
-            params["out"] = out;
-            set_indexed(params, "def", defs);
-            set_indexed(params, "input", c.inputs);
-            if (params.count("tool"))
-                set_tool_hash(ctx, params, params["tool"]);
-            TaskDecl d = make_task(ctx, c.rule, plugin_dir_of(ctx, plugin) + "/check:" + c.name, params,
-                                   c.inputs, deps, {out});
-            KILN_TRY(void_result(sched.add(std::move(d))));
         }
     }
     return Result<void>::success();
@@ -775,71 +670,29 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         pt.interface_task = id;
     }
 
-    // ---- reflection generation ---------------------------------------------
-    // A plugin whose manifest pins reflect_tool (the tinyreflect binary, a
-    // build output like tinycook) gets ONE reflect_gen task scanning the
-    // union of its modules' public headers and emitting
-    // <plugin>.reflection.gen.cpp (+ <plugin>.d.luau) under
-    // .kiln/out/<cfg>/gen/<plugin>/. Every module-with-sources then gains
-    // a synthetic compile of that TU with the module's own params (flavor
-    // defines + PCH), so the generated registration lands in the module's
-    // archive and TE_EDITOR/TE_HEADLESS flow through exactly like
-    // hand-written sources.
-    std::optional<TaskId> reflect_gen_task;
-    if (declset.plugin && !declset.plugin->reflect_tool.empty()) {
-        std::vector<std::string> scan_dirs;
-        for (auto& m : declset.modules)
-            for (auto& d : m.public_includes)
-                scan_dirs.push_back(d);
-        // An app plugin (the editor) exposes no public headers: its private
-        // include roots are its declarations' home.
-        if (scan_dirs.empty())
-            for (auto& m : declset.modules)
-                for (auto& d : m.private_includes)
-                    scan_dirs.push_back(d);
-        if (scan_dirs.empty())
-            scan_dirs.push_back(util::join_rel(pdir, "include"));
-        scan_dirs = sorted_uniq(std::move(scan_dirs));
-        auto scan_headers = public_headers_of(ctx, scan_dirs);
-
-        std::string gen_dir = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin;
-        std::string gen_cpp = gen_dir + "/" + plugin + ".reflection.gen.cpp";
-        std::string gen_presentation_cpp = gen_dir + "/" + plugin + ".reflection.presentation.gen.cpp";
-        std::string gen_script_cpp = gen_dir + "/" + plugin + ".script.gen.cpp";
-        std::string gen_dluau = gen_dir + "/" + plugin + ".d.luau";
-        std::string gen_docs = gen_dir + "/" + plugin + ".docs.json";
-        std::map<std::string, std::string> params;
-        params["tool"] = declset.plugin->reflect_tool;
-        params["plugin"] = plugin;
-        params["out"] = gen_cpp;
-        // The Presentation-attributed types land in a SECOND TU the
-        // headless flavor does not compile (Sim/Presentation split).
-        params["out_presentation"] = gen_presentation_cpp;
-        // The Luau bindings of the Script-marked Sim surface - a THIRD
-        // TU, compiled by every flavor (headless too).
-        params["out_script"] = gen_script_cpp;
-        params["out_dluau"] = gen_dluau;
-        // The plugin's reference doc fragment.
-        params["out_docs"] = gen_docs;
-        set_indexed(params, "header", scan_headers);
-        set_indexed(params, "strip_prefix", scan_dirs);
-
-        // Same tool_hash fold as the cook lowering: tool upgrades must
-        // regen this rule's output. Paths resolve against the workspace
-        // root, never the caller's cwd.
-        set_tool_hash(ctx, params, params["tool"]);
-
-        TaskDecl d = make_task(ctx, "reflect_gen", pdir + "/reflect:" + plugin, params,
-                               scan_headers, {}, {gen_cpp, gen_presentation_cpp, gen_script_cpp, gen_dluau, gen_docs},
-                               "", code_variant(ctx, "reflect_gen", params, {}));
-        auto id = d.id;
-        KILN_TRY(void_result(sched.add(std::move(d))));
-        reflect_gen_task = id;
-        pt.reflect_gen = id;
-        pt.reflect_dluau = gen_dluau;
-        pt.reflect_docs = gen_docs;
-        ctx.named_outputs[plugin]["reflect.dluau"] = gen_dluau;
-        ctx.named_outputs[plugin]["reflect.docs"] = gen_docs;
+    // ---- generated module sources -------------------------------------------
+    // A cluau action naming `module_sources` generates C++ the plugin's
+    // modules compile: it is lowered first, and every module with sources
+    // compiles each of them its own way (below).
+    struct GeneratedSources {
+        TaskId task;
+        std::vector<std::string> sources;
+    };
+    std::vector<GeneratedSources> generated;
+    std::set<std::pair<std::string, std::string>> lowered_early; // (rule, primary)
+    for (auto& c : declset.cooks) {
+        if (lowers_in_cpp(c.rule) || c.rule_kind == "aggregate" || !passes_filter(c.platforms, c.configs, ctx.ct))
+            continue;
+        for (auto& a : c.actions) {
+            if (a.module_sources.empty())
+                continue;
+            rules::register_cluau_rule(c.rule, c.rule_version);
+            ctx.prune_rules[c.rule] = c.prune_dead_outputs;
+            TaskId id;
+            KILN_TRY(lower_action(sched, ctx, plugin, c, a, false, &id));
+            generated.push_back({id, a.module_sources});
+            lowered_early.insert({c.rule, a.primary});
+        }
     }
 
     // ---- module compiles ----------------------------------------------------
@@ -940,8 +793,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             set_indexed(settings, "sdk_root", sdk_roots);
             set_indexed(settings, "flag", m.flags);
             std::vector<TaskId> vdeps = iface_deps;
-            if (reflect_gen_task)
-                vdeps.push_back(*reflect_gen_task);
+            for (auto& g : generated)
+                vdeps.push_back(g.task);
             mvariant = code_variant(ctx, "module", settings, vdeps);
         }
         pt.module_variant[m.name] = mvariant;
@@ -1030,76 +883,40 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         // - that is the mechanical Sim/Presentation enforcement. In the
         // engine's three-flavor scheme exactly one module has sources per
         // build, so each gen TU compiles exactly once per config.
-        if (reflect_gen_task && !m.sources.empty()) {
-            std::string gen_src = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/" +
-                                  plugin + ".reflection.gen.cpp";
-            std::string gen_obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/" +
-                                  mdir + "/" + plugin + ".reflection.gen.cpp.o";
-            std::map<std::string, std::string> gen_params;
-            gen_params["std"] = m.cpp_std.empty() ? ctx.ws->config.cpp_std : m.cpp_std;
-            gen_params["opt"] = opt_for(ctx.ct);
-            gen_params["debug"] = debug_for(ctx.ct);
-            gen_params["tool"] = cxx;
-            gen_params["out"] = gen_obj;
-            gen_params["depfile"] = gen_obj + ".d";
-            set_indexed(gen_params, "include", sorted_uniq(includes));
-            set_indexed(gen_params, "define", sorted_uniq(defines));
-            set_indexed(gen_params, "sdk_root", sdk_roots);
-            set_indexed(gen_params, "flag", m.flags);
-            std::vector<TaskId> gen_deps = iface_deps;
-            gen_deps.push_back(*reflect_gen_task);
-            if (pch_task) {
-                gen_deps.push_back(*pch_task);
-                gen_params["pch"] = pch_include_path;
-            }
-            // The compile rule compiles primary_input, so the gen TU's
-            // identity is the shared generated source plus the module's
-            // variant: each module-with-sources compiles it its own way.
-            TaskDecl gd = make_task(ctx, "compile_cpp", gen_src, gen_params, {gen_src},
-                                    gen_deps, {gen_obj}, "", mvariant);
-            auto gid = gd.id;
-            KILN_TRY(void_result(sched.add(std::move(gd))));
-            pt.module_compiles[m.name].push_back(gid);
-            pt.module_objs[m.name].push_back(gen_obj);
-
-            // The script-binding TU - every flavor (it binds only
-            // non-Presentation types).
-            {
-                std::string script_src = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/" +
-                                         plugin + ".script.gen.cpp";
-                std::string script_obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/" +
-                                         mdir + "/" + plugin + ".script.gen.cpp.o";
-                std::map<std::string, std::string> script_params = gen_params;
-                script_params["out"] = script_obj;
-                script_params["depfile"] = script_obj + ".d";
-                TaskDecl sd = make_task(ctx, "compile_cpp", script_src, script_params, {script_src},
-                                        gen_deps, {script_obj}, "", mvariant);
-                auto sid = sd.id;
-                KILN_TRY(void_result(sched.add(std::move(sd))));
-                pt.module_compiles[m.name].push_back(sid);
-                pt.module_objs[m.name].push_back(script_obj);
-            }
-
-            // The Presentation TU - compiled by every flavor except
-            // headless (whose defines carry TE_HEADLESS).
-            const bool headless = std::find(defines.begin(), defines.end(),
-                                            std::string("TE_HEADLESS")) != defines.end();
-            if (!headless) {
-                std::string pres_src = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/" +
-                                       plugin + ".reflection.presentation.gen.cpp";
-                std::string pres_obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/" +
-                                       mdir + "/" + plugin + ".reflection.presentation.gen.cpp.o";
-                std::map<std::string, std::string> pres_params = gen_params;
-                pres_params["out"] = pres_obj;
-                pres_params["depfile"] = pres_obj + ".d";
-                TaskDecl pd = make_task(ctx, "compile_cpp", pres_src, pres_params, {pres_src},
-                                        gen_deps, {pres_obj}, "", mvariant);
-                auto pid = pd.id;
-                KILN_TRY(void_result(sched.add(std::move(pd))));
-                pt.module_compiles[m.name].push_back(pid);
-                pt.module_objs[m.name].push_back(pres_obj);
+        // Each generated module source, compiled with the module's params.
+        if (!m.sources.empty()) {
+            for (auto& g : generated) {
+                for (auto& src : g.sources) {
+                    std::string obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/" + mdir + "/" +
+                                      util::path_basename(src) + ".o";
+                    std::map<std::string, std::string> gp;
+                    gp["std"] = m.cpp_std.empty() ? ctx.ws->config.cpp_std : m.cpp_std;
+                    gp["opt"] = opt_for(ctx.ct);
+                    gp["debug"] = debug_for(ctx.ct);
+                    gp["tool"] = cxx;
+                    gp["out"] = obj;
+                    gp["depfile"] = obj + ".d";
+                    set_indexed(gp, "include", sorted_uniq(includes));
+                    set_indexed(gp, "define", sorted_uniq(defines));
+                    set_indexed(gp, "sdk_root", sdk_roots);
+                    set_indexed(gp, "flag", m.flags);
+                    std::vector<TaskId> gdeps = iface_deps;
+                    gdeps.push_back(g.task);
+                    if (pch_task) {
+                        gdeps.push_back(*pch_task);
+                        gp["pch"] = pch_include_path;
+                    }
+                    // The generated source plus the module's variant: each
+                    // module compiles it its own way.
+                    TaskDecl gd = make_task(ctx, "compile_cpp", src, gp, {src}, gdeps, {obj}, "", mvariant);
+                    auto gid = gd.id;
+                    KILN_TRY(void_result(sched.add(std::move(gd))));
+                    pt.module_compiles[m.name].push_back(gid);
+                    pt.module_objs[m.name].push_back(obj);
+                }
             }
         }
+
     }
 
     // ---- c_libraries --------------------------------------------------------
@@ -1263,78 +1080,6 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
     for (auto& c : declset.cooks) {
         if (!passes_filter(c.platforms, c.configs, ctx.ct))
             continue;
-        if (c.rule == "check_scripts")
-            continue; // whole-tree, lowered after every plugin (lower_script_checks)
-        if (c.rule == "cook_docs") {
-            // ONE task per declaration - the plugin's reflect fragment (when
-            // it has a reflect_gen task), its Markdown pages (the inputs) and
-            // the `deps` plugins' databases (their cook_docs tasks, lowered
-            // first: a dependency is a lower plugin) merge into
-            // <plugin>.docdb.ctasset, packed like any cooked asset.
-            std::string site = c.file + ":" + std::to_string(c.line);
-            std::map<std::string, std::string> params = c.params;
-            std::vector<TaskId> deps;
-            std::vector<std::string> inputs = c.inputs;
-            if (pt.reflect_gen) {
-                params["fragment"] = pt.reflect_docs;
-                deps.push_back(*pt.reflect_gen);
-            }
-            if (inputs.empty() && !pt.reflect_gen)
-                continue; // nothing to cook
-            std::vector<std::string> dep_dbs;
-            std::string names = params["deps"];
-            params.erase("deps");
-            for (size_t at = 0; at < names.size();) {
-                size_t comma = names.find(',', at);
-                std::string name = names.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
-                at = comma == std::string::npos ? names.size() : comma + 1;
-                if (name.empty())
-                    continue;
-                auto pit = ctx.tasks.find(name);
-                if (pit == ctx.tasks.end() || !pit->second.docdb)
-                    return Result<void>::fail(site + ": cook_docs '" + c.name + "': plugin '" + name +
-                                              "' has no cook_docs task in this target (is it a dependency, "
-                                              "declaring one in this config?)");
-                deps.push_back(*pit->second.docdb);
-                dep_dbs.push_back(pit->second.docdb_path);
-            }
-            if (params.count("sections"))
-                inputs.push_back(params["sections"]);
-            std::string rel = "docs/" + plugin + ".docdb";
-            std::string out = ".kiln/out/" + cfg_name(ctx.ct) + "/assets/" + plugin + "/" + rel + ".ctasset";
-            std::string asset_id = Hash256::of_string(plugin + "/" + rel).hex().substr(0, 32);
-            params["plugin"] = plugin;
-            params["out"] = out;
-            params["asset_id"] = asset_id;
-            set_indexed(params, "dep", dep_dbs);
-            set_indexed(params, "input", c.inputs);
-            if (params.count("tool"))
-                set_tool_hash(ctx, params, params["tool"]);
-            TaskDecl d = make_task(ctx, c.rule, pdir + "/docs:" + c.name, params, sorted_uniq(inputs), deps, {out});
-            auto id = d.id;
-            KILN_TRY(void_result(sched.add(std::move(d))));
-            pt.cooks.push_back(id);
-            pt.cook_outputs.push_back(out);
-            pt.cook_assets.push_back(asset_id + "=" + out);
-            pt.docdb = id;
-            pt.docdb_path = out;
-            continue;
-        }
-        if (c.rule == "pack_tinyasset") {
-            // Committed containers packed verbatim under their own identity -
-            // no task; the asset record declares them as inputs, so an edit
-            // repacks.
-            for (auto& primary : c.inputs) {
-                std::string why;
-                std::string id = tinyasset_identity(ctx.ws->root / primary, why);
-                if (id.empty())
-                    return Result<void>::fail(c.file + ": pack_tinyasset '" + c.name + "': " + primary +
-                                              ": " + why);
-                pt.cook_assets.push_back(id + "=" + primary);
-                pt.packed_inputs.push_back(primary);
-            }
-            continue;
-        }
         if (!lowers_in_cpp(c.rule)) {
             // A cluau rule: its actions were lowered at expansion (an
             // aggregate rule's after every plugin, lower_aggregates).
@@ -1346,69 +1091,29 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             rules::register_cluau_rule(c.rule, c.rule_version);
             ctx.prune_rules[c.rule] = c.prune_dead_outputs;
             for (auto& a : c.actions)
-                KILN_TRY(lower_action(sched, ctx, plugin, c, a, false));
+                if (!lowered_early.count({c.rule, a.primary}))
+                    KILN_TRY(lower_action(sched, ctx, plugin, c, a, false));
             continue;
         }
+        // check_pkg_config: one task per input, its output at the input's
+        // plugin-relative path. A ".." hop resolves lexically first, so an
+        // input outside the plugin never writes outside assets/<plugin>/.
         for (auto& primary : c.inputs) {
-        // cook_tinyasset keeps the source extension ("debug_albedo.frag" ->
-        // "debug_albedo.frag.ctasset"); check_pkg_config keeps the name.
-        const bool tinyasset = c.rule == "cook_tinyasset";
-        // Lexically resolve any ".." hops FIRST (norm collapses them once
-        // preceded by real components): a cook input globbed via a "../"
-        // escape (e.g. engine content outside the plugin dir) must land at
-        // .kiln/out/<cfg>/assets/<plugin>/<resolved> — never escape out of
-        // assets/ through the ".." segments (no writes outside
-        // .kiln/out/<cfg>/assets/<plugin>/ for cooked content).
-        std::string rel_in = util::norm(primary);
-        if (util::starts_with(rel_in, pdir + "/"))
-            rel_in = rel_in.substr(pdir.size() + 1);
-        std::string rel_out = tinyasset ? rel_in + ".ctasset" : rel_in;
-        std::string out = ".kiln/out/" + cfg_name(ctx.ct) + "/assets/" + plugin + "/" +
-                          rel_out;
-        std::map<std::string, std::string> params = c.params;
-        params["out"] = out;
-        set_indexed(params, "input", std::vector<std::string>{primary});
-        if (tinyasset) {
-            // Source path for the tool + a DETERMINISTIC AssetID
-            // (first 16 bytes of BLAKE3(plugin/relpath) → High/Low), unless
-            // the manifest pinned one explicitly.
-            params["source"] = primary;
-            if (!params.count("asset_id")) {
-                std::string id = Hash256::of_string(plugin + "/" + rel_in).hex();
-                params["asset_id"] = id.substr(0, 32);
-            }
-            // The .meta sidecar is an optional input (below): editing it
-            // recooks, and so does creating one later. When present, the
-            // tool reads it and its id wins over --asset-id.
-            // Cook-time lint findings (NDJSON append; O_APPEND-safe under
-            // concurrent cook tasks).
-            params["lint_out"] = ".kiln/out/" + cfg_name(ctx.ct) + "/lint/" + plugin + ".json";
-        }
-        // tool_hash covers BOTH discovered tools and manifest-pinned tool
-        // paths (build outputs like the tinycook binary): upgrading the tool
-        // must recook exactly this rule's tasks. Paths resolve against
-        // the workspace root — never the caller's cwd.
-        if (params.count("tool"))
-            set_tool_hash(ctx, params, params["tool"]);
-
-        std::vector<std::string> outputs = {out};
-
-        TaskDecl d = make_task(ctx, c.rule, primary, params,
-                               std::vector<std::string>{primary}, {}, outputs);
-        if (tinyasset)
-            d.optional_inputs = {primary + ".meta"};
-        auto id = d.id;
-        KILN_TRY(void_result(sched.add(std::move(d))));
-        pt.cooks.push_back(id);
-        for (auto& o : outputs)
-            pt.cook_outputs.push_back(o);
-
-        std::string asset_id = Hash256::of_string(plugin + "/" + rel_in).hex();
-        if (c.rule == "cook_tinyasset" && fs::path(primary).extension() == ".tasset") {
-            if (std::string document_id = tasset_document_id(ctx.ws->root / primary); !document_id.empty())
-                asset_id = document_id;
-        }
-        pt.cook_assets.push_back(asset_id + "=" + out);
+            std::string rel_in = util::norm(primary);
+            if (util::starts_with(rel_in, pdir + "/"))
+                rel_in = rel_in.substr(pdir.size() + 1);
+            std::string out = ".kiln/out/" + cfg_name(ctx.ct) + "/assets/" + plugin + "/" + rel_in;
+            std::map<std::string, std::string> params = c.params;
+            params["out"] = out;
+            set_indexed(params, "input", std::vector<std::string>{primary});
+            if (params.count("tool"))
+                set_tool_hash(ctx, params, params["tool"]);
+            TaskDecl d = make_task(ctx, c.rule, primary, params, std::vector<std::string>{primary}, {}, {out});
+            auto id = d.id;
+            KILN_TRY(void_result(sched.add(std::move(d))));
+            pt.cooks.push_back(id);
+            pt.cook_outputs.push_back(out);
+            pt.cook_assets.push_back(Hash256::of_string(plugin + "/" + rel_in).hex() + "=" + out);
         }
     }
 
@@ -1441,20 +1146,25 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         pt.provider = id;
     }
 
-    // ---- asset record --------------------------------------------------------
-    // The cooks' and packed files' manifest, read by the pack and the daemon.
-    if (!pt.cook_assets.empty()) {
+    return Result<void>::success();
+}
+
+Result<void> lower_asset_records(Scheduler& sched, LowerCtx& ctx) {
+    // The cooks' and packed files' manifest per plugin, read by the pack and
+    // the daemon - after the aggregates, whose assets belong to it too.
+    for (auto& [plugin, pt] : ctx.tasks) {
+        if (pt.cook_assets.empty())
+            continue;
         std::map<std::string, std::string> params;
         params["plugin"] = plugin;
         params["out"] = pt.assets_path;
         set_indexed(params, "asset", pt.cook_assets);
-        TaskDecl d = make_task(ctx, "asset_manifest", pdir + "/assets", params,
-                               pt.packed_inputs, pt.cooks, {pt.assets_path});
+        TaskDecl d = make_task(ctx, "asset_manifest", plugin_dir_of(ctx, plugin) + "/assets", params,
+                               sorted_uniq(pt.packed_inputs), pt.cooks, {pt.assets_path});
         auto id = d.id;
         KILN_TRY(void_result(sched.add(std::move(d))));
         pt.assets = id;
     }
-
     return Result<void>::success();
 }
 
@@ -1565,7 +1275,6 @@ Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
             }
         }
         set_indexed(params, "assets", records);
-        set_indexed(params, "pack_type", target.pack_types);
         set_indexed(params, "pack_tag", target.pack_tags);
         TaskDecl d = make_task(ctx, "pack_target", ctx.target_files.at(target.name), params,
                                {}, deps, {params["out"], params["out_index"]});

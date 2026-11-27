@@ -752,3 +752,29 @@ as above (SHOULD choices logged, MUST deviations fixed: none remain):
 - Link records are a workspace option (`link_record`), no longer "the dev
   config": the patchable-object flags and the record are a live-code
   patcher's needs, which a workspace opts into per config.
+
+## The engine's rules leave Kiln
+
+- TinyEngine's content cook and pack, reflection, doc databases and script
+  gate are cluau rule libraries in the engine's `build/rules/`; Kiln lost
+  `builtin_tinyasset`, `builtin_reflect`, the docs and script-check
+  TaskFns, `reflect_tool`, `pack_types` and the TASSET header reads. What
+  they needed became generic: `module_sources` (generated C++ every module
+  compiles its own way - what made reflection a C++ special case), the
+  `{workspace}` token (the engine's tools take absolute paths; the token
+  keeps digests machine-independent), `stdout` to an output, `scan_dirs`
+  for the include scan, dyndep-reported tags, and `hash.blake3` in the
+  sandbox (the id the tool is told). A container's identity and type come
+  from the engine's own tool (`tinycook identity`, `--dyndep`): only the
+  engine knows its format.
+- `cook_docs` and `check_scripts` are aggregates: a content plugin links
+  its docs against, and checks its scripts with, the engine's outputs
+  without depending on the engine plugin.
+- Asset records are lowered after the aggregates; before, an aggregate's
+  asset (the doc databases) missed its plugin's record and the pack.
+- Checked by hashing every file under `.kiln/out/<cfg>/` for dev, release
+  and shipping before and after, variant names normalized: release and
+  shipping differ only in tinycook (which gained the dyndep) and in the
+  pack indices' added tags; every pack, binary, archive and cooked asset is
+  byte-identical.
+

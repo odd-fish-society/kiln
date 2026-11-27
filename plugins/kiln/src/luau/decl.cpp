@@ -54,6 +54,12 @@ json actions_json(const std::vector<ActionDecl>& actions) {
             j[i]["asset_id"] = a.asset_id;
         if (!a.asset_tags.empty())
             j[i]["asset_tags"] = strvec(a.asset_tags);
+        if (!a.stdout_path.empty())
+            j[i]["stdout"] = a.stdout_path;
+        if (!a.scan_dirs.empty())
+            j[i]["scan_dirs"] = strvec(a.scan_dirs);
+        if (!a.module_sources.empty())
+            j[i]["module_sources"] = strvec(a.module_sources);
     }
     return j;
 }
@@ -83,6 +89,9 @@ std::vector<ActionDecl> actions_from_json(const json& j) {
             a.provides[it.key()] = it.value().get<std::string>();
         a.asset_id = v.value("asset_id", "");
         a.asset_tags = to_strvec(v.value("asset_tags", json::array()));
+        a.stdout_path = v.value("stdout", "");
+        a.scan_dirs = to_strvec(v.value("scan_dirs", json::array()));
+        a.module_sources = to_strvec(v.value("module_sources", json::array()));
         out.push_back(std::move(a));
     }
     return out;
@@ -103,7 +112,6 @@ std::string decl_set_to_json(const DeclSet& decls) {
                        {"private_deps", strvec(p.private_deps)},
                        {"optional_deps", strvec(p.optional_deps)},
                        {"version", p.version},
-                       {"reflect_tool", p.reflect_tool},
                        {"file", p.file},
                        {"line", p.line}};
     }
@@ -193,7 +201,6 @@ std::string decl_set_to_json(const DeclSet& decls) {
                        {"syslibs", strvec(t.syslibs)},
                        {"link_flags", strvec(t.link_flags)},
                        {"companions", strvec(t.companions)},
-                       {"pack_types", strvec(t.pack_types)},
                        {"file", t.file},
                        {"line", t.line}};
         if (!t.pack_tags.empty())
@@ -249,7 +256,6 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
             p.private_deps = to_strvec(v.value("private_deps", json::array()));
             p.optional_deps = to_strvec(v.value("optional_deps", json::array()));
             p.version = v.value("version", "");
-            p.reflect_tool = v.value("reflect_tool", "");
             p.file = v.value("file", "");
             p.line = v.value("line", 0);
             out.plugin = std::move(p);
@@ -337,7 +343,6 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
             t.syslibs = to_strvec(v.value("syslibs", json::array()));
             t.link_flags = to_strvec(v.value("link_flags", json::array()));
             t.companions = to_strvec(v.value("companions", json::array()));
-            t.pack_types = to_strvec(v.value("pack_types", json::array()));
             t.pack_tags = to_strvec(v.value("pack_tags", json::array()));
             t.file = v.value("file", "");
             t.line = v.value("line", 0);

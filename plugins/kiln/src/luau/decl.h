@@ -26,7 +26,6 @@ struct PluginDecl {
     // Reflection codegen: the tinyreflect tool binary path (a build
     // output, pinned per config like the tinycook tool). Empty = this
     // plugin generates no reflection TU.
-    std::string reflect_tool;
     std::string file;
     int line = 0;
 };
@@ -77,6 +76,10 @@ struct ActionDecl {
     std::map<std::string, std::string> provides;
     std::string asset_id;                 // the asset's id (32 lowercase hex); else dyndep, else path
     std::vector<std::string> asset_tags;  // the asset's tags (a target's pack.tags filters on them)
+    std::string stdout_path;              // an output the process's standard output is written to
+    std::vector<std::string> scan_dirs;   // quoted_include: searched after the includer's directory
+    // Outputs compiled into every module of the plugin that has sources.
+    std::vector<std::string> module_sources;
 };
 
 struct CookDecl {
@@ -144,7 +147,6 @@ struct TargetDecl {
     std::vector<std::string> companions;
     // The asset types (the cooked blob's u32 type field) this target's pack keeps,
     // as decimal strings; empty = every type.
-    std::vector<std::string> pack_types;
     // `pack = { tags = {...} }`: the pack keeps only assets with one of them.
     std::vector<std::string> pack_tags;
     std::string file;

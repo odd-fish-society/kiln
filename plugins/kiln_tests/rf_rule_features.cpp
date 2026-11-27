@@ -7,6 +7,7 @@
 #include <fstream>
 #include <sys/stat.h>
 
+#include "core/hash.h"
 #include "core/util.h"
 #include "nlohmann/json.hpp"
 #include "test_util.h"
@@ -176,7 +177,7 @@ local function lower_all(cook: Cook, ctx: RuleCtx): { Action } {
 	}
 	let out = ctx.out_dir .. "/all.txt"
 	table.insert(args, out)
-	return { { primary = ctx.plugin_dir .. "/plugin.build.cluau", tool_path = "@TOOL@", args = args, outputs = { out } } }
+	return { { primary = ctx.plugin_dir .. "/plugin.build.cluau", tool_path = "@TOOL@", args = args, outputs = { out }, asset = out } }
 }
 rule "make" { version = 1, lower = lower_make }
 rule "use" { version = 1, params = { "use" }, lower = lower_use }
@@ -254,6 +255,9 @@ TEST_CASE("RF.4 an aggregate rule lowers once per target after every plugin, see
     INFO(r3.out);
     CHECK(ran(r3.out, "/all"));
     CHECK(read_file(all) == "from-lib\nfrom-lib\nfrom-app-2\n");
+    // Its asset is in its plugin's record, so the pack has it.
+    CHECK(read_file(tmp.path / ".kiln/out/linux-dev/pack/game.kpak.json").find("assets/checks/all.txt") !=
+          std::string::npos);
     // Its cook carries no actions in the DeclSet: it is lowered per target.
     auto declset = nlohmann::json::parse(read_file(graph_file(tmp.path, "linux-dev", "checks.declset.json")));
     CHECK(declset["cooks"][0]["rule_kind"] == "aggregate");
@@ -336,14 +340,15 @@ rule "tagged" { version = 1, lower = lower }
     CHECK(index2.find(std::string(32, 'f')) != std::string::npos);
     CHECK(index2.find(c_id) == std::string::npos);
 
-    // pack.tags and pack_types are one or the other.
-    write_tree(tmp.path, {{"build/game.target.cluau",
-                           "target \"game\" { platforms = { \"linux\" }, default_config = \"dev\", link = { "
-                           "\"app/main\" }, pack_types = { 1 }, pack = { tags = { \"keep\" } } }\n"}});
-    auto both = run_kiln(tmp.path, build_args());
-    INFO(both.out);
-    CHECK(both.code != 0);
-    CHECK(both.out.find("give pack_types or pack.tags, not both") != std::string::npos);
+    // One id names one blob in a pack: a duplicate is a build error naming
+    // both files.
+    lib = read_file(tmp.path / "build/rules/r2.cluau");
+    lib.replace(lib.find(d_id), 32, std::string(32, 'f'));
+    write_tree(tmp.path, {{"build/rules/r2.cluau", lib}});
+    auto dup = run_kiln(tmp.path, build_args());
+    INFO(dup.out);
+    CHECK(dup.code != 0);
+    CHECK(dup.out.find("is claimed by both") != std::string::npos);
 }
 
 TEST_CASE("RF.6 prune_dead_outputs: a gone source's outputs go, an unflagged rule's stay") {
@@ -417,4 +422,108 @@ TEST_CASE("RF.7 link_record: only the configs the workspace names write a record
         auto cc = read_file(tmp.path / ".kiln/compile_commands/linux-dev/compile_commands.json");
         CHECK((cc.find("-falign-functions=16") != std::string::npos) == on);
     }
+}
+
+TEST_CASE("RF.8 exec: {workspace} at run time, stdout to an output, scan_dirs, dyndep tags, hash.blake3") {
+    TempDir tmp;
+    fs::path tool = install_tool(tmp.path);
+    // `t.sh echo <file>`: prints the file's path and its content.
+    {
+        std::ofstream f(tmp.path / "echo.sh");
+        f << "#!/bin/sh\nprintf 'path=%s\\n' \"$1\"; cat \"$1\"\nmkdir -p \"$(dirname \"$3\")\"\n"
+             "printf '{\"inputs\": [], \"tags\": [\"from-tool\"]}\\n' > \"$3\"\n";
+    }
+    chmod((tmp.path / "echo.sh").c_str(), 0755);
+    write_tree(tmp.path, {
+        {"kiln.workspace.cluau", "workspace \"r2\" { strict_globs = true, rules = { \"build/rules/r2\" } }\n"},
+        {"build/game.target.cluau", kTarget},
+        {"build/rules/r2.cluau", with_tool(kHelpers + R"(
+local function lower(cook: Cook, ctx: RuleCtx): { Action } {
+	let actions: { Action } = {}
+	for (_, input in cook.inputs) {
+		let out = out_of(input, ctx, ".out")
+		let dyn = out_of(input, ctx, ".dyn.json")
+		table.insert(actions, {
+			primary = input, tool_path = "@ECHO@", args = { "{workspace}/" .. input, "unused", dyn },
+			outputs = { out, dyn }, stdout = out, dyndep = dyn, scan = "quoted_include",
+			scan_dirs = { ctx.plugin_dir .. "/shared" }, asset = out, asset_tags = { "mine" },
+			asset_id = string.sub(hash.blake3(input), 1, 32),
+		})
+	}
+	return actions
+}
+rule "echo" { version = 1, lower = lower }
+)", tool)},
+        {"plugins/app/plugin.build.cluau",
+         "plugin \"app\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"
+         "cook \"e\" { rule = \"echo\", inputs = { \"content/a.txt\" } }\n"},
+        {"plugins/app/src/main.cpp", "int main() { return 0; }\n"},
+        {"plugins/app/content/a.txt", "#include \"common.inc\"\n"},
+        {"plugins/app/shared/common.inc", "common-1\n"},
+    });
+    auto lib = read_file(tmp.path / "build/rules/r2.cluau");
+    const std::string key = "@ECHO@";
+    lib.replace(lib.find(key), key.size(), (tmp.path / "echo.sh").generic_string());
+    write_tree(tmp.path, {{"build/rules/r2.cluau", lib}});
+
+    auto r1 = run_kiln(tmp.path, build_args());
+    INFO(r1.out);
+    REQUIRE(r1.code == 0);
+    const fs::path out = tmp.path / ".kiln/out/linux-dev/assets/app/content/a.txt.out";
+    std::string root = fs::absolute(tmp.path).lexically_normal().generic_string();
+    while (root.size() > 1 && root.back() == '/')
+        root.pop_back();
+    CHECK(read_file(out) == "path=" + root + "/plugins/app/content/a.txt\n#include \"common.inc\"\n");
+    // The params keep the token, not the machine's path.
+    CHECK(read_file(graph_file(tmp.path, "linux-dev", "graph.json")).find(root + "/plugins") == std::string::npos);
+
+    // The scan found common.inc through scan_dirs: editing it reruns.
+    write_tree(tmp.path, {{"plugins/app/shared/common.inc", "common-2\n"}});
+    auto r2 = run_kiln(tmp.path, build_args());
+    INFO(r2.out);
+    CHECK(ran(r2.out, "a.txt/echo"));
+
+    // The id from hash.blake3, the tags merged with the dyndep's.
+    auto record = nlohmann::json::parse(read_file(graph_file(tmp.path, "linux-dev", "app.assets.json")));
+    REQUIRE(record["asset_manifest"].size() == 1);
+    auto& a = record["asset_manifest"][0];
+    CHECK(a["id"] == Hash256::of_string("plugins/app/content/a.txt").hex().substr(0, 32));
+    CHECK(a["tags"] == nlohmann::json::array({"from-tool", "mine"}));
+}
+
+TEST_CASE("RF.9 module_sources: a generated source compiles into each module that has sources") {
+    TempDir tmp;
+    fs::path tool = install_tool(tmp.path);
+    write_tree(tmp.path, {
+        {"kiln.workspace.cluau", "workspace \"r2\" { strict_globs = true, rules = { \"build/rules/r2\" } }\n"},
+        {"build/game.target.cluau", kTarget},
+        {"build/rules/r2.cluau", with_tool(kHelpers + R"(
+local function lower(cook: Cook, ctx: RuleCtx): { Action } {
+	let input = cook.inputs[1]
+	let gen = ".kiln/out/" .. ctx.platform .. "-" .. ctx.config .. "/gen/" .. ctx.plugin .. "/value.gen.cpp"
+	return { { primary = input, tool_path = "@TOOL@", args = { "cat", input, gen }, outputs = { gen }, module_sources = { gen } } }
+}
+rule "gen_cpp" { version = 1, lower = lower }
+)", tool)},
+        {"plugins/app/plugin.build.cluau",
+         "plugin \"app\" {}\n"
+         "module \"main\" { sources = glob(\"src/*.cpp\"), private_defines = { \"VALUE_FROM_MODULE=7\" } }\n"
+         "cook \"g\" { rule = \"gen_cpp\", inputs = { \"gen/value.cpp.in\" } }\n"},
+        {"plugins/app/src/main.cpp", "int value();\nint main() { return value() == 7 ? 0 : 1; }\n"},
+        {"plugins/app/gen/value.cpp.in", "int value() { return VALUE_FROM_MODULE; }\n"},
+    });
+    auto r1 = run_kiln(tmp.path, build_args());
+    INFO(r1.out);
+    REQUIRE(r1.code == 0);
+    // Compiled with the module's own defines, linked into the binary.
+    CHECK(util::run_process({(tmp.path / ".kiln/out/linux-dev/bin/game").generic_string()}, tmp.path, nullptr) == 0);
+    CHECK(ran(r1.out, "value.gen.cpp/compile_cpp"));
+    auto r2 = run_kiln(tmp.path, build_args());
+    CHECK(count_executed(r2.out) == 0);
+    // An edit to the template regenerates and recompiles.
+    write_tree(tmp.path, {{"plugins/app/gen/value.cpp.in", "int value() { return VALUE_FROM_MODULE + 1; }\n"}});
+    auto r3 = run_kiln(tmp.path, build_args());
+    INFO(r3.out);
+    CHECK(ran(r3.out, "value.gen.cpp/compile_cpp"));
+    CHECK(util::run_process({(tmp.path / ".kiln/out/linux-dev/bin/game").generic_string()}, tmp.path, nullptr) == 1);
 }

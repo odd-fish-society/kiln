@@ -62,8 +62,6 @@ void register_cpp();
 void register_pch();
 void register_host();
 void register_checks();
-void register_tinyasset();
-void register_reflect();
 void register_proto();
 void register_flatbuffers();
 } // namespace builtin
@@ -74,8 +72,6 @@ void register_builtin_rules() {
     builtin::register_pch();
     builtin::register_host();
     builtin::register_checks();
-    builtin::register_tinyasset();
-    builtin::register_reflect();
     builtin::register_proto();
     builtin::register_flatbuffers();
 }

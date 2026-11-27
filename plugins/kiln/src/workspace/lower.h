@@ -54,11 +54,6 @@ struct LowerCtx {
         std::optional<TaskId> interface_task;
         std::optional<TaskId> provider;
         std::optional<TaskId> assets;      // its asset_manifest task, when it has assets
-        std::optional<TaskId> reflect_gen; // the plugin's reflect_gen task, when it has one
-        std::string reflect_dluau;         // its <plugin>.d.luau output
-        std::string reflect_docs;          // its <plugin>.docs.json output
-        std::optional<TaskId> docdb;       // its cook_docs task, when it has one
-        std::string docdb_path;            // that task's database asset
         std::map<std::string, std::vector<TaskId>> clib_compiles;
         std::map<std::string, TaskId> clib_archive;
         std::map<std::string, std::string> clib_archive_paths; // c_library → .a path
@@ -66,7 +61,7 @@ struct LowerCtx {
         std::map<std::string, std::vector<std::string>> module_objs; // module → obj paths
         std::map<std::string, std::vector<TaskId>> module_compiles;  // module → compile ids
         std::vector<std::string> cook_assets; // "id=path"
-        std::vector<std::string> packed_inputs; // pack_tinyasset files (the asset record's inputs)
+        std::vector<std::string> packed_inputs; // the asset record's inputs (input assets, dyndeps)
         std::string interface_path;
         std::string provider_path;
         std::string assets_path;
@@ -123,15 +118,12 @@ std::string archive_path(const ConfigTuple& ct, const std::string& plugin,
 // Lowers one plugin's DeclSet into tasks. Dep plugins must already be lowered.
 Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& plugin);
 
-// Lowers every enabled plugin's `check_scripts` declarations, after
-// all plugins: a check depends on another plugin's reflect_gen
-// task (its `defs` param names the plugins whose .d.luau it loads), which a
-// plugin with no dependency on that plugin cannot see while it is lowered.
-Result<void> lower_script_checks(Scheduler& sched, LowerCtx& ctx);
 // The target's aggregate-rule cooks (`rule { kind = "aggregate" }`), after
 // every plugin: each sees every enabled plugin (`order`, topological) and
 // their named outputs.
 Result<void> lower_aggregates(Scheduler& sched, LowerCtx& ctx, const std::vector<std::string>& order);
+// Each plugin's asset record (after the aggregates: their assets are in it).
+Result<void> lower_asset_records(Scheduler& sched, LowerCtx& ctx);
 
 // Applies each module/cook's `exclude` list: removes the named paths from
 // the materialized sources/inputs (paths are workspace-relative; a listed

@@ -32,10 +32,11 @@ std::vector<std::string> indexed(const TaskDecl& decl, const std::string& prefix
     return out;
 }
 
-// `#include "..."` lines, resolved against the including file, recursively
-// (cycle-guarded). Workspace-relative paths in, workspace-relative paths out.
+// `#include "..."` lines, resolved against the including file, then each of
+// `dirs` in order, recursively (cycle-guarded). Workspace-relative paths in,
+// workspace-relative paths out.
 void scan_quoted_includes(const fs::path& workspace_root, const std::string& file,
-                          std::set<std::string>& out, int depth) {
+                          const std::vector<std::string>& dirs, std::set<std::string>& out, int depth) {
     if (depth > 64 || out.count(file))
         return;
     auto content = util::read_file(workspace_root / file);
@@ -53,9 +54,12 @@ void scan_quoted_includes(const fs::path& workspace_root, const std::string& fil
         size_t q2 = content->find('"', q + 1);
         if (q2 == std::string::npos)
             break;
-        std::string rel = util::join_rel(util::path_parent(file), content->substr(q + 1, q2 - q - 1));
+        const std::string name = content->substr(q + 1, q2 - q - 1);
+        std::string rel = util::join_rel(util::path_parent(file), name);
+        for (size_t d = 0; !fs::is_regular_file(workspace_root / rel) && d < dirs.size(); ++d)
+            rel = util::join_rel(dirs[d], name);
         if (fs::is_regular_file(workspace_root / rel))
-            scan_quoted_includes(workspace_root, rel, out, depth + 1);
+            scan_quoted_includes(workspace_root, rel, dirs, out, depth + 1);
         pos = q2 + 1;
     }
 }
@@ -116,10 +120,21 @@ TaskResult run_exec(TaskCtx& ctx) {
             return r;
         }
     } else {
+        // {workspace} is the absolute root, filled in here so the params
+        // (the digest) never hold a machine's path.
+        std::string root = fs::absolute(ctx.workspace_root).lexically_normal().generic_string();
+        while (root.size() > 1 && root.back() == '/')
+            root.pop_back();
+        auto expand = [&](std::string a) {
+            static const std::string kToken = "{workspace}";
+            for (size_t at = a.find(kToken); at != std::string::npos; at = a.find(kToken, at + root.size()))
+                a.replace(at, kToken.size(), root);
+            return a;
+        };
         std::vector<std::string> argv;
         argv.push_back(param(decl, "tool"));
         for (auto& a : indexed(decl, "exec.arg."))
-            argv.push_back(a);
+            argv.push_back(expand(a));
         std::map<std::string, std::string> env;
         const std::string env_prefix = "exec.env.";
         for (auto it = decl.params.lower_bound(env_prefix); it != decl.params.end(); ++it) {
@@ -135,6 +150,12 @@ TaskResult run_exec(TaskCtx& ctx) {
             r.error = decl.id.rule + " failed (" + std::to_string(rc) + "): " + primary;
             return r;
         }
+        if (const std::string so = param(decl, "exec.stdout"); !so.empty()) {
+            if (auto w = util::write_file(ctx.workspace_root / so, out); !w.ok()) {
+                r.error = decl.id.rule + ": " + w.error;
+                return r;
+            }
+        }
     }
 
     for (auto& o : decl.declared_outputs)
@@ -144,7 +165,7 @@ TaskResult run_exec(TaskCtx& ctx) {
         }
     if (param(decl, "exec.scan") == "quoted_include") {
         std::set<std::string> includes;
-        scan_quoted_includes(ctx.workspace_root, primary, includes, 0);
+        scan_quoted_includes(ctx.workspace_root, primary, indexed(decl, "exec.scan_dir."), includes, 0);
         for (auto& inc : includes)
             if (inc != primary)
                 ctx.report_dep(inc);

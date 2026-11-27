@@ -87,107 +87,10 @@ std::vector<std::string> indexed_params(const TaskDecl& decl, const std::string&
     return out;
 }
 
-// check_scripts: the script build gate. ONE task per
-// declaration over the plugin's whole script tree (a type check needs every
-// module a script requires), with the definition files (`def.N`, another
-// plugin's generated <plugin>.d.luau - the lowering adds its reflect task as
-// a dependency) loaded as the globals. Runs the host's checker tool:
-//   <tool> --workspace <root> --defs <def>... <input>...
-// exit 0 = clean; anything else fails the build with the tool's report.
-TaskResult run_check_scripts(TaskCtx& ctx) {
-    TaskResult r;
-    std::string tool = param(*ctx.decl, "tool");
-    std::string out_path = param(*ctx.decl, "out");
-    if (tool.empty() || out_path.empty()) {
-        r.error = "check_scripts: missing tool/out params";
-        return r;
-    }
-    std::vector<std::string> argv = {tool, "--workspace", ctx.workspace_root.generic_string()};
-    for (auto& def : indexed_params(*ctx.decl, "def")) {
-        argv.push_back("--defs");
-        argv.push_back((ctx.workspace_root / def).generic_string());
-    }
-    auto inputs = indexed_params(*ctx.decl, "input");
-    if (inputs.empty()) {
-        r.error = "check_scripts: no scripts to check";
-        return r;
-    }
-    for (auto& in : inputs)
-        argv.push_back((ctx.workspace_root / in).generic_string());
-    std::string captured;
-    int rc = util::run_process(argv, ctx.workspace_root, &captured);
-    if (rc != 0) {
-        ctx.log(captured); // the console prints a failed task's log: the findings
-        r.error = "check_scripts: the script check failed (" + std::to_string(rc) + "):\n" + captured;
-        return r;
-    }
-    std::error_code ec;
-    fs::create_directories((ctx.workspace_root / out_path).parent_path(), ec);
-    if (!util::write_file(ctx.workspace_root / out_path, captured).ok()) {
-        r.error = "check_scripts: cannot write stamp " + out_path;
-        return r;
-    }
-    r.outputs.push_back(out_path);
-    r.ok = true;
-    return r;
-}
-
-// cook_docs: merges a plugin's doc fragment, its
-// Markdown pages and its dependencies' databases into one DocDatabase asset
-// through the host's doc tool:
-//   <tool> cook --plugin P --out O --asset-id ID [--fragment F] [--sections S]
-//          [--dep D]... <page>...
-// The tool resolves every [[link]]; a failure is the build error.
-TaskResult run_cook_docs(TaskCtx& ctx) {
-    TaskResult r;
-    std::string tool = param(*ctx.decl, "tool");
-    std::string out_path = param(*ctx.decl, "out");
-    if (tool.empty() || out_path.empty()) {
-        r.error = "cook_docs: missing tool/out params";
-        return r;
-    }
-    std::vector<std::string> argv = {tool, "cook", "--plugin", param(*ctx.decl, "plugin"), "--out",
-                                     (ctx.workspace_root / out_path).generic_string(), "--asset-id",
-                                     param(*ctx.decl, "asset_id")};
-    if (auto fragment = param(*ctx.decl, "fragment"); !fragment.empty()) {
-        argv.push_back("--fragment");
-        argv.push_back((ctx.workspace_root / fragment).generic_string());
-    }
-    if (auto sections = param(*ctx.decl, "sections"); !sections.empty()) {
-        argv.push_back("--sections");
-        argv.push_back((ctx.workspace_root / sections).generic_string());
-    }
-    for (auto& dep : indexed_params(*ctx.decl, "dep")) {
-        argv.push_back("--dep");
-        argv.push_back((ctx.workspace_root / dep).generic_string());
-    }
-    for (auto& in : indexed_params(*ctx.decl, "input"))
-        argv.push_back(in); // workspace-relative: a page's id and source line come from it
-    std::error_code ec;
-    fs::create_directories((ctx.workspace_root / out_path).parent_path(), ec);
-    std::string captured;
-    int rc = util::run_process(argv, ctx.workspace_root, &captured);
-    if (!captured.empty())
-        ctx.log(captured);
-    if (rc != 0) {
-        r.error = "cook_docs failed (" + std::to_string(rc) + "):\n" + captured;
-        return r;
-    }
-    if (!fs::is_regular_file(ctx.workspace_root / out_path)) {
-        r.error = "cook_docs: the tool did not produce " + out_path;
-        return r;
-    }
-    r.outputs.push_back(out_path);
-    r.ok = true;
-    return r;
-}
-
 } // namespace
 
 void register_checks() {
-    register_rule("cook_docs", 1, run_cook_docs);
     register_rule("check_pkg_config", 1, run_check_pkg_config, /*always_run=*/true);
-    register_rule("check_scripts", 1, run_check_scripts);
 }
 
 } // namespace builtin

@@ -22,7 +22,7 @@ std::vector<std::string> indexed_params(const TaskDecl& decl, const std::string&
 }
 
 // proto_gen: runs a c_library's protoc (a build output of the `protoc`
-// target, like tinyreflect for reflect_gen) over its proto_sources,
+// target) over its proto_sources,
 // emitting <stem>.pb.cc/.pb.h into out_dir. Each proto's own directory is a
 // --proto_path, so imports between a library's protos resolve by bare name
 // (GameNetworkingSockets' layout); tool_hash regenerates on tool changes.

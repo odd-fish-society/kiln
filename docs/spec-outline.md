@@ -614,19 +614,25 @@ rule(name: string)(spec: {
   `rules.std` param - the hash of their sources), and editing one re-lowers what uses it.
 - **Actions** (validated; an error names the cook, the rule and the field):
   `{primary?, kind? = "exec" | "copy", tool? | tool_path?, args?, env?, inputs?,
-  optional_inputs?, outputs*, depfile?, dyndep?, scan?, asset?, asset_id?, asset_tags?,
-  provides?}`. `primary` defaults to `inputs[1]` and is
+  optional_inputs?, outputs*, stdout?, depfile?, dyndep?, scan?, scan_dirs?, asset?,
+  asset_id?, asset_tags?, provides?, module_sources?}`. `primary` defaults to `inputs[1]` and is
   the task's identity, unique per rule; `inputs` defaults to `{primary}`; an exec action
   names exactly one of `tool` (a name: the workspace `tools` table, else PATH, resolved at
   lowering - not found ⇒ error naming the tool) and `tool_path` (a build output or an
   absolute path); a copy has one output and no tool. Outputs, `depfile` and `dyndep` lie
   under `.kiln/out/`. `scan = "quoted_include"` reports the primary's `#include "..."`
-  closure (spec §5b); `depfile` is Make syntax (spec §5a); `dyndep` is JSON
-  `{"inputs": [...], "identity": "<hex>"?}` (paths inside the workspace). `asset` names
+  closure (spec §5b), searching the includer's directory and then each of `scan_dirs`;
+  `depfile` is Make syntax (spec §5a); `dyndep` is JSON `{"inputs": [...], "identity":
+  "<hex>"?, "tags": [...]?}` (paths inside the workspace). `stdout` names an output the
+  process's standard output is written to. The token `{workspace}` in an arg becomes the
+  absolute workspace root when the action runs (the params keep the token, so digests stay
+  machine-independent). `asset` names
   the output registered as the primary's asset, or one of the action's inputs (packed
   verbatim). Its id is `asset_id` when given (32 or 64 lowercase hex), else the dyndep's
   `identity` (read by the plugin's asset record at run time), else
-  BLAKE3(plugin + "/" + plugin-relative primary) (spec §9); `asset_tags` tags it (§9).
+  BLAKE3(plugin + "/" + plugin-relative primary) (spec §9); `asset_tags` tags it, together
+  with the dyndep's `tags` (§9). The sandbox's `hash.blake3(s)` (64 lowercase hex) lets a
+  rule tell the tool the id it will be packed under.
 - **Optional inputs:** `optional_inputs` lists files that may be absent (never under
   `.kiln/out/`). Each one's content, or a fixed absence marker, enters the digest after
   the inputs (only for a task that has any), so creating, editing or deleting one reruns
@@ -638,10 +644,14 @@ rule(name: string)(spec: {
   the producing task a dependency. The plugin must be the action's own or one it depends
   on (directly or transitively, optional deps when enabled); an unknown name or plugin is
   an error naming the cook and what the plugin publishes. Expansion cannot resolve them
-  (it is independent of the enabled set, §7.1), so tokens stay in the DeclSet. The C++
-  `reflect_gen` task publishes `reflect.dluau` and `reflect.docs`. More generally, an
-  action input another task of the target declares as an output makes that task a
-  dependency.
+  (it is independent of the enabled set, §7.1), so tokens stay in the DeclSet. More
+  generally, an action input another task of the target declares as an output makes that
+  task a dependency.
+- **Generated module sources:** `module_sources` lists outputs (generated C++) that every
+  module of the action's plugin that has sources compiles, with that module's settings
+  and PCH, into `obj/<plugin>/<module>/<v10>/<basename>.o` after its own sources. Such
+  actions are lowered before the plugin's modules, and each one's task is part of the
+  module's variant (§7.2a).
 - **Aggregate rules:** a cook of a `kind = "aggregate"` rule is not lowered at expansion
   (its DeclSet entry carries `rule_kind = "aggregate"` and no actions). At target
   lowering, after every plugin, Kiln runs `lower(cook, ctx)` in the same sandbox with two
@@ -653,7 +663,7 @@ rule(name: string)(spec: {
   outputs under `.kiln/out/` deleted and the trace erased (a moved or deleted source
   leaves no output a directory scan would find). Each build records the flag of every
   rule it lowered in `.kiln/prune_rules.json`, so `kiln clean --dead` prunes without
-  lowering; the built-in `cook_tinyasset` always prunes.
+  lowering.
 - **Execution:** every action is one task of rule `<rule name>` run by the built-in
   `exec` TaskFn; its params carry the whole action (`exec.arg.NNNN`, `exec.env.K`,
   `tool` + `tool_hash`, ...) plus `exec.version` (bumped when exec's behaviour changes).
@@ -769,14 +779,14 @@ expansion-only pass (`kiln query "all()"` on a cold cache) executes zero compile
 
 Targets of one config name differ in features and enabled plugins, so a ConfigTuple is
 per target. The code family - `compile_c`/`compile_cpp`, `compile_pch`, `archive`, the
-interface record and the code generators (`fbs_gen`, `proto_gen`, `reflect_gen`) - takes
+interface record and the code generators (`fbs_gen`, `proto_gen`) - takes
 a **code variant** as its `config_hash` instead: a CanonicalHasher over the platform, the
 config name, the family kind, the settings its result depends on, and the stable hashes
 of the tasks it depends on (sorted):
 
 | Kind | Settings |
 |---|---|
-| module (its compiles, PCH, generated-TU compiles, archive) | the plugin and module name, std, opt, debug, live, pch header, includes, defines, SDK roots, flags; deps: its interface deps and its plugin's `reflect_gen` |
+| module (its compiles, PCH, generated-TU compiles, archive) | the plugin and module name, std, opt, debug, live, pch header, includes, defines, SDK roots, flags; deps: its interface deps and the actions generating its `module_sources` |
 | c_library (its compiles and archive) | the plugin and library name, c_std, cpp_std, opt, debug, live, includes, defines, flags; deps: its `proto_gen`/`fbs_gen` |
 | interface record | its params without `out` (headers, includes, defines, syslibs, link flags, the dependencies' record paths); deps: its dependencies' records, its `fbs_gen` tasks |
 | generator | its params; no deps |
@@ -1005,8 +1015,7 @@ directory moves between roots (spec §0). Deliberate ID changes are audited by d
 (format: header, id-sorted table, blobs: specified in `docs/kpak-format.md`) +
 `<target>.kpak.json` index. An asset's tags (`asset_tags`, §6.8) are in its asset record
 and its index entry; a target's `pack = { tags = { ... } }` keeps only the assets carrying
-one of them (the index's `omitted_by_tags` counts the rest). `pack_types` (the cooked
-header's type) is the older filter; a target gives one or the other.
+one of them (the index's `omitted_by_tags` counts the rest).
 
 **Acceptance:** cross-plugin texture reference; edit PNG ⇒ one recook + one repack;
 tool binary swap ⇒ recook of that rule's tasks only.

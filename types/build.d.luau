@@ -16,7 +16,6 @@ export type PluginSpec = {
     private_deps: { string? }?,
     optional_deps: { string? }?,
     version: string?,
-    reflect_tool: string?,
 }
 
 export type ModuleDeps = {
@@ -85,11 +84,8 @@ export type TargetSpec = {
     syslibs: { string? }?,
     link_flags: { string? }?,
     companions: { string? }?,
-    -- The asset type numbers (the cooked header's type field) the target's
-    -- pack keeps; unset packs every asset.
-    pack_types: { number? }?,
     -- The pack keeps only assets carrying one of these tags (an action's
-    -- asset_tags); not with pack_types.
+    -- asset_tags, or the tags its dyndep reports); unset packs every asset.
     pack: { tags: { string? } }?,
 }
 
@@ -177,6 +173,13 @@ export type Action = {
     -- args, inputs, optional_inputs or env values: the path, an input and a
     -- dependency on this action.
     provides: { [string]: string }?,
+    -- An output the process's standard output is written to.
+    stdout: string?,
+    -- With scan: directories searched after the including file's own.
+    scan_dirs: { string }?,
+    -- Outputs compiled into every module of the plugin that has sources,
+    -- each with that module's settings (generated C++ sources).
+    module_sources: { string }?,
 }
 
 export type RuleSpec = {
@@ -208,6 +211,11 @@ declare function glob(pattern: string): FileSet
 -- module itself. Declaring it here would replace that built-in.
 
 declare config: ConfigView
+
+-- Pure helpers for rule libraries.
+declare hash: {
+    blake3: (s: string) -> string, -- 64 lowercase hex digits
+}
 
 declare path: {
     join: (a: string, b: string) -> string,

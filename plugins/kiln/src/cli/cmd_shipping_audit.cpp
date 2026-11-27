@@ -139,7 +139,7 @@ const std::vector<CheckDef>& checks() {
         {"A19", "no LLVM / live-code loader symbols (the LiveCodeSubsystem shell stays: a subsystem is never removed per config)", {"llvm::", "livecode::loader::", "__jit_debug_register_code"}, {}, {}, {"sandbox", "tinyserver"}, ""},
         // The server's pack is scoped to what a server reads (its target's
         // pack_types), so a render type never ships in it by default.
-        {"A20", "tinyserver: the pack holds only its target's pack_types", {}, {}, {}, {"tinyserver"}, ""}, // pack check, handled specially
+        {"A20", "tinyserver: the pack holds only its target's pack.tags", {}, {}, {}, {"tinyserver"}, ""}, // pack check, handled specially
         // The doc databases are the editor's - no runtime pack carries a
         // DocDatabase (TinyAssetType 13).
         {"A21", "no DocDatabase asset in a runtime pack", {}, {}, {}, {"sandbox", "tinyserver"}, ""}, // pack check, handled specially
@@ -277,9 +277,8 @@ Result<int> cmd_shipping_audit(const fs::path& root, const std::string& config,
         }
     }
 
-    // The server pack's types (A20): the kpak table's u32 type of each
-    // entry (KPAK2: count at 5, table offset at 9, 36-byte entries with the
-    // type at +16) against the target's declared pack_types.
+    // The server pack's tags (A20): every entry of the pack's index carries
+    // one of the target's declared pack.tags.
     std::string serverPackProblem;
     {
         std::vector<std::string> declared;
@@ -287,41 +286,33 @@ Result<int> cmd_shipping_audit(const fs::path& root, const std::string& config,
         if (auto ws = wsRoot.ok() ? load_workspace(*wsRoot) : Result<Workspace>::fail(wsRoot.error); ws.ok()) {
             auto it = ws->targets.find("tinyserver");
             if (it != ws->targets.end())
-                declared = it->second.pack_types;
+                declared = it->second.pack_tags;
         }
-        std::ifstream pack(root / outDir / "pack/tinyserver.kpak", std::ios::binary);
-        char head[13] = {};
-        auto u32 = [](const char* b) {
-            uint32_t v = 0;
-            for (int i = 0; i < 4; ++i)
-                v |= (uint32_t)(uint8_t)b[i] << (8 * i);
-            return v;
-        };
         if (std::find(auditTargets.begin(), auditTargets.end(), "tinyserver") == auditTargets.end())
             ; // not audited this run (as the binary rows skip an unaudited target)
         else if (declared.empty())
-            serverPackProblem = "the tinyserver target declares no pack_types";
-        else if (!pack.read(head, 13) || std::string_view(head, 5) != "KPAK2")
-            serverPackProblem = "tinyserver.kpak is missing or not KPAK2";
+            serverPackProblem = "the tinyserver target declares no pack.tags";
         else {
-            const uint32_t count = u32(head + 5);
-            pack.seekg(u32(head + 9));
-            std::map<uint32_t, size_t> stray;
-            for (uint32_t i = 0; i < count; ++i) {
-                char entry[36];
-                if (!pack.read(entry, 36)) {
-                    serverPackProblem = "tinyserver.kpak's table is truncated";
-                    break;
+            auto text = util::read_file(root / outDir / "pack/tinyserver.kpak.json");
+            nlohmann::json index = text.ok() ? nlohmann::json::parse(*text, nullptr, false) : nlohmann::json();
+            if (!index.is_object() || !index.contains("assets"))
+                serverPackProblem = "tinyserver.kpak.json is missing or unreadable";
+            else {
+                std::map<std::string, size_t> stray;
+                for (auto& a : index["assets"]) {
+                    bool kept = false;
+                    for (auto& t : a.value("tags", nlohmann::json::array()))
+                        kept = kept || (t.is_string() && std::find(declared.begin(), declared.end(),
+                                                                   t.get<std::string>()) != declared.end());
+                    if (!kept)
+                        stray[a.value("path", std::string("?"))]++;
                 }
-                const std::string type = std::to_string(u32(entry + 16));
-                if (std::find(declared.begin(), declared.end(), type) == declared.end())
-                    stray[u32(entry + 16)]++;
+                std::string paths;
+                for (auto& [path, n] : stray)
+                    paths += (paths.empty() ? "" : ", ") + path;
+                if (!paths.empty())
+                    serverPackProblem = "assets outside the declared pack.tags: " + paths;
             }
-            std::string types;
-            for (auto& [type, n] : stray)
-                types += (types.empty() ? "" : ", ") + std::to_string(n) + " of type " + std::to_string(type);
-            if (serverPackProblem.empty() && !types.empty())
-                serverPackProblem = "assets outside the declared pack_types: " + types;
         }
     }
 

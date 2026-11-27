@@ -242,15 +242,24 @@ TaskResult run_asset_manifest(TaskCtx& ctx) {
                 at = comma + 1;
             }
         }
-        if (util::starts_with(id, "dyndep:")) {
-            const size_t colon = id.find(':', 7);
-            const std::string fallback = id.substr(7, colon - 7);
+        const bool dyn_id = util::starts_with(id, "dyndep:");
+        if (dyn_id || util::starts_with(id, "dyntags:")) {
+            const size_t start = id.find(':') + 1;
+            const size_t colon = id.find(':', start);
+            const std::string fallback = id.substr(start, colon - start);
             const std::string file = id.substr(colon + 1);
             auto j = read_json_file(ctx.workspace_root / file);
             if (!j.ok())
                 return fail("asset_manifest: " + j.error);
             id = fallback;
-            if (auto it = j->find("identity"); it != j->end()) {
+            for (auto& t : j->value("tags", json::array())) {
+                if (!t.is_string())
+                    return fail("asset_manifest: " + file + ": 'tags' must be strings");
+                tags.push_back(t.get<std::string>());
+            }
+            std::sort(tags.begin(), tags.end());
+            tags.erase(std::unique(tags.begin(), tags.end()), tags.end());
+            if (auto it = j->find("identity"); dyn_id && it != j->end()) {
                 std::string reported = it->is_string() ? it->get<std::string>() : "";
                 bool hex = reported.size() == 32 || reported.size() == 64;
                 for (char c : reported)
@@ -359,11 +368,6 @@ TaskResult run_pack(TaskCtx& ctx) {
         return t;
     };
 
-    // A target's `pack_types` keeps only those types (unset keeps every
-    // one); the index records what was left out.
-    std::set<uint32_t> keep_types;
-    for (auto& t : prefix_params(*ctx.decl, "pack_type."))
-        keep_types.insert(static_cast<uint32_t>(std::stoul(t)));
     // A target's `pack.tags` keeps only assets carrying one of them.
     std::set<std::string> keep_tags;
     for (auto& t : prefix_params(*ctx.decl, "pack_tag."))
@@ -375,17 +379,12 @@ TaskResult run_pack(TaskCtx& ctx) {
         uint64_t size;
     };
     std::vector<Packed> packed;
-    std::map<uint32_t, size_t> dropped;
     for (auto& a : assets) {
         std::error_code ec;
         const uint64_t size = fs::file_size(ctx.workspace_root / a.path, ec);
         if (ec)
             return fail("pack: cannot read " + a.path + ": " + ec.message());
         const uint32_t type = blob_type(a.path);
-        if (!keep_types.empty() && !keep_types.count(type)) {
-            dropped[type]++;
-            continue;
-        }
         if (!keep_tags.empty() &&
             std::none_of(a.tags.begin(), a.tags.end(), [&](const std::string& t) { return keep_tags.count(t) != 0; })) {
             dropped_by_tags++;
@@ -414,12 +413,6 @@ TaskResult run_pack(TaskCtx& ctx) {
         if (!p.asset->tags.empty())
             index["assets"].back()["tags"] = p.asset->tags;
         offset += p.size;
-    }
-    if (!keep_types.empty()) {
-        json omitted = json::object();
-        for (auto& [type, count] : dropped)
-            omitted[std::to_string(type)] = count;
-        index["omitted_types"] = omitted;
     }
     if (!keep_tags.empty())
         index["omitted_by_tags"] = dropped_by_tags;

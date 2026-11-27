@@ -246,7 +246,8 @@ std::vector<std::string> expansion_deps(const luau::PluginDecl& pdecl,
 }
 
 // The workspace targets producing the tool binaries this target's enabled
-// plugins pin (reflect_tool, proto_tool, a cook's `tool` param): a pinned
+// plugins pin (proto_tool, fbs_tool, a cook's `tool` param, an action's
+// tool_path): a pinned
 // `.kiln/out/<platform>-<config>/bin/<name>` is target <name>'s link output
 // in that config. Tools outside .kiln/out (PATH, the workspace `tools` table,
 // a test's fake script) name no target and are left to the missing-tool error.
@@ -257,8 +258,6 @@ std::vector<TargetSpec> tool_targets(const Workspace& ws, const ResolutionResult
         if (it == r.exps.end())
             continue;
         auto& ds = it->second.decls;
-        if (ds.plugin && !ds.plugin->reflect_tool.empty())
-            paths.insert(ds.plugin->reflect_tool);
         for (auto& c : ds.c_libraries)
             if (!c.proto_tool.empty())
                 paths.insert(c.proto_tool);
@@ -269,6 +268,9 @@ std::vector<TargetSpec> tool_targets(const Workspace& ws, const ResolutionResult
             auto t = c.params.find("tool");
             if (t != c.params.end() && !t->second.empty())
                 paths.insert(t->second);
+            for (auto& a : c.actions)
+                if (!a.tool_path.empty())
+                    paths.insert(a.tool_path);
         }
     }
     std::vector<TargetSpec> out;
@@ -505,8 +507,8 @@ Result<void> lower_target(const Workspace& ws, Scheduler& sched, PlannedTarget& 
         if (!lr.ok())
             return Result<void>::fail(std::move(lr.error));
     }
-    KILN_TRY(lower_script_checks(sched, lctx));
     KILN_TRY(lower_aggregates(sched, lctx, t.r.order));
+    KILN_TRY(lower_asset_records(sched, lctx));
     KILN_TRY(lower_target_tasks(sched, lctx, t.r.target));
     return Result<void>::success();
 }
@@ -545,8 +547,8 @@ Result<void> check_output_owners(const Scheduler& sched, const std::vector<Plann
 
 namespace {
 
-// The rules that prune dead outputs: the built-in cook_tinyasset, plus each
-// rule the record marks (a rule a run lowered keeps the flag that run saw).
+// The rules that prune dead outputs: each rule the record marks (a rule a
+// run lowered keeps the flag that run saw).
 std::set<std::string> prune_rules(const fs::path& root,
                                   const std::map<std::string, bool>& lowered = {}) {
     const fs::path file = root / ".kiln/prune_rules.json";
@@ -568,7 +570,7 @@ std::set<std::string> prune_rules(const fs::path& root,
         if (changed)
             (void)util::write_file(file, j.dump(2));
     }
-    std::set<std::string> out = {"cook_tinyasset"};
+    std::set<std::string> out;
     for (auto it = j.begin(); it != j.end(); ++it)
         if (it.value().is_boolean() && it.value().get<bool>())
             out.insert(it.key());
