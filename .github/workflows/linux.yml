@@ -42,12 +42,12 @@ jobs:
       - name: Build
         run: |
           ${{ matrix.cxx }} --version
-          cmake -S . -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DKILN_BUILD_TESTS=ON \
+          cmake -S . -B build/tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DKILN_BUILD_TESTS=ON \
             -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
-          cmake --build build/ci -j "$(nproc)"
+          cmake --build build/tests -j "$(nproc)"
 
       - name: Suite
-        run: ./build/ci/kiln_tests
+        run: ./build/tests/kiln_tests
 
   bootstrap:
     name: bootstrap convergence
