@@ -169,7 +169,9 @@ Result<std::vector<fs::path>> list_dirs(const fs::path& root) {
     return Result<std::vector<fs::path>>::success(std::move(out));
 }
 
-Result<std::vector<std::string>> walk_files_rel(const fs::path& root) {
+Result<std::vector<std::string>> walk_files_rel(const fs::path& root_in) {
+    // "a/b/" would make every lexically_relative "../x".
+    const fs::path root = root_in.has_filename() ? root_in : root_in.parent_path();
     std::error_code ec;
     std::vector<std::string> out;
     fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec);
@@ -182,8 +184,10 @@ Result<std::vector<std::string>> walk_files_rel(const fs::path& root) {
         if (it->is_symlink(ec))
             continue; // symlinks not followed
         if (it->is_regular_file(ec)) {
-            auto rel = fs::relative(it->path(), root, ec);
-            out.push_back(norm(rel.generic_string()));
+            // Lexical: the iterator's paths are `root / ...`, and
+            // fs::relative canonicalizes both sides (a readlink per
+            // component, per file).
+            out.push_back(norm(it->path().lexically_relative(root).generic_string()));
         }
     }
     std::sort(out.begin(), out.end());

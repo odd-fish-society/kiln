@@ -138,6 +138,7 @@ kiln query "rdeps(engine/plugins/core)"   # who depends on core?
 kiln why-dirty engine/plugins/game/link:game@linux-dev
 kiln setup-clion                    # emit compile_commands.json + CLion instructions
 kiln clean                          # delete outputs (add --traces to also forget receipts)
+kiln clean --dead                   # delete only dead outputs (gone sources, unused variants)
 ```
 
 Progress output is a pinned bar with a rolling `[done/total]` counter in a terminal,
@@ -314,11 +315,13 @@ delete: worst case is a clean rebuild), `compile_commands/` for IDEs,
 - Deleted an output by hand? Next build restores exactly it. Corrupted state? Delete
   `.kiln/` entirely; you lose nothing but warm caches.
 - Header dependencies are discovered, not declared: don't list them in manifests.
-- Targets that build a module the same way share its compiles: an edit compiles once,
-  whichever targets link it. Targets that build it differently (a feature adds a
-  define) each keep their own objects. Cooked assets have fixed paths, so two targets
-  cooking one asset differently overwrite each other and are never a no-op; Kiln warns
-  and names them when it happens.
+- The targets of one `kiln build` share one graph and build side by side; targets that
+  do the same work share its task, so an edit compiles once whichever targets link it.
+  Targets that build a module differently (a feature adds a define) each keep their own
+  objects. Cooked assets have fixed paths, so two targets cooking one asset differently
+  is an error naming both: build them in separate invocations or make them agree.
+- Archives are thin: they name their objects under `.kiln/out/<config>/obj/`, so copy
+  the binary, never an `.a`.
 - Unknown manifest fields are errors: typos can't silently drop a dependency.
 - A plugin's layer is derived from the root it lives in; moving it between roots is
   the only way to change it. Dependencies must not point to a higher layer.

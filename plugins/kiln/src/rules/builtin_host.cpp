@@ -134,8 +134,8 @@ TaskResult run_interface(TaskCtx& ctx) {
 }
 
 // provider rule: the IMPLEMENTATION record (spec §7.2). Depends only on the
-// plugin's link task (archive) and its cook tasks (asset_manifest). Contains NO
-// interface content and NO dep-provider references — dependents' compiles gate
+// plugin's archives. Contains NO interface content, NO assets (the
+// asset_manifest rule's record) and NO dep-provider references — dependents' compiles gate
 // on the interface record (run_interface above), their links on this record.
 TaskResult run_provider(TaskCtx& ctx) {
     TaskResult r;
@@ -157,13 +157,15 @@ TaskResult run_provider(TaskCtx& ctx) {
     // first: a change to any module's archive must change the implementation
     // record's output bytes, or dependents' links would keep a stale binary
     // (early cutoff keys downstream digests on this task's output summary).
+    // An archive's content is its member record (`<archive>.members`: each
+    // object's hash) - the thin archive itself may not change with a member.
     // impl_artifact stays = first archive for back-compat with readers that
     // only know the single-archive shape.
     if (!archives.empty()) {
         CanonicalHasher h;
         h.begin_list("archives");
         for (auto& a : archives) {
-            auto hv = Hash256::of_file(ctx.workspace_root / a);
+            auto hv = ctx.hash_file(a + ".members");
             if (!hv.ok())
                 return fail(hv.error);
             h.item(a);
@@ -186,7 +188,7 @@ TaskResult run_provider(TaskCtx& ctx) {
         json c;
         c["name"] = name;
         c["impl_artifact"] = path;
-        auto hv = Hash256::of_file(ctx.workspace_root / path);
+        auto hv = ctx.hash_file(path + ".members");
         if (!hv.ok())
             return fail(hv.error);
         c["impl_hash"] = hv->hex();
@@ -194,11 +196,29 @@ TaskResult run_provider(TaskCtx& ctx) {
     }
     out["c_libs"] = clibs;
 
+    if (!util::write_file(ctx.workspace_root / out_path, out.dump(2)).ok())
+        return fail("provider: cannot write " + out_path);
+    r.ok = true;
+    r.outputs.push_back(out_path);
+    return r;
+}
+
+// asset_manifest rule: the plugin's asset record - every cooked or packed
+// asset's id, path and content hash, read by pack_target and the daemon.
+TaskResult run_asset_manifest(TaskCtx& ctx) {
+    TaskResult r;
+    auto fail = [&](std::string e) {
+        r.error = std::move(e);
+        return r;
+    };
+    std::string out_path = param(*ctx.decl, "out");
+    json out;
+    out["plugin"] = param(*ctx.decl, "plugin");
     // Asset manifest from cook outputs. Each entry carries the blob's
     // CONTENT hash (empty when the file is missing, e.g. check-task outputs
     // that don't write their declared path): a content-only recook must
-    // change the implementation record's output bytes, or pack_target would
-    // stay cached and repack a stale blob.
+    // change this record's output bytes, or pack_target would stay cached
+    // and repack a stale blob.
     json assets = json::array();
     for (auto& entry : prefix_params(*ctx.decl, "asset.")) {
         auto eq = entry.find('=');
@@ -207,7 +227,7 @@ TaskResult run_provider(TaskCtx& ctx) {
         std::string id = entry.substr(0, eq);
         std::string path = entry.substr(eq + 1);
         std::string hash;
-        auto hv = Hash256::of_file(ctx.workspace_root / path);
+        auto hv = ctx.hash_file(path);
         if (hv.ok())
             hash = hv->hex();
         assets.push_back({{"id", id}, {"path", path}, {"hash", hash}});
@@ -215,7 +235,7 @@ TaskResult run_provider(TaskCtx& ctx) {
     out["asset_manifest"] = assets;
 
     if (!util::write_file(ctx.workspace_root / out_path, out.dump(2)).ok())
-        return fail("provider: cannot write " + out_path);
+        return fail("asset_manifest: cannot write " + out_path);
     r.ok = true;
     r.outputs.push_back(out_path);
     return r;
@@ -234,7 +254,7 @@ TaskResult run_pack(TaskCtx& ctx) {
         bool operator<(const Asset& o) const { return id < o.id; }
     };
     std::vector<Asset> assets;
-    for (auto& p : prefix_params(*ctx.decl, "provider.")) {
+    for (auto& p : prefix_params(*ctx.decl, "assets.")) {
         auto j = read_json_file(ctx.workspace_root / p);
         if (!j.ok())
             return fail(j.error);
@@ -455,10 +475,15 @@ void register_host() {
     register_rule("interface", 1, run_interface);
     // v2: asset_manifest entries gained a per-blob content hash (see
     // decisions.md "Pack & hot-reload pass") - output shape change.
-    register_rule("provider", 2, run_provider);
+    // v3: impl_hash over the archives' member records; the asset manifest
+    // moved to the asset_manifest rule's record.
+    register_rule("provider", 3, run_provider);
+    register_rule("asset_manifest", 1, run_asset_manifest);
     // v2: fixed two kpak layout bugs (32-byte entry ids; 9+n*48 header math)
     // — see decisions.md "Pack & hot-reload pass".
-    register_rule("pack_target", 4, run_pack); // v4: build hash covers the content hashes too
+    // v4: build hash covers the content hashes too; v5: reads the asset
+    // records (`assets.*`), not the providers.
+    register_rule("pack_target", 5, run_pack);
     register_rule("gen_compile_commands", 1, run_compile_commands);
 }
 

@@ -12,8 +12,9 @@ and record the choice in `docs/decisions.md`.
 
 - **Architecture invariants:**
   1. Task identity = `(rule_name, primary_input, config_hash)`. Never positional, never
-     parent-derived. For the code family (§7.2a) `config_hash` is the task's code
-     variant, not the target's ConfigTuple.
+     parent-derived. `config_hash` is the task's content variant (§7.2a: the code
+     family's settings, every other task's params and dependencies), never the
+     target that asked for it; expansions alone keep the ConfigTuple (§7.1).
   2. Action digest = `hash(input content hashes, params, tool/rule version, config tuple)`.
   3. Trace store maps identity → `(action_digest, output_hashes, dynamic_deps)`. SQLite.
   4. Rebuilder: verifying traces + recorded dynamic deps (depfile model) + early cutoff.
@@ -175,7 +176,7 @@ class CanonicalHasher { public:
 struct TaskId {                  // identity: see invariant 1
   std::string rule;              // e.g. "compile_cpp"
   std::string primary_input;     // workspace-relative, e.g. "plugins/audio/src/mixer.cpp"
-  Hash256     config_hash;       // hash of the ConfigTuple (spec §4); a code variant (§7.2a)
+  Hash256     config_hash;       // the task's content variant (§7.2a); expansions: the ConfigTuple
   Hash256     stable_hash() const;   // CanonicalHasher over the three fields
   std::string display() const;   // "plugins/audio/compile_cpp:src/mixer.cpp@win64-dev"
 };
@@ -221,6 +222,9 @@ CREATE TABLE IF NOT EXISTS file_hash (
 ```
 
 `hash_of(path)`: stat; on `(mtime_ns,size)` match return cached; else rehash, upsert.
+A file outside the workspace (a toolchain binary, keyed by its absolute path) is cached
+the same way: the toolchain fingerprint's files are hashed once per `(mtime_ns,size)`,
+and each driver is probed once per kiln run, not once per target.
 Missing file ⇒ distinguished error (not a zero hash). Directory hashing is NOT a thing;
 globs are resolved to file lists at expansion time (spec §6.4).
 
@@ -387,13 +391,18 @@ struct ConfigTuple {
 ```
 
 Multiple ConfigTuples may be built in one invocation (`kiln build game:linux-dev
-game:linux-release`); their graphs coexist keyed by config_hash.
-Targets of one config name share `.kiln/out/<platform>-<config>/`. When a task of target
-B reruns because its output is not what it wrote and target A of the same invocation
-declares that file (A compiles it differently, or its output is not reproducible), the
-build prints `kiln: warning: targets 'A' and 'B' (<config>) write N of the same files
-differently (e.g. <path>)` once per pair: building both reruns those tasks every time.
-The output stays correct. `gen_compile_commands` is exempt (one shared file by design).
+game:linux-release`). **All targets of one invocation build in one graph** (one
+scheduler, one trace store): each target, its tool targets and its companions are
+resolved first; a target's *level* is one more than the highest level of the tool
+targets it runs (whose binaries' hashes its lowering folds in); each level's targets
+expand, lower into the shared graph and run together, so `kiln build a b` overlaps a's
+and b's work. A tool target that failed fails the build before a target running it is
+lowered. Targets doing the same work share its task (identity is content, §7.2a).
+Targets of one config name share `.kiln/out/<platform>-<config>/`; two different tasks
+declaring one output path would race, so lowering fails before anything runs with
+`targets 'A' and 'B' both write <path> with different tasks (...)`, and a second request
+for one task identity with different params is an error too. The reports (`graph.json`
+per config, `.kiln/logs/last_why.json`) cover the run's targets.
 
 ## 5. Dynamic dependencies
 
@@ -525,6 +534,8 @@ roots as a plain `git mv`, while `../`-escaped inputs are depth-sensitive and de
 AssetIDs from the resolved workspace path (spec §9). Returns a FileSet
 userdata carrying the SORTED matched list AND the pattern. The expansion node's digest includes the pattern plus the
 hash of the sorted result list (so file adds/removes re-expand). Symlinks not followed.
+Only the directories under the patterns' shared literal prefix are walked (`src/*.cpp`
+lists `src/`, not the plugin); the result is the same as a full walk's.
 Empty glob ⇒ warning by default, error if `strict_globs=true` in workspace file.
 
 ### 6.5 Determinism canary
@@ -629,7 +640,8 @@ it, the standard libraries type-check clean, and every rule error names its caus
 ### 7.1 Expansion nodes
 
 Expansion is a task with `rule="expand_plugin"` (or `expand_target`), primary_input =
-manifest path, config_hash = the ConfigTuple. Inputs: manifest + required files + glob
+manifest path, config_hash = the ConfigTuple; its params carry the platform, config and
+features (`feature.<k>`) the one host rule evaluates it with. Inputs: manifest + required files + glob
 result hashes + **dep plugins' DeclSets** (their expansion outputs: NOT their provider
 records, and NOT anything requiring dep compilation; the include dirs and defines that
 lowering needs are all present in dep DeclSets). Output: a serialized
@@ -639,6 +651,11 @@ graph for that plugin is generated FROM the DeclSet by C++ rule lowering (determ
 lowering code version is a rule_version).
 
 Analysis caching therefore = ordinary trace caching of expansion tasks. No special code.
+Within one invocation the resolution pass and the expansion tasks share a memo: an
+expansion depends only on (manifest, platform, config, features), so targets with the same
+features evaluate a manifest once, and each glob is walked once per invocation (the
+build writes nothing under a plugin tree; every invocation re-globs, so file adds still
+re-expand).
 
 Consequence (normative): expansion+lowering for the whole plugin graph depends only on
 manifests and can complete before ANY compilation runs. Compilation of a dependent
@@ -662,28 +679,43 @@ is what unblocks dependents' compiles.
   "public_defines": ["AUDIO_ENABLED=1", ...] }
 ```
 
-**Implementation record**: depends on the plugin's link task (and its cook tasks, for
-`asset_manifest`: spec §9). This gates dependents' LINK tasks, and only those.
+**Implementation record**: depends on the plugin's archives only. This gates
+dependents' LINK tasks, and only those.
 
 ```json
 { "plugin": "audio",
-  "impl_artifact": ".kiln/out/linux-dev/plugins/audio/libaudio.a",
+  "impl_artifact": ".kiln/out/linux-dev/lib/audio/<v10>/libaudio.a",
   "impl_hash": "<hex>",
   "archives": ["...", "..."],
-  "asset_manifest": [ {"id": "<hex>", "path": ".kiln/out/.../atlas.ktx2", "hash": "<blob BLAKE3, empty if missing>"} ] }
+  "c_libs": [ {"name": "...", "impl_artifact": "...", "impl_hash": "<hex>"} ] }
 ```
 
-`asset_manifest` entries carry the cooked blob's CONTENT hash: a content-only
-recook changes the implementation record's output bytes, so pack_target (and
-anything else keyed on this record's output summary) re-runs instead of
-repacking a stale blob.
+**Archives are thin** (`ar rcsDT`): member paths (relative to the archive) and the
+symbol table, never the members' bytes, so one changed object does not rewrite the
+module's archive. A thin archive's bytes can stay the same when a member's content
+changes, so the archive task also writes `<archive>.members` (each member's content
+hash and path), and the archive's "content" for every hash below is that record.
+Nothing copies an archive elsewhere: its members stay in their variant folder.
 
 `impl_artifact` names the FIRST archive (single-archive back-compat); `impl_hash`
-is a canonical hash over ALL of the plugin's archives (sorted path + content
+is a canonical hash over ALL of the plugin's archives (sorted path + member-record
 hash each): a change to ANY module's archive must change the implementation
 record's output bytes so dependent links re-run (early cutoff keys downstream
 digests on this task's output summary). Hashing only the first archive leaves
 dependent links stale when a later archive changes.
+
+**Asset record**: `<plugin>.assets.json` beside the provider (rule `asset_manifest`),
+depending on the plugin's cook tasks and declaring its packed files as inputs:
+
+```json
+{ "plugin": "audio",
+  "asset_manifest": [ {"id": "<hex>", "path": ".kiln/out/.../atlas.ktx2", "hash": "<blob BLAKE3, empty if missing>"} ] }
+```
+
+Entries carry the cooked blob's CONTENT hash: a content-only recook changes the
+record's output bytes, so pack_target re-runs instead of repacking a stale blob.
+`pack_target` and the daemon's asset events read the asset records, links the
+providers, so a code edit never repacks and a content edit never relinks.
 
 Dependents' compile tasks depend on the interface record tasks (the record enters their
 digest as that dependency's output summary; the include and define flags come from
@@ -727,9 +759,25 @@ and outputs under different folders:
   `.kiln/graph/<cfg>/code/<v10>/<plugin>.interface.json`, with `<v10>` the first 10 hex
   of the variant. Generator outputs keep their paths.
 
-Everything else (cooks, providers, links, packs, checks, `compile_commands.json`,
-expansions) keeps the target's ConfigTuple. A settings edit makes a new variant: its
-tasks have no trace ("first build") and the old variant's files stay on disk.
+Every other task (cooks, providers, asset records, links, packs, checks, the
+compile_commands records) takes the same kind of variant over its rule, its params
+(without the tool binaries' hashes: a rebuilt tool reruns it in place) and its
+dependencies: identical work is one task whichever targets ask for it. Its outputs keep
+their paths (the target name or the ConfigTuple variant is in them where they are
+per target). Expansions keep the ConfigTuple (§7.1). A settings edit makes a new
+variant: its tasks have no trace ("first build").
+
+**Old variants are swept.** After a build that succeeds, each built target's variant
+folders (those its tasks' outputs lie in: the shapes above, plus its
+`.kiln/graph/<cfg>/<ct10>/`) are its record, `.kiln/graph/<cfg>/targets/<target>.variants`.
+A folder the target's previous record listed and its new one does not, or that a target
+the workspace no longer has listed (its records go with it), is deleted unless another
+record of that config lists it. A failed build writes no record and deletes nothing, so
+the old variant stays until the new one has built; a folder no record ever listed is
+never touched by a build. `kiln clean --dead` also deletes, in every config with
+records, each variant folder no record lists (a target not built there since its
+records began recompiles). Traces of swept tasks stay; their outputs are missing, so a
+revert reruns them.
 
 **Acceptance:** two targets with the same module settings run each of its compiles once
 in `kiln build a b`, and an edit compiles once; two with different defines each keep
@@ -902,7 +950,7 @@ story, stated plainly: an ID changes when its source moves relative to its plugi
 between plugins, or its plugin is renamed: and does NOT change when the plugin's
 directory moves between roots (spec §0). Deliberate ID changes are audited by diffing the
 `.kpak.json` index before/after. Pack step
-`pack_target`: reads all enabled plugins' asset_manifests, writes `<target>.kpak`
+`pack_target`: reads all enabled plugins' asset records (§7.2), writes `<target>.kpak`
 (format: header, id-sorted table, blobs: specified in `docs/kpak-format.md`) +
 `<target>.kpak.json` index.
 
@@ -932,17 +980,25 @@ plugins/game/link:game@linux-dev  REBUILT because:
 
 - `kiln query`: v1 verbs only: `deps(expr)`, `rdeps(expr)`, `all()`, filter by prefix
   string. Operates on the serialized DeclSets + lowered graph; `--json` supported.
+  `--config <platform-config>` picks the graph; without it, the config whose
+  `graph.json` the last build wrote.
 
 **Acceptance:** save PNG under watch ⇒ socket event within 1s; why-dirty golden
 outputs for the three canonical causes (input changed, dep interface changed, params changed).
 
 ## 11. compile_commands.json
 
-Generated per ConfigTuple by a dedicated task from lowered compile TaskDecls:
-standard fields (`directory` = workspace root, `file`, `arguments` array: not `command`).
-Written to `.kiln/compile_commands/<config>/compile_commands.json`; `kiln setup-clion`
-symlinks the chosen config's file to workspace root and prints CLion setup steps.
-Regenerates automatically (it's a node keyed on the graph). Diagnostic output of all
+Each target's compile tasks (their params as lowered, variant paths included) go to
+its own record, `.kiln/compile_commands/<config>/targets/<target>.json`, written by one
+task per target: standard fields (`directory` = workspace root, `file`, `arguments`
+array: not `command`). After the run the driver merges the records of the workspace's
+targets into `.kiln/compile_commands/<config>/compile_commands.json`, only when one of
+them changed since the last merge (a stamp of their hashes); a source several targets
+compile keeps the entry of the target with the most entries (ties by name). So building
+different target sets in turn leaves the file as it is. The merge is not a task: a
+task's digest covers its dependencies, which would differ with each invocation's
+target set. `kiln setup-clion` symlinks the file of the chosen config (default: the one
+built last) to the workspace root and prints CLion setup steps. Diagnostic output of all
 rules MUST be clang-style `path:line:col: error: msg` (map tool formats where needed).
 
 ## 12. CLion plugin (separate repo `kiln-clion/`)
@@ -968,6 +1024,7 @@ kiln why-dirty <task-or-path>
 kiln daemon [build args]
 kiln setup-clion [--config=]
 kiln clean [--traces]                     # deletes .kiln/out (+ traces with flag)
+kiln clean --dead                         # deletes dead cooks and unrecorded variant folders
 Exit codes: 0 ok, 1 task failures, 2 usage/config errors, 3 internal error.
 ```
 

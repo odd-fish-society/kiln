@@ -222,3 +222,29 @@ TEST_CASE("file hash cache: a file rewritten mid-run hashes anew; an unchanged o
     fs::remove(root / "a.txt");
     CHECK(!reopened.hash_of(root, "a.txt").ok());
 }
+
+TEST_CASE("file hash cache: a file named by absolute path persists like a workspace file") {
+    // The toolchain's binaries are hashed this way: a reopened cache (the
+    // next run) answers from the table on an unchanged (mtime, size)
+    // instead of reading hundreds of MB again.
+    TempDir tmp;
+    fs::path root = tmp.path / "ws";
+    fs::create_directories(root);
+    fs::path tool = tmp.path / "bin" / "cc";
+    write_tree(tmp.path, {{"bin/cc", "first"}});
+    auto mtime = fs::last_write_time(tool);
+    {
+        FileHashCache cache{root / ".kiln/hashcache.sqlite"};
+        REQUIRE(cache.open().ok());
+        CHECK(*cache.hash_of_abs(tool) == Hash256::of_string("first"));
+    }
+    // Same size and mtime: the persisted hash, not a re-read.
+    write_tree(tmp.path, {{"bin/cc", "secnd"}});
+    fs::last_write_time(tool, mtime);
+    FileHashCache reopened{root / ".kiln/hashcache.sqlite"};
+    REQUIRE(reopened.open().ok());
+    CHECK(*reopened.hash_of_abs(tool) == Hash256::of_string("first"));
+    // A new mtime hashes anew.
+    fs::last_write_time(tool, mtime + std::chrono::seconds(5));
+    CHECK(*reopened.hash_of_abs(tool) == Hash256::of_string("secnd"));
+}

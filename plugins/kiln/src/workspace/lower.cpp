@@ -1,4 +1,5 @@
 #include "workspace/lower.h"
+#include "workspace/sweep.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -6,6 +7,7 @@
 #include <fstream>
 #include <set>
 
+#include "core/file_hash_cache.h"
 #include "core/live.h"
 #include "core/toolchain.h"
 #include "core/util.h"
@@ -78,7 +80,11 @@ void set_tool_hash(LowerCtx& ctx, std::map<std::string, std::string>& params, co
         effective = (ctx.ws->root / effective).generic_string();
     auto it = ctx.tool_hashes.find(effective);
     if (it == ctx.tool_hashes.end()) {
-        auto th = Hash256::of_file(effective);
+        // Through the run's hash cache: a tool rebuilt earlier in the run has
+        // a new mtime, so the (mtime, size) key stays exact.
+        auto th = ctx.toolchain && ctx.toolchain->hashes
+                      ? ctx.toolchain->hashes->hash_of_abs(effective)
+                      : Hash256::of_file(effective);
         it = ctx.tool_hashes.emplace(effective, th.ok() ? th->hex() : std::string()).first;
     }
     if (!it->second.empty())
@@ -155,7 +161,8 @@ Result<DepRef> parse_dep_ref(const std::string& raw, const LowerCtx& ctx,
 Hash256 code_variant(const LowerCtx& ctx, const std::string& kind,
                      const std::map<std::string, std::string>& settings,
                      const std::vector<TaskId>& deps) {
-    static const std::set<std::string> kToolIdentity = {"tool", "tool_hash", "toolchain_hash"};
+    static const std::set<std::string> kToolIdentity = {"tool", "tool_hash", "toolchain_hash",
+                                                        "linker_hash"};
     CanonicalHasher h;
     h.field("platform", ctx.ct.platform);
     h.field("config", ctx.ct.config);
@@ -192,10 +199,7 @@ TaskDecl make_task(LowerCtx& ctx, const std::string& rule, const std::string& pr
                                                           "compile_pch", "archive", "link"};
     if (kToolchainRules.count(rule) && params.count("tool")) {
         const std::string& tool = params.at("tool");
-        auto [it, inserted] = ctx.toolchain_fingerprints.try_emplace(tool);
-        if (inserted)
-            it->second = toolchain_fingerprint(tool, ctx.ws->root, rule != "archive");
-        params["toolchain_hash"] = it->second;
+        params["toolchain_hash"] = ctx.toolchain->fingerprint(tool, ctx.ws->root, rule != "archive");
     }
     if (live::is_live_config(ctx.ct) &&
         (rule == "compile_c" || rule == "compile_cpp" || rule == "compile_pch")) {
@@ -204,10 +208,24 @@ TaskDecl make_task(LowerCtx& ctx, const std::string& rule, const std::string& pr
             ctx.live_objects[params.at("out")] = primary;
     }
 
+    if (rule == "compile_c" || rule == "compile_cpp") {
+        // The editor's view of the compile: no depfile to write, no digest-only
+        // keys.
+        auto entry_params = params;
+        entry_params.erase("depfile");
+        entry_params.erase("toolchain_hash");
+        ctx.compile_entries.push_back({primary, rule, std::move(entry_params)});
+    }
+
     TaskDecl d;
     d.id.rule = rule;
     d.id.primary_input = primary;
-    d.id.config_hash = variant ? *variant : ctx.ct.hash();
+    // Every other task's identity is its content too (spec §7.2a): what it
+    // runs (rule, params, dependencies), never which target asked. Targets
+    // of one run share one graph, so two asking for the same work get one
+    // task, and two asking differently for one output path are an error
+    // instead of a write race.
+    d.id.config_hash = variant ? *variant : code_variant(ctx, "task:" + rule, params, deps);
     d.params = std::move(params);
     d.declared_inputs = std::move(inputs);
     d.dep_tasks = std::move(deps);
@@ -331,6 +349,9 @@ std::string interface_path(const ConfigTuple& ct, const std::string& plugin,
 std::string provider_path(const ConfigTuple& ct, const std::string& plugin) {
     return graph_dir(ct) + "/" + plugin + ".provider.json";
 }
+std::string assets_path(const ConfigTuple& ct, const std::string& plugin) {
+    return graph_dir(ct) + "/" + plugin + ".assets.json";
+}
 std::string archive_path(const ConfigTuple& ct, const std::string& plugin,
                          const std::string& name, const Hash256& variant) {
     return ".kiln/out/" + ct.name() + "/lib/" + plugin + "/" + variant_dir(variant) + "/lib" +
@@ -386,6 +407,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
     auto& pt = ctx.tasks[plugin];
     pt.declset_path = declset_path(ctx.ct, plugin);
     pt.provider_path = provider_path(ctx.ct, plugin);
+    pt.assets_path = assets_path(ctx.ct, plugin);
     std::string pdir = plugin_dir_of(ctx, plugin);
 
     std::string cxx = ctx.ws->config.tools.count("cxx") ? ctx.ws->config.tools.at("cxx")
@@ -733,13 +755,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             // ids) rewrote it in turn and reran each other forever. Without
             // the timestamps the gch is byte-reproducible; validation then
             // rests on the task's content-hashed inputs.
-            {
-                auto [it, inserted] = ctx.toolchain_clang.try_emplace(cxx);
-                if (inserted)
-                    it->second = toolchain_is_clang(cxx, ctx.ws->root);
-                if (it->second)
-                    pch_params["pch_timestamp"] = "0";
-            }
+            if (ctx.toolchain->is_clang(cxx, ctx.ws->root))
+                pch_params["pch_timestamp"] = "0";
             // Identity note: two modules may share one pch header (engine +
             // engine_editor both use tepch.h) but need DIFFERENT gch artifacts
             // (different defines). The identity must be module-qualified —
@@ -985,8 +1002,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             params["tool"] = ar;
             params["out"] = archive;
             set_indexed(params, "obj", clib_objs);
-            TaskDecl d = make_task(ctx, "archive", pdir + "/clib:" + c.name,
-                                   params, {}, clib_compiles, {archive}, "", cvariant);
+            TaskDecl d = make_task(ctx, "archive", pdir + "/clib:" + c.name, params, {},
+                                   clib_compiles, {archive, archive + ".members"}, "", cvariant);
             auto id = d.id;
             KILN_TRY(void_result(sched.add(std::move(d))));
             ctx.tasks[plugin].clib_archive[c.name] = id;
@@ -1008,8 +1025,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         params["out"] = path;
         set_indexed(params, "obj", sorted_uniq(objs_it->second));
         std::vector<TaskId> mod_deps = pt.module_compiles[m.name];
-        TaskDecl d = make_task(ctx, "archive", pdir + "/" + m.name + "/archive",
-                               params, {}, mod_deps, {path}, "", mvariant);
+        TaskDecl d = make_task(ctx, "archive", pdir + "/" + m.name + "/archive", params, {},
+                               mod_deps, {path, path + ".members"}, "", mvariant);
         auto id = d.id;
         KILN_TRY(void_result(sched.add(std::move(d))));
         pt.module_archives[m.name] = id;
@@ -1085,7 +1102,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         }
         if (c.rule == "pack_tinyasset") {
             // Committed containers packed verbatim under their own identity -
-            // no task; the provider declares them as inputs, so an edit
+            // no task; the asset record declares them as inputs, so an edit
             // repacks.
             for (auto& primary : c.inputs) {
                 std::string why;
@@ -1224,10 +1241,9 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
     }
 
     // ---- implementation record (spec §7.2) ----------------------------------
-    // Depends ONLY on this plugin's link task (its archive) and its cook tasks
-    // (asset_manifest) — never on dep plugins' records, never on the interface
-    // record. Dependents' LINKS gate on this; their COMPILES gate on the
-    // interface record above.
+    // Depends ONLY on this plugin's archives - never on dep plugins' records,
+    // never on the interface record, never on its cooks. Dependents' LINKS
+    // gate on this; their COMPILES gate on the interface record above.
     {
         std::map<std::string, std::string> params;
         params["plugin"] = plugin;
@@ -1240,20 +1256,31 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         std::vector<TaskId> deps;
         for (auto& t : pt.archives)
             deps.push_back(t);
-        for (auto& t : pt.cooks)
-            deps.push_back(t);
         for (auto& [name, arch] : pt.clib_archive) {
             params["clib_archive." + name] =
                 name + "=" + pt.clib_archive_paths.at(name);
             deps.push_back(arch);
         }
-        set_indexed(params, "asset", pt.cook_assets);
 
-        TaskDecl d = make_task(ctx, "provider", pdir + "/provider", params,
-                               pt.packed_inputs, deps, {pt.provider_path});
+        TaskDecl d = make_task(ctx, "provider", pdir + "/provider", params, {}, deps,
+                               {pt.provider_path});
         auto id = d.id;
         KILN_TRY(void_result(sched.add(std::move(d))));
         pt.provider = id;
+    }
+
+    // ---- asset record --------------------------------------------------------
+    // The cooks' and packed files' manifest, read by the pack and the daemon.
+    if (!pt.cook_assets.empty()) {
+        std::map<std::string, std::string> params;
+        params["plugin"] = plugin;
+        params["out"] = pt.assets_path;
+        set_indexed(params, "asset", pt.cook_assets);
+        TaskDecl d = make_task(ctx, "asset_manifest", pdir + "/assets", params,
+                               pt.packed_inputs, pt.cooks, {pt.assets_path});
+        auto id = d.id;
+        KILN_TRY(void_result(sched.add(std::move(d))));
+        pt.assets = id;
     }
 
     return Result<void>::success();
@@ -1328,10 +1355,7 @@ Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
         auto ld = ctx.ws->config.tools.find("ld");
         if (ld != ctx.ws->config.tools.end()) {
             params["linker"] = ld->second;
-            auto [it, inserted] = ctx.toolchain_fingerprints.try_emplace(ld->second);
-            if (inserted)
-                it->second = toolchain_fingerprint(ld->second, ctx.ws->root, false);
-            params["linker_hash"] = it->second;
+            params["linker_hash"] = ctx.toolchain->fingerprint(ld->second, ctx.ws->root, false);
         }
         set_indexed(params, "obj", objs);
         set_indexed(params, "archive", archives);
@@ -1361,160 +1385,48 @@ Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
         params["out"] = ".kiln/out/" + cfg + "/pack/" + target.name + ".kpak";
         params["out_index"] = ".kiln/out/" + cfg + "/pack/" + target.name + ".kpak.json";
         std::vector<TaskId> deps;
-        std::vector<std::string> providers;
+        std::vector<std::string> records;
         for (auto& [plugin, pt] : ctx.tasks) {
-            if (pt.provider) {
-                deps.push_back(*pt.provider);
-                providers.push_back(pt.provider_path);
+            if (pt.assets) {
+                deps.push_back(*pt.assets);
+                records.push_back(pt.assets_path);
             }
         }
-        set_indexed(params, "provider", providers);
+        set_indexed(params, "assets", records);
         set_indexed(params, "pack_type", target.pack_types);
         TaskDecl d = make_task(ctx, "pack_target", ctx.target_files.at(target.name), params,
                                {}, deps, {params["out"], params["out_index"]});
         KILN_TRY(void_result(sched.add(std::move(d))));
     }
 
+    return Result<void>::success();
+}
+
+Result<void> lower_compile_commands(Scheduler& sched, LowerCtx& ctx, const std::string& target) {
     // ---- compile_commands (S1) -------------------------------------------------
-    {
-        nlohmann::json entries = nlohmann::json::array();
-        for (auto& [plugin, declset] : ctx.declsets) {
-            std::string pdir = plugin_dir_of(ctx, plugin);
-            for (auto& m : declset.modules) {
-                if (!passes_filter(m.platforms, m.configs, ctx.ct))
-                    continue;
-                for (auto& src : m.sources) {
-                    std::string obj = ".kiln/out/" + cfg + "/obj/" + plugin + "/" + m.name +
-                                      "/" + obj_path(src, pdir);
-                    nlohmann::json e;
-                    e["file"] = src;
-                    e["rule"] = "compile_cpp";
-                    nlohmann::json p = nlohmann::json::object();
-                    p["std"] = m.cpp_std.empty() ? ctx.ws->config.cpp_std : m.cpp_std;
-                    p["opt"] = opt_for(ctx.ct);
-                    p["debug"] = debug_for(ctx.ct);
-                    if (live::is_live_config(ctx.ct))
-                        p["live"] = "1";
-                    p["tool"] = cxx;
-                    p["out"] = obj;
-                    if (!m.pch.empty()) {
-                        std::string pch_dir = ".kiln/out/" + cfg + "/pch/" + plugin + "/" +
-                                              m.name;
-                        p["pch"] = pch_dir + "/" + util::path_basename(m.pch);
-                    }
-                    std::vector<std::string> includes = m.public_includes;
-                    if (includes.empty())
-                        includes.push_back(util::join_rel(pdir, "include"));
-                    for (auto& d : m.private_includes)
-                        includes.push_back(d);
-                    std::vector<std::string> defines = m.public_defines;
-                    for (auto& d : m.private_defines)
-                        defines.push_back(d);
-                    for (auto& raw : m.deps_public) {
-                        auto slash = raw.find('/');
-                        std::string dep = slash == std::string::npos ? raw : raw.substr(0, slash);
-                        auto eit = ctx.effective.find(dep);
-                        if (eit != ctx.effective.end())
-                            for (auto& inc : eit->second.includes)
-                                includes.push_back(inc);
-                    }
-                    for (auto& raw : m.deps_private) {
-                        auto slash = raw.find('/');
-                        std::string dep = slash == std::string::npos ? raw : raw.substr(0, slash);
-                        auto eit = ctx.effective.find(dep);
-                        if (eit != ctx.effective.end())
-                            for (auto& inc : eit->second.includes)
-                                includes.push_back(inc);
-                    }
-                    for (auto& odep : declset.plugin->optional_deps)
-                        defines.push_back("KILN_HAS_" + util::to_upper(odep) + "=" +
-                                          (ctx.declsets.count(odep) ? "1" : "0"));
-                    defines.push_back("KILN_PLATFORM_" + util::to_upper(ctx.ct.platform) +
-                                      "=1");
-                    // The config name becomes a macro - the hyphen in
-                    // "dev-asan"/"dev-tsan"/... produced an invalid
-                    // identifier (and a warning per TU). '-' maps to
-                    // '_'.
-                    {
-                        std::string conf = util::to_upper(ctx.ct.config);
-                        std::replace(conf.begin(), conf.end(), '-', '_');
-                        defines.push_back("KILN_CONFIG_" + conf + "=1");
-                    }
-                    nlohmann::json inc_arr = nlohmann::json::array();
-                    for (auto& inc : sorted_uniq(includes))
-                        inc_arr.push_back(inc);
-                    nlohmann::json def_arr = nlohmann::json::array();
-                    for (auto& def : sorted_uniq(defines))
-                        def_arr.push_back(def);
-                    for (size_t i = 0; i < inc_arr.size(); ++i) {
-                        char key[64];
-                        snprintf(key, sizeof(key), "include.%04zu", i);
-                        p[key] = inc_arr[i];
-                    }
-                    for (size_t i = 0; i < def_arr.size(); ++i) {
-                        char key[64];
-                        snprintf(key, sizeof(key), "define.%04zu", i);
-                        p[key] = def_arr[i];
-                    }
-                    e["params"] = p;
-                    entries.push_back(std::move(e));
-                }
-            }
-            for (auto& c : declset.c_libraries) {
-                if (!passes_filter(c.platforms, c.configs, ctx.ct))
-                    continue;
-                for (auto& src : c.sources) {
-                    bool is_c = src.size() >= 2 && src.substr(src.size() - 2) == ".c";
-                    std::string obj = ".kiln/out/" + cfg + "/obj/" + plugin + "/clib-" +
-                                      c.name + "/" + obj_path(src, pdir);
-                    nlohmann::json e;
-                    e["file"] = src;
-                    e["rule"] = is_c ? "compile_c" : "compile_cpp";
-                    nlohmann::json p = nlohmann::json::object();
-                    p["std"] = is_c
-                                   ? (c.c_std.empty() ? ctx.ws->config.c_std : c.c_std)
-                                   : (c.cpp_std.empty() ? ctx.ws->config.cpp_std : c.cpp_std);
-                    p["opt"] = opt_for(ctx.ct);
-                    p["debug"] = debug_for(ctx.ct);
-                    if (live::is_live_config(ctx.ct))
-                        p["live"] = "1";
-                    p["tool"] = is_c ? (ctx.ws->config.tools.count("cc")
-                                            ? ctx.ws->config.tools.at("cc")
-                                            : "cc")
-                                     : cxx;
-                    p["out"] = obj;
-                    nlohmann::json inc_arr = nlohmann::json::array();
-                    for (auto& inc : sorted_uniq(c.includes))
-                        inc_arr.push_back(inc);
-                    for (auto& inc : c.public_includes)
-                        inc_arr.push_back(inc);
-                    nlohmann::json def_arr = nlohmann::json::array();
-                    for (auto& def : sorted_uniq(c.defines))
-                        def_arr.push_back(def);
-                    for (size_t i = 0; i < inc_arr.size(); ++i) {
-                        char key[64];
-                        snprintf(key, sizeof(key), "include.%04zu", i);
-                        p[key] = inc_arr[i];
-                    }
-                    for (size_t i = 0; i < def_arr.size(); ++i) {
-                        char key[64];
-                        snprintf(key, sizeof(key), "define.%04zu", i);
-                        p[key] = def_arr[i];
-                    }
-                    e["params"] = p;
-                    entries.push_back(std::move(e));
-                }
-            }
-        }
-
-        std::map<std::string, std::string> params;
-        params["out"] = ".kiln/compile_commands/" + cfg + "/compile_commands.json";
-        params["entries"] = entries.dump();
-        TaskDecl d = make_task(ctx, "gen_compile_commands", ctx.target_files.at(target.name),
-                               params, {}, ctx.expansion_tasks, {params["out"]});
-        KILN_TRY(void_result(sched.add(std::move(d))));
+    // One record per target: a run never rewrites another target's entries,
+    // so building different target sets in turn leaves the merge unchanged.
+    nlohmann::json entries = nlohmann::json::array();
+    std::set<std::string> seen;
+    for (auto& c : ctx.compile_entries) {
+        if (!seen.insert(c.file).second)
+            continue;
+        nlohmann::json e;
+        e["file"] = c.file;
+        e["rule"] = c.rule;
+        nlohmann::json p = nlohmann::json::object();
+        for (auto& [k, v] : c.params)
+            p[k] = v;
+        e["params"] = p;
+        entries.push_back(std::move(e));
     }
-
+    const std::string out = compile_record_path(ctx.ct.name(), target);
+    std::map<std::string, std::string> params;
+    params["out"] = out;
+    params["entries"] = entries.dump();
+    TaskDecl d = make_task(ctx, "gen_compile_commands", out.substr(0, out.size() - 5), params, {},
+                           ctx.expansion_tasks, {out});
+    KILN_TRY(void_result(sched.add(std::move(d))));
     return Result<void>::success();
 }
 

@@ -306,7 +306,8 @@ int glob_impl(lua_State* L) {
     if (current_kind(st) == FileKind::RuleLibrary)
         luaL_error(L, "%s: `glob` is not available in a rule library (its cook's inputs are)",
                    call_site(L, st).c_str());
-    auto res = glob(st->opts.manifest_dir, pattern);
+    auto res = st->opts.glob_cache ? st->opts.glob_cache->glob(st->opts.manifest_dir, pattern)
+                                   : glob(st->opts.manifest_dir, pattern);
     if (!res.ok())
         luaL_error(L, "%s", res.error.c_str());
     FileSetUD ud;

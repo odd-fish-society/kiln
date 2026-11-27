@@ -30,6 +30,10 @@ Result<int> cmd_build(const BuildOptions& opts, console::Renderer& renderer) {
         std::printf("kiln: removed %zu stale cooked output%s (their sources are gone)\n",
                     outcome->pruned_outputs, outcome->pruned_outputs == 1 ? "" : "s");
 
+    if (outcome->swept_variants > 0)
+        std::printf("kiln: removed %zu old variant folder%s (no target builds them any more)\n",
+                    outcome->swept_variants, outcome->swept_variants == 1 ? "" : "s");
+
     for (auto& w : outcome->warnings)
         std::printf("kiln: warning: %s\n", w.c_str());
 

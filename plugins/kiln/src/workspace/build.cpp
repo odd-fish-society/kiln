@@ -1,4 +1,5 @@
 #include "workspace/build.h"
+#include "workspace/sweep.h"
 
 #include <algorithm>
 #include <set>
@@ -58,8 +59,7 @@ std::string pick_platform(const luau::TargetDecl& target, const TargetSpec& spec
     return target.platforms.front();
 }
 
-void write_why_json(const fs::path& root, const std::string& target_name,
-                    const ConfigTuple& ct, const Scheduler& sched) {
+void write_why_json(const fs::path& root, const std::string& targets, const Scheduler& sched) {
     json arr = json::array();
     for (auto& w : sched.why()) {
         json e;
@@ -78,21 +78,20 @@ void write_why_json(const fs::path& root, const std::string& target_name,
             e["msg"] = w.msg;
         arr.push_back(std::move(e));
     }
-    json doc = {{"target", target_name},
-                {"config", ct.name()},
-                {"failed", sched.failed()},
-                {"tasks", std::move(arr)}};
+    json doc = {{"target", targets}, {"failed", sched.failed()}, {"tasks", std::move(arr)}};
     std::error_code ec;
     fs::create_directories(root / ".kiln/logs", ec);
     util::write_file(root / ".kiln/logs/last_why.json", doc.dump(2));
 }
 
-void write_graph_json(const fs::path& root, const std::string& target_name,
-                      const ConfigTuple& ct, const Scheduler& sched,
-                      const LowerCtx& lctx) {
+// One config's graph: the tasks its targets of this run asked for.
+void write_graph_json(const fs::path& root, const std::string& targets, const std::string& config,
+                      const Scheduler& sched, const std::set<size_t>& tasks,
+                      const std::map<std::string, luau::DeclSet>& declsets) {
     json nodes = json::array();
     const auto& graph = sched.graph();
-    for (auto& n : graph.nodes()) {
+    for (size_t index : tasks) {
+        const auto& n = graph.nodes()[index];
         json e;
         e["display"] = n.decl.id.display();
         e["rule"] = n.decl.id.rule;
@@ -105,7 +104,7 @@ void write_graph_json(const fs::path& root, const std::string& target_name,
         nodes.push_back(std::move(e));
     }
     json plugins = json::array();
-    for (auto& [name, ds] : lctx.declsets) {
+    for (auto& [name, ds] : declsets) {
         if (!ds.plugin)
             continue;
         json deps = json::array();
@@ -117,13 +116,13 @@ void write_graph_json(const fs::path& root, const std::string& target_name,
             deps.push_back(d);
         plugins.push_back({{"name", name}, {"deps", deps}});
     }
-    json doc = {{"target", target_name},
-                {"config", ct.name()},
+    json doc = {{"target", targets},
+                {"config", config},
                 {"nodes", std::move(nodes)},
                 {"plugins", std::move(plugins)}};
     std::error_code ec;
-    fs::create_directories(root / ".kiln/graph", ec);
-    util::write_file(root / ".kiln/graph/" / (ct.name() + "/graph.json"), doc.dump(2));
+    fs::create_directories(root / ".kiln/graph" / config, ec);
+    util::write_file(root / ".kiln/graph/" / (config + "/graph.json"), doc.dump(2));
 }
 
 // Everything the pre-scheduler phase produces: target + resolved config tuple
@@ -136,8 +135,27 @@ struct ResolutionResult {
     std::vector<std::string> order; // enabled plugins, topo order
 };
 
+std::string pick_config(const BuildOptions& opts, const Workspace& ws,
+                        const luau::TargetDecl& target, const TargetSpec& spec) {
+    if (!opts.config_override.empty())
+        return opts.config_override;
+    if (!spec.config.empty())
+        return spec.config;
+    return !target.default_config.empty() ? target.default_config : ws.config.default_config;
+}
+
+// The "<target>:<platform>-<config>" a spec resolves to, without evaluating
+// any manifest (empty for an unknown target: resolve_one reports it).
+std::string spec_key(const BuildOptions& opts, const Workspace& ws, const TargetSpec& spec) {
+    auto tit = ws.targets.find(spec.name);
+    if (tit == ws.targets.end() || tit->second.platforms.empty())
+        return "";
+    return spec.name + ":" + pick_platform(tit->second, spec, opts.platform_override) + "-" +
+           pick_config(opts, ws, tit->second, spec);
+}
+
 Result<ResolutionResult> resolve_one(const BuildOptions& opts, const Workspace& ws,
-                                     const TargetSpec& spec) {
+                                     const TargetSpec& spec, ExpansionMemo* memo = nullptr) {
     auto tit = ws.targets.find(spec.name);
     if (tit == ws.targets.end()) {
         std::string avail;
@@ -153,12 +171,7 @@ Result<ResolutionResult> resolve_one(const BuildOptions& opts, const Workspace& 
         target.platforms.end())
         return Result<ResolutionResult>::fail(
             "target '" + target.name + "' does not support platform '" + platform + "'");
-    std::string config = !opts.config_override.empty()
-                             ? opts.config_override
-                             : (!spec.config.empty() ? spec.config
-                                                     : (!target.default_config.empty()
-                                                            ? target.default_config
-                                                            : ws.config.default_config));
+    std::string config = pick_config(opts, ws, target, spec);
 
     std::map<std::string, std::string> features = target.features;
     for (auto& [k, v] : opts.features)
@@ -168,7 +181,7 @@ Result<ResolutionResult> resolve_one(const BuildOptions& opts, const Workspace& 
     ResolutionResult r;
     r.target = target;
     for (auto& plugin : ws.plugins) {
-        auto exp = expand_plugin(ws, plugin, platform, config, features);
+        auto exp = expand_plugin(ws, plugin, platform, config, features, memo);
         if (!exp.ok())
             return Result<ResolutionResult>::fail(exp.error);
         r.plugin_decls[plugin] = *exp->decls.plugin;
@@ -283,110 +296,29 @@ std::vector<TargetSpec> tool_targets(const Workspace& ws, const ResolutionResult
     return out;
 }
 
-// Records which target first declared each output path in this build.
-void claim_outputs(const std::string& target, const TaskGraph& graph, BuildOutcome& outcome) {
-    for (const TaskNode& node : graph.nodes())
-        for (const std::string& out : node.decl.declared_outputs)
-            outcome.output_claims.try_emplace(
-                out, BuildOutcome::OutputClaim{target, node.decl.id.stable_hash()});
-}
-
-// Two targets of one configuration whose tasks write the same file
-// differently (a module both link, compiled with different defines; a
-// non-reproducible output) overwrite each other: every build reruns both.
-// Builds stay correct - each target runs its own tasks before its link - so
-// this warns, one line per target pair, when a task of this target reran
-// because its output was not what it wrote and another target of this build
-// declares that file. gen_compile_commands is the one intended shared file
-// (the last target built owns the IDE's view).
-void note_output_collisions(const std::string& target, const std::string& config,
-                            const std::vector<WhyRecord>& why, BuildOutcome& outcome) {
-    struct Pair {
-        size_t files = 0;
-        std::string example;
-    };
-    std::map<std::string, Pair> pairs; // the other target -> its collisions
-    for (const WhyRecord& w : why) {
-        if (w.kind != "missing_output" || w.state != TaskState::Succeeded)
-            continue;
-        if (w.task_display.ends_with("/gen_compile_commands"))
-            continue;
-        auto it = outcome.output_claims.find(w.path);
-        if (it == outcome.output_claims.end() || it->second.target == target)
-            continue;
-        Pair& pair = pairs[it->second.target];
-        if (pair.files++ == 0)
-            pair.example = w.path;
-    }
-    for (auto& [other, pair] : pairs)
-        outcome.warnings.push_back(
-            "targets '" + other + "' and '" + target + "' (" + config + ") write " +
-            std::to_string(pair.files) + " of the same file" + (pair.files == 1 ? "" : "s") +
-            " differently (e.g. " + pair.example +
-            "): each reran because the other rewrote it, and will on every build of both; "
-            "make the features and plugins they share agree, or build them in different "
-            "configs");
-}
-
-Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
-                       const Workspace& ws, const TargetSpec& spec, BuildOutcome& outcome,
-                       std::vector<std::string>& building) {
-    auto rres = resolve_one(opts, ws, spec);
-    if (!rres.ok())
-        return Result<void>::fail(rres.error);
-
-    // Tool targets build first, in this invocation, before this target's
-    // lowering folds their binaries' tool_hash - so `kiln build tinyeditor`
-    // alone works and a pull that changed tinycook/tinyreflect/protoc
-    // sources never cooks with the stale binary (supersedes the "sequencing
-    // is by target order" decision, kiln/docs/decisions.md "Cooking pass").
-    std::string self_key = rres->target.name + ":" + rres->ct.name();
-    // Requested after an earlier target already pulled it in as a tool.
-    if (std::find(outcome.built.begin(), outcome.built.end(), self_key) != outcome.built.end())
-        return Result<void>::success();
-    building.push_back(self_key);
-    for (auto& tool : tool_targets(ws, *rres)) {
-        if (tool.name == rres->target.name)
-            continue;
-        std::string key = tool.name + ":" + tool.platform + "-" + tool.config;
-        if (std::find(outcome.built.begin(), outcome.built.end(), key) != outcome.built.end())
-            continue;
-        if (std::find(building.begin(), building.end(), key) != building.end())
-            return Result<void>::fail("tool cycle: target '" + self_key + "' needs tool target '" +
-                                      key + "', which is already building");
-        bool failed_before = outcome.failed;
-        KILN_TRY(build_one(opts, renderer, ws, tool, outcome, building));
-        if (outcome.failed && !failed_before)
-            return Result<void>::fail("tool target '" + key + "' failed to build; '" + self_key +
-                                      "' needs it");
-    }
-    building.pop_back();
-
-    auto& target = rres->target;
-    auto& ct = rres->ct;
-    auto& exps = rres->exps;
-    auto& plugin_decls = rres->plugin_decls;
-    auto& order = rres->order;
-
-    // ---- storage --------------------------------------------------------------
-    FileHashCache hash_cache(ws.root / ".kiln/hashcache.sqlite");
-    KILN_TRY(hash_cache.open());
-    TraceStore traces(ws.root / ".kiln/traces.sqlite");
-    KILN_TRY(traces.open());
-
-    // Host rule: expansion as a memoized task.
+// The expansion host rule: one per run, configured by each task's params
+// (platform, config, `feature.<k>`), so tasks of every target can share it.
+void register_expand_rule(const Workspace& ws, ExpansionMemo& memo) {
     rules::register_host_rule(
-        "expand_plugin", 6, // v6: cook rule_version/actions (cluau rules lowered at expansion); v5: c_library fbs_sources/fbs_tool; v4: c_library proto_sources/proto_tool; v3: declset JSON gained plugin reflect_tool; v2: module/c_library public_link_flags
-        [&ws, platform = ct.platform, config = ct.config, features = ct.features](
-            TaskCtx& ctx) -> TaskResult {
+        "expand_plugin", 7, // v7: platform/config/features in params; v6: cook rule_version/actions (cluau rules lowered at expansion); v5: c_library fbs_sources/fbs_tool; v4: c_library proto_sources/proto_tool; v3: declset JSON gained plugin reflect_tool; v2: module/c_library public_link_flags
+        [&ws, &memo](TaskCtx& ctx) -> TaskResult {
             TaskResult r;
-            auto pit = ctx.decl->params.find("plugin");
-            auto oit = ctx.decl->params.find("out");
-            if (pit == ctx.decl->params.end() || oit == ctx.decl->params.end()) {
+            const auto& params = ctx.decl->params;
+            auto pit = params.find("plugin");
+            auto oit = params.find("out");
+            auto plat = params.find("platform");
+            auto cfg = params.find("config");
+            if (pit == params.end() || oit == params.end() || plat == params.end() ||
+                cfg == params.end()) {
                 r.error = "expand_plugin: missing params";
                 return r;
             }
-            auto exp = expand_plugin(ws, pit->second, platform, config, features);
+            std::map<std::string, std::string> features;
+            for (auto it = params.lower_bound("feature."); it != params.end() &&
+                                                           util::starts_with(it->first, "feature.");
+                 ++it)
+                features[it->first.substr(8)] = it->second;
+            auto exp = expand_plugin(ws, pit->second, plat->second, cfg->second, features, &memo);
             if (!exp.ok()) {
                 r.error = exp.error;
                 return r;
@@ -402,36 +334,100 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
             r.outputs.push_back(oit->second);
             return r;
         });
+}
 
-    Scheduler::Options sopts;
-    sopts.jobs = opts.jobs > 0 ? opts.jobs : ws.config.jobs;
-    sopts.keep_going = opts.keep_going;
-    sopts.pools = ws.config.pools;
-    Scheduler sched(
-        ws.root, ws.root / ".kiln", hash_cache, traces,
-        [](const std::string& rule) -> TaskFn {
-            auto* r = rules::find_rule(rule);
-            return r ? r->fn : nullptr;
-        },
-        [&renderer, &opts](Event e) {
-            if (opts.event_probe)
-                opts.event_probe(e);
-            renderer.push(std::move(e));
-        },
-        sopts);
+// What every target of one kiln run shares.
+struct RunState {
+    explicit RunState(const fs::path& root) : hashes(root / ".kiln/hashcache.sqlite") {
+        toolchain.hashes = &hashes;
+    }
+    FileHashCache hashes;
+    ToolchainProbes toolchain;
+    ExpansionMemo expansions;
+};
 
+// One target of the run: resolved, then lowered at its level.
+struct PlannedTarget {
+    std::string key; // "<target>:<platform>-<config>"
+    ResolutionResult r;
+    std::vector<size_t> tools; // planned indices of the tool targets it needs
+    int level = 0;             // 1 + its tools' highest level (0 with none)
     LowerCtx lctx;
-    lctx.ws = &ws;
-    lctx.ct = ct;
-    lctx.target_files = ws.target_files;
+    std::vector<size_t> tasks; // graph indices it added or shared
+};
 
-    // ---- wave 1: ALL expansions (deps = dep DeclSets only) -------------------
-    // Per spec §7.1 the whole expansion graph depends only on manifests — no
-    // compilation is scheduled in this wave, so cross-plugin compiles in wave
-    // 2 overlap freely.
+// Resolves `spec` and, first, every tool target it runs (their binaries'
+// hashes are folded into its params at lowering, so they build at a lower
+// level) and after it its companions. A target is planned once however
+// often it is asked for.
+Result<size_t> plan_target(const BuildOptions& opts, const Workspace& ws, const TargetSpec& spec,
+                           RunState& run, std::vector<PlannedTarget>& plan,
+                           std::vector<std::string>& stack) {
+    if (std::string key = spec_key(opts, ws, spec); !key.empty())
+        for (size_t i = 0; i < plan.size(); ++i)
+            if (plan[i].key == key)
+                return Result<size_t>::success(i);
+    auto rres = resolve_one(opts, ws, spec, &run.expansions);
+    if (!rres.ok())
+        return Result<size_t>::fail(rres.error);
+    std::string key = rres->target.name + ":" + rres->ct.name();
+    for (size_t i = 0; i < plan.size(); ++i)
+        if (plan[i].key == key)
+            return Result<size_t>::success(i);
+
+    // Tool targets build first, in this invocation, before this target's
+    // lowering folds their binaries' tool_hash - so `kiln build tinyeditor`
+    // alone works and a pull that changed tinycook/tinyreflect/protoc
+    // sources never cooks with the stale binary (supersedes the "sequencing
+    // is by target order" decision, kiln/docs/decisions.md "Cooking pass").
+    stack.push_back(key);
+    std::vector<size_t> tools;
+    int level = 0;
+    for (auto& tool : tool_targets(ws, *rres)) {
+        if (tool.name == rres->target.name)
+            continue;
+        std::string tkey = tool.name + ":" + tool.platform + "-" + tool.config;
+        if (std::find(stack.begin(), stack.end(), tkey) != stack.end())
+            return Result<size_t>::fail("tool cycle: target '" + key + "' needs tool target '" +
+                                        tkey + "', which is already building");
+        auto ti = plan_target(opts, ws, tool, run, plan, stack);
+        if (!ti.ok())
+            return ti;
+        tools.push_back(*ti);
+        level = std::max(level, plan[*ti].level + 1);
+    }
+    stack.pop_back();
+
+    PlannedTarget t;
+    t.key = key;
+    t.tools = std::move(tools);
+    t.level = level;
+    t.r = std::move(*rres);
+    const std::string platform = t.r.ct.platform, config = t.r.ct.config;
+    const std::vector<std::string> companions = t.r.target.companions;
+    const std::string name = t.r.target.name;
+    plan.push_back(std::move(t));
+    size_t self = plan.size() - 1;
+
+    // Companions: the binaries this target launches at run time (a stale
+    // one next to a fresh app is a runtime mismatch, not a build error).
+    for (auto& c : companions) {
+        if (ws.targets.find(c) == ws.targets.end())
+            return Result<size_t>::fail("target '" + name + "': unknown companion '" + c + "'");
+        auto ci = plan_target(opts, ws, TargetSpec{c, platform, config}, run, plan, stack);
+        if (!ci.ok())
+            return ci;
+    }
+    return Result<size_t>::success(self);
+}
+
+// Adds the target's expansion tasks (wave 1 of its level).
+Result<void> add_expansions(const Workspace& ws, Scheduler& sched, PlannedTarget& t) {
+    auto& ct = t.r.ct;
+    LowerCtx& lctx = t.lctx;
     std::map<std::string, TaskId> expansion_ids;
-    for (auto& plugin : order) {
-        auto& exp = exps[plugin];
+    for (auto& plugin : t.r.order) {
+        auto& exp = t.r.exps[plugin];
         std::string declset = declset_path(ct, plugin);
 
         TaskDecl d;
@@ -445,7 +441,7 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
         d.declared_inputs.erase(
             std::unique(d.declared_inputs.begin(), d.declared_inputs.end()),
             d.declared_inputs.end());
-        for (auto& dep : expansion_deps(plugin_decls[plugin], ct.enabled_plugins)) {
+        for (auto& dep : expansion_deps(t.r.plugin_decls[plugin], ct.enabled_plugins)) {
             auto it = expansion_ids.find(dep);
             if (it == expansion_ids.end())
                 return Result<void>::fail("internal: expansion of dep '" + dep +
@@ -455,6 +451,10 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
         d.declared_outputs = {declset};
         d.params["plugin"] = plugin;
         d.params["out"] = declset;
+        d.params["platform"] = ct.platform;
+        d.params["config"] = ct.config;
+        for (auto& [k, v] : ct.features)
+            d.params["feature." + k] = v;
         // A translator change re-expands every manifest (a .cluau one is
         // translated before it is evaluated).
         d.params["cluau"] = cluau::Version();
@@ -471,17 +471,23 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
         expansion_ids[plugin] = id;
         lctx.expansion_tasks.push_back(id);
     }
+    return Result<void>::success();
+}
 
-    KILN_TRY(sched.run());
-
-    // Verify every expansion succeeded, then read the authoritative DeclSets.
-    for (auto& plugin : order) {
-        auto st = sched.state(expansion_ids[plugin]);
+// Reads the target's DeclSets (its expansions ran) and lowers it.
+Result<void> lower_target(const Workspace& ws, Scheduler& sched, PlannedTarget& t) {
+    auto& ct = t.r.ct;
+    LowerCtx& lctx = t.lctx;
+    for (auto& plugin : t.r.order) {
+        TaskId eid;
+        eid.rule = "expand_plugin";
+        eid.primary_input = ws.plugin_manifest_paths.at(plugin);
+        eid.config_hash = ct.hash();
+        auto st = sched.state(eid);
         if (!st)
             return Result<void>::fail("internal: expansion task vanished");
         if (*st == TaskState::Failed || *st == TaskState::SkippedUpstreamFailed)
-            return Result<void>::fail("expansion of " +
-                                      ws.plugin_manifest_paths.at(plugin) +
+            return Result<void>::fail("expansion of " + ws.plugin_manifest_paths.at(plugin) +
                                       " failed");
 
         std::string declset = declset_path(ct, plugin);
@@ -494,41 +500,42 @@ Result<void> build_one(const BuildOptions& opts, console::Renderer& renderer,
         apply_exclusions(ds);
         lctx.declsets[plugin] = std::move(ds);
     }
-
-    // ---- lowering (pure graph construction; no tasks run) --------------------
-    for (auto& plugin : order) {
+    for (auto& plugin : t.r.order) {
         auto lr = lower_plugin(sched, lctx, plugin);
         if (!lr.ok())
             return Result<void>::fail(std::move(lr.error));
     }
     KILN_TRY(lower_script_checks(sched, lctx));
-    KILN_TRY(lower_target_tasks(sched, lctx, target));
+    KILN_TRY(lower_target_tasks(sched, lctx, t.r.target));
+    return Result<void>::success();
+}
 
-    // ---- wave 2: actions -----------------------------------------------------
-    KILN_TRY(sched.run());
-    note_output_collisions(target.name, ct.name(), sched.why(), outcome);
-    claim_outputs(target.name, sched.graph(), outcome);
-
-    write_graph_json(ws.root, target.name, ct, sched, lctx);
-    write_why_json(ws.root, target.name, ct, sched);
-
-    outcome.failed = outcome.failed || sched.failed();
-    outcome.stats.total += sched.stats().total;
-    outcome.stats.succeeded += sched.stats().succeeded;
-    outcome.stats.cached += sched.stats().cached;
-    outcome.stats.failed += sched.stats().failed;
-    outcome.stats.skipped += sched.stats().skipped;
-    for (auto& w : sched.why())
-        outcome.why.push_back(w);
-    outcome.built.push_back(target.name + ":" + ct.name());
-
-    // Companions: the binaries this target launches at run time (a stale
-    // one next to a fresh app is a runtime mismatch, not a build error).
-    for (auto& name : target.companions) {
-        if (ws.targets.find(name) == ws.targets.end())
-            return Result<void>::fail("target '" + target.name + "': unknown companion '" + name + "'");
-        KILN_TRY(build_one(opts, renderer, ws, TargetSpec{name, ct.platform, ct.config}, outcome,
-                           building));
+// Two different tasks declaring one output would race in the shared graph.
+// Identical work is one task (its identity is its content), so this is two
+// targets asking for one file differently.
+Result<void> check_output_owners(const Scheduler& sched, const std::vector<PlannedTarget>& plan,
+                                 std::map<std::string, size_t>& owners, size_t& checked) {
+    const auto& nodes = sched.graph().nodes();
+    auto target_of = [&](size_t index) -> std::string {
+        std::vector<std::string> names;
+        for (auto& t : plan)
+            if (std::find(t.tasks.begin(), t.tasks.end(), index) != t.tasks.end())
+                names.push_back(t.key);
+        return names.empty() ? std::string("?") : names.front();
+    };
+    for (; checked < nodes.size(); ++checked) {
+        for (const std::string& out : nodes[checked].decl.declared_outputs) {
+            auto [it, inserted] = owners.try_emplace(out, checked);
+            if (inserted || it->second == checked)
+                continue;
+            return Result<void>::fail(
+                "targets '" + target_of(it->second) + "' and '" + target_of(checked) +
+                "' both write " + out + " with different tasks (" +
+                nodes[it->second].decl.id.display() + " and " +
+                nodes[checked].decl.id.display() +
+                "): make the features and plugins they share agree, or build them in "
+                "different configs");
+        }
     }
     return Result<void>::success();
 }
@@ -595,15 +602,147 @@ Result<BuildOutcome> run_build(const BuildOptions& opts, console::Renderer& rend
     }
 
     BuildOutcome outcome;
-    std::vector<std::string> building;
-    for (auto& spec : specs) {
-        auto r = build_one(opts, renderer, *ws, spec, outcome, building);
-        if (!r.ok())
-            return Result<BuildOutcome>::fail(r.error);
+    RunState run(ws->root);
+    if (auto o = run.hashes.open(); !o.ok())
+        return Result<BuildOutcome>::fail(o.error);
+    register_expand_rule(*ws, run.expansions);
+
+    // ---- plan: every target of the run, with its tools and companions -------
+    std::vector<PlannedTarget> plan;
+    {
+        std::vector<std::string> stack;
+        for (auto& spec : specs) {
+            auto r = plan_target(opts, *ws, spec, run, plan, stack);
+            if (!r.ok())
+                return Result<BuildOutcome>::fail(r.error);
+        }
     }
+    int max_level = 0;
+    for (auto& t : plan) {
+        t.lctx.ws = &*ws;
+        t.lctx.toolchain = &run.toolchain;
+        t.lctx.ct = t.r.ct;
+        t.lctx.target_files = ws->target_files;
+        max_level = std::max(max_level, t.level);
+    }
+
+    // ---- one graph for the run ----------------------------------------------
     TraceStore traces(ws->root / ".kiln/traces.sqlite");
-    if (traces.open().ok())
-        outcome.pruned_outputs = prune_dead_cooks(ws->root, traces).files;
+    if (auto o = traces.open(); !o.ok())
+        return Result<BuildOutcome>::fail(o.error);
+    Scheduler::Options sopts;
+    sopts.jobs = opts.jobs > 0 ? opts.jobs : ws->config.jobs;
+    sopts.keep_going = opts.keep_going;
+    sopts.pools = ws->config.pools;
+    Scheduler sched(
+        ws->root, ws->root / ".kiln", run.hashes, traces,
+        [](const std::string& rule) -> TaskFn {
+            auto* r = rules::find_rule(rule);
+            return r ? r->fn : nullptr;
+        },
+        [&renderer, &opts](Event e) {
+            if (opts.event_probe)
+                opts.event_probe(e);
+            renderer.push(std::move(e));
+        },
+        sopts);
+
+    auto target_failed = [&](const PlannedTarget& t) {
+        for (size_t index : t.tasks) {
+            TaskState st = sched.session()[index].state;
+            if (st == TaskState::Failed || st == TaskState::SkippedUpstreamFailed)
+                return true;
+        }
+        return false;
+    };
+
+    // Each level's targets (tools before the targets running them) expand,
+    // lower into the shared graph and run together.
+    std::map<std::string, size_t> owners;
+    size_t checked = 0;
+    for (int level = 0; level <= max_level; ++level) {
+        std::vector<size_t> ids;
+        for (size_t i = 0; i < plan.size(); ++i)
+            if (plan[i].level == level)
+                ids.push_back(i);
+        if (ids.empty())
+            continue;
+        for (size_t i : ids)
+            for (size_t tool : plan[i].tools)
+                if (target_failed(plan[tool]))
+                    return Result<BuildOutcome>::fail("tool target '" + plan[tool].key +
+                                                      "' failed to build; '" + plan[i].key +
+                                                      "' needs it");
+
+        // Wave 1: the expansions (deps = dep DeclSets only, spec §7.1).
+        for (size_t i : ids) {
+            sched.record_into(&plan[i].tasks);
+            auto r = add_expansions(*ws, sched, plan[i]);
+            sched.record_into(nullptr);
+            if (!r.ok())
+                return Result<BuildOutcome>::fail(r.error);
+        }
+        if (auto r = sched.run(); !r.ok())
+            return Result<BuildOutcome>::fail(r.error);
+
+        // Lowering (pure graph construction), then wave 2: the actions.
+        for (size_t i : ids) {
+            sched.record_into(&plan[i].tasks);
+            auto r = lower_target(*ws, sched, plan[i]);
+            if (r.ok())
+                r = lower_compile_commands(sched, plan[i].lctx, plan[i].r.target.name);
+            sched.record_into(nullptr);
+            if (!r.ok())
+                return Result<BuildOutcome>::fail(r.error);
+        }
+        if (auto r = check_output_owners(sched, plan, owners, checked); !r.ok())
+            return Result<BuildOutcome>::fail(r.error);
+        if (auto r = sched.run(); !r.ok())
+            return Result<BuildOutcome>::fail(r.error);
+        for (size_t i : ids)
+            outcome.built.push_back(plan[i].key);
+    }
+
+    outcome.failed = sched.failed();
+    outcome.stats = sched.stats();
+    outcome.why = sched.why();
+
+    std::string names;
+    std::map<std::string, std::set<size_t>> config_tasks;
+    std::map<std::string, std::map<std::string, luau::DeclSet>> config_declsets;
+    for (auto& t : plan) {
+        names += (names.empty() ? "" : ", ") + t.r.target.name;
+        config_tasks[t.r.ct.name()].insert(t.tasks.begin(), t.tasks.end());
+        for (auto& [plugin, ds] : t.lctx.declsets)
+            config_declsets[t.r.ct.name()].try_emplace(plugin, ds);
+    }
+    for (auto& [config, tasks] : config_tasks)
+        write_graph_json(ws->root, names, config, sched, tasks, config_declsets[config]);
+    write_why_json(ws->root, names, sched);
+
+    outcome.pruned_outputs = prune_dead_cooks(ws->root, traces).files;
+
+    // The variant folders each target's tasks wrote; a failed run keeps the
+    // old records (the old variant stays until the new one has built).
+    std::set<std::string> workspace_targets;
+    for (auto& [name, _] : ws->targets)
+        workspace_targets.insert(name);
+    std::map<std::string, std::map<std::string, std::set<std::string>>> config_folders;
+    for (auto& t : plan) {
+        std::set<std::string>& folders = config_folders[t.r.ct.name()][t.r.target.name];
+        for (size_t index : t.tasks)
+            for (const std::string& out : sched.graph().nodes()[index].decl.declared_outputs)
+                if (std::string f = variant_folder_of(out); !f.empty())
+                    folders.insert(std::move(f));
+    }
+    for (auto& [config, built] : config_folders) {
+        if (!outcome.failed)
+            outcome.swept_variants +=
+                sweep_variants(ws->root, config, workspace_targets, built).folders;
+        auto merged = merge_compile_commands(ws->root, config, workspace_targets, run.hashes);
+        if (!merged.ok())
+            outcome.warnings.push_back(merged.error);
+    }
     return Result<BuildOutcome>::success(std::move(outcome));
 }
 

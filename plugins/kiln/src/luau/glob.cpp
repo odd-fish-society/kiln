@@ -138,9 +138,58 @@ Result<GlobResult> glob(const fs::path& root, std::string pattern) {
     for (auto& p : patterns)
         p = util::norm(p);
 
-    auto files = util::walk_files_rel(walk_root);
+    // Walk only the directories the patterns can match under: the leading
+    // components with no wildcard that every pattern shares (`src/*.cpp`
+    // walks src/, not the whole plugin). Symlinks stay unfollowed: a
+    // symlinked prefix directory matches nothing, as the full walk skipped it.
+    std::string prefix;
+    {
+        std::vector<std::string> common;
+        bool first = true;
+        for (auto& p : patterns) {
+            std::vector<std::string> lits;
+            size_t start = 0;
+            while (true) {
+                size_t slash = p.find('/', start);
+                if (slash == std::string::npos)
+                    break; // the last component names files, never a directory to enter
+                std::string c = p.substr(start, slash - start);
+                if (c.empty() || c == "." || c == ".." ||
+                    c.find_first_of("*?[") != std::string::npos)
+                    break;
+                lits.push_back(std::move(c));
+                start = slash + 1;
+            }
+            if (first) {
+                common = std::move(lits);
+                first = false;
+            } else {
+                size_t n = 0;
+                while (n < common.size() && n < lits.size() && common[n] == lits[n])
+                    ++n;
+                common.resize(n);
+            }
+        }
+        fs::path dir = walk_root;
+        for (auto& c : common) {
+            dir /= c;
+            std::error_code ec;
+            auto st = fs::symlink_status(dir, ec);
+            if (ec || !fs::is_directory(st)) {
+                GlobResult r;
+                r.pattern = pattern;
+                return Result<GlobResult>::success(std::move(r));
+            }
+            prefix += c + "/";
+        }
+    }
+    auto files = util::walk_files_rel(
+        prefix.empty() ? walk_root : walk_root / prefix.substr(0, prefix.size() - 1));
     if (!files.ok())
         return Result<GlobResult>::fail(files.error);
+    if (!prefix.empty())
+        for (auto& f : *files)
+            f = prefix + f;
 
     std::vector<std::string> matched;
     for (auto& f : *files) {
@@ -187,6 +236,22 @@ Result<GlobResult> glob(const fs::path& root, std::string pattern) {
     r.pattern = pattern;
     r.files = std::move(matched);
     return Result<GlobResult>::success(std::move(r));
+}
+
+Result<GlobResult> GlobCache::glob(const fs::path& root, const std::string& pattern) {
+    auto key = std::make_pair(root.lexically_normal().generic_string(), pattern);
+    {
+        std::lock_guard lock(mu_);
+        auto it = results_.find(key);
+        if (it != results_.end())
+            return Result<GlobResult>::success(it->second);
+    }
+    auto r = luau::glob(root, pattern);
+    if (r.ok()) {
+        std::lock_guard lock(mu_);
+        results_.emplace(std::move(key), *r);
+    }
+    return r;
 }
 
 } // namespace kiln::luau

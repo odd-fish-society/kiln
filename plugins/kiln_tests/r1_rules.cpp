@@ -121,7 +121,7 @@ TEST_CASE("R1.2 a workspace rule library: exec with env, depfile and dyndep; cac
     REQUIRE(r.code == 0);
     const fs::path out = tmp.path / ".kiln/out/linux-dev/assets/content/content/a.gen";
     CHECK(read_file(out) == "alpha\ngreeting=hello\nextra-1\n");
-    CHECK(read_file(graph_file(tmp.path, "linux-dev", "content.provider.json")).find("a.gen") != std::string::npos);
+    CHECK(read_file(graph_file(tmp.path, "linux-dev", "content.assets.json")).find("a.gen") != std::string::npos);
 
     // The trace's digest covers the inputs the run discovered (spec §5), so
     // the next build is a no-op.

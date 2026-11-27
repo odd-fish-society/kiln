@@ -178,6 +178,43 @@ TEST_CASE("K5.10 removing a source drops its archive member (archive built fresh
     CHECK(listing.find("keep.cpp") != std::string::npos);
 }
 
+TEST_CASE("a thin archive relinks on a member edit that keeps its size and symbols") {
+    // The archive names its members instead of holding them, so its bytes
+    // can stay the same across an edit; its member record must not.
+    TempDir tmp;
+    write_tree(tmp.path, {
+        {"kiln.workspace.luau",
+         "workspace \"k5t\" {\n  pools = { link = 1 },\n  strict_globs = true,\n}\n"},
+        {"build/game.target.luau",
+         "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n "
+         " link = { \"app/main\" },\n}\n"},
+        {"plugins/lib/plugin.build.luau",
+         "plugin \"lib\" {}\nmodule \"lib\" { sources = glob(\"src/*.cpp\") }\n"},
+        {"plugins/lib/src/keep.cpp", "int keep() { return 1; }\n"},
+        {"plugins/app/plugin.build.luau",
+         "plugin \"app\" { public_deps = { \"lib\" } }\n"
+         "module \"main\" { sources = glob(\"src/*.cpp\") }\n"},
+        {"plugins/app/src/main.cpp", "int keep(); int main() { return keep() - 1; }\n"},
+    });
+    REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
+    fs::path archive = variant_file(tmp.path, ".kiln/out/linux-dev/lib/lib", "liblib.a");
+    REQUIRE(!archive.empty());
+    auto content = kiln::util::read_file(archive);
+    REQUIRE(content.ok());
+    const std::string& head = *content;
+    CHECK(head.rfind("!<thin>\n", 0) == 0);
+    auto run_game = [&] {
+        std::string out;
+        return kiln::util::run_process({(tmp.path / ".kiln/out/linux-dev/bin/game").generic_string()},
+                                       tmp.path, &out);
+    };
+    CHECK(run_game() == 0);
+
+    write_tree(tmp.path, {{"plugins/lib/src/keep.cpp", "int keep() { return 3; }\n"}});
+    REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
+    CHECK(run_game() == 2);
+}
+
 TEST_CASE("K5.3 edit core public header ⇒ dependents recompile") {
     TempDir tmp;
     write_tree(tmp.path, fixture());
@@ -226,6 +263,34 @@ TEST_CASE("K5.5 query rdeps(plugins/core) lists audio and game") {
     auto q2 = run_kiln(tmp.path, {"query", "deps(plugins/game)", "--workspace", "."});
     REQUIRE(q2.code == 0);
     CHECK(q2.out.find("plugins/audio/") != std::string::npos);
+}
+
+TEST_CASE("query without --config reads the graph the last build wrote") {
+    // A config folder's own mtime moves when an entry is added to it (a new
+    // variant folder), so it is no sign of which config was built last.
+    TempDir tmp;
+    write_tree(tmp.path, {
+        {"kiln.workspace.luau", "workspace \"q\" { strict_globs = true }\n"},
+        {"build/game.target.luau",
+         "target \"game\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"app/main\" } }\n"},
+        {"plugins/app/plugin.build.luau",
+         "plugin \"app\" {}\nmodule \"main\" { sources = glob(config.config == \"dev\" and "
+         "\"dev/*.cpp\" or \"rel/*.cpp\") }\n"},
+        {"plugins/app/dev/main.cpp", "int main() { return 0; }\n"},
+        {"plugins/app/rel/main.cpp", "int main() { return 0; }\n"},
+    });
+    std::vector<std::string> build = {"build", "--progress=plain", "--workspace", "."};
+    auto release = build;
+    release.push_back("game:linux-release");
+    REQUIRE(run_kiln(tmp.path, release).code == 0);
+    REQUIRE(run_kiln(tmp.path, build).code == 0);
+    // The older config's folder gains an entry after the dev build.
+    fs::create_directories(tmp.path / ".kiln/graph/linux-release/newer");
+    auto q = run_kiln(tmp.path, {"query", "all()", "--workspace", "."});
+    INFO(q.out);
+    REQUIRE(q.code == 0);
+    CHECK(q.out.find("plugins/app/dev/main.cpp") != std::string::npos);
+    CHECK(q.out.find("plugins/app/rel/main.cpp") == std::string::npos);
 }
 
 TEST_CASE("K5.6 why-dirty explains a surprise rebuild") {
@@ -478,3 +543,56 @@ TEST_CASE("K5.10 two targets with different features keep their own graph files 
             ++declsets;
     CHECK(declsets == 2);
 }
+
+TEST_CASE("the targets of one run build in one graph: b compiles before a's archive finishes") {
+    TempDir tmp;
+    fs::path ar = tmp.path / "fake_ar.sh";
+    {
+        std::ofstream f(ar);
+        f << "#!/bin/sh\nsleep 2\nexec /usr/bin/ar \"$@\"\n";
+    }
+    chmod(ar.c_str(), 0755);
+    write_tree(tmp.path, {
+        {"kiln.workspace.luau",
+         "workspace \"k5g\" {\n  strict_globs = true,\n  tools = { ar = \"" + ar.generic_string() +
+             "\" },\n}\n"},
+        {"build/a.target.luau",
+         "target \"a\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"one/main\" } }\n"},
+        {"build/b.target.luau",
+         "target \"b\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"two/main\" } }\n"},
+        {"plugins/one/plugin.build.luau", "plugin \"one\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"},
+        {"plugins/one/src/main.cpp", "int main() { return 0; }\n"},
+        {"plugins/two/plugin.build.luau", "plugin \"two\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"},
+        {"plugins/two/src/main.cpp", "int main() { return 0; }\n"},
+    });
+    kiln::rules::register_builtin_rules();
+    std::mutex mu;
+    uint64_t b_compile_start = 0, a_archive_finish = 0;
+    kiln::BuildOptions opts;
+    opts.workspace_root = tmp.path;
+    opts.target_specs = {"a", "b"};
+    opts.progress = kiln::console::ProgressMode::None;
+    opts.event_probe = [&](const kiln::Event& e) {
+        std::lock_guard lock(mu);
+        uint64_t now = kiln::util::now_ms();
+        if (e.kind == kiln::Event::TaskStarted && e.id.rule == "compile_cpp" &&
+            e.id.primary_input.find("plugins/two/") != std::string::npos && b_compile_start == 0)
+            b_compile_start = now;
+        if (e.kind == kiln::Event::TaskFinished && e.id.rule == "archive" &&
+            e.id.primary_input.find("plugins/one/") != std::string::npos)
+            a_archive_finish = now;
+    };
+    kiln::console::Renderer renderer(
+        kiln::console::Renderer::Options{kiln::console::ProgressMode::None, false, false});
+    auto outcome = kiln::run_build(opts, renderer);
+    renderer.finish();
+    REQUIRE(outcome.ok());
+    REQUIRE(!outcome->failed);
+    REQUIRE(b_compile_start != 0);
+    REQUIRE(a_archive_finish != 0);
+    CHECK(b_compile_start < a_archive_finish);
+    CHECK(outcome->built == std::vector<std::string>{"a:linux-dev", "b:linux-dev"});
+    CHECK(fs::exists(tmp.path / ".kiln/out/linux-dev/bin/a"));
+    CHECK(fs::exists(tmp.path / ".kiln/out/linux-dev/bin/b"));
+}
+

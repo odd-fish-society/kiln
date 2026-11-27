@@ -246,7 +246,9 @@ as above (SHOULD choices logged, MUST deviations fixed: none remain):
   output (differing params alone are no signal: most defines leave most
   objects byte-identical).
   Code variants (spec §7.2a) removed the case for compiles, PCHs and
-  archives; it remains for cooks, whose paths are a runtime contract.
+  archives; it remained for cooks, whose paths are a runtime contract, until
+  one graph per run (below) made every task's identity its content and the
+  remaining case a lowering error.
 - Code variants: a compile-family task's identity and output folder come
   from its own settings and dependencies (the code variant), not the
   target's ConfigTuple. Before, every target compiled each shared module
@@ -259,8 +261,55 @@ as above (SHOULD choices logged, MUST deviations fixed: none remain):
   task id enters a digest, so the whole chain under a compile (interface
   records, generators, the PCH) is variant-keyed too. The tool identity is
   left out so a compiler bump reruns in place instead of leaving a tree
-  behind; a settings edit does leave the old variant's files (a sweep is
-  pending). The c_library interface record, which nothing read, is gone.
+  behind. A settings edit's old variant is swept after the next successful
+  build (below). The c_library interface record, which nothing read, is gone.
+- One graph per run: `kiln build a b` lowers every target into one scheduler
+  instead of building them one after another (TinyEngine's `build.sh`: a
+  one-line engine edit took 22.7 s of which the longest chain was ~6 s; it
+  now takes 4.8 s). Tool targets still build first - a target's lowering
+  folds in its tools' binary hashes - so targets are lowered in levels (one
+  more than their tools' highest). Sharing a graph needs content identity for
+  every task (two targets cooking one file the same way must be one task, or
+  two tasks race on the file); a non-code task's variant is its rule, params
+  (without tool binary hashes) and dependencies. Two different tasks on one
+  output, or one identity requested with different params, fail lowering:
+  in one graph that is a race, not a rerun, so the old warning became an
+  error. Expansions keep the ConfigTuple (their declset path is per variant).
+- Archives are thin, with a member record: a dev engine archive was 1.4 GB
+  and `ar` rewrote it, and the provider re-read it, on every object change.
+  A thin archive's bytes need not change with a member's content, so the
+  `.members` record (each object's hash) is what dependents hash; without it
+  early cutoff would skip the link (the test edits a body to the same size).
+  `ar` runs in the archive's folder with member paths relative to it (GNU ar
+  stores a thin member path as given, llvm-ar rebases it).
+- The asset manifest left the provider for its own record: a code edit
+  changed the provider's output and so repacked, and a content edit reran the
+  provider and the link.
+- `compile_commands.json` is built from the compile tasks themselves (it
+  re-derived their params and kept naming pre-variant paths after code
+  variants). Each target writes its own record and the driver merges the
+  config's records when one changed: one writer per config per run still
+  replaced the file with that run's targets only, so `build.sh` and
+  `kiln build tinytest` rewrote it in turn. The merge is outside the graph
+  because a task's digest covers its dependencies, which differ per target
+  set, so a merge task would rerun at every switch. A shared source keeps
+  the widest target's entry (most compiles), which in TinyEngine is the
+  editor's, as `build.sh` gave before.
+- Old variants are swept by records, not by a scan: a build knows only its
+  own targets, so a folder is deleted when a target's record stops listing
+  it and no other record of the config lists it. A target never recorded
+  is never put at risk by a build; `kiln clean --dead` is the explicit full
+  sweep. Records are written only after a successful run, so a failing
+  settings edit keeps the last good variant.
+- Per-run memos: the toolchain files and tool binaries are hashed through
+  the persisted (mtime, size) cache and probed once per run, and expansions
+  and glob results are kept per (manifest, platform, config, features) and
+  (root, pattern) for the run. Cached expansion *tasks* across runs were
+  considered: a trace would still have to re-run every recorded glob before
+  it could be trusted, and globbing was most of the cost. `glob()` walks only
+  a pattern's literal prefix and makes paths relative lexically
+  (`fs::relative` canonicalized every file). TinyEngine's no-op went from
+  17.7 s to 0.75 s.
 - The pch depfile lists the copied header (its own output) as a prerequisite;
   `report_depfile_deps` gained an exclude list so a task never becomes a
   dynamic dep of itself.

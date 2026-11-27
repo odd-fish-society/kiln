@@ -138,7 +138,7 @@ Result<Hash256> FileHashCache::hash_of(const fs::path& workspace_root,
 }
 
 Result<Hash256> FileHashCache::hash_of_abs(const fs::path& abs_path) {
-    return hash_locked(abs_path, abs_path.generic_string(), false);
+    return hash_locked(abs_path, abs_path.generic_string(), true);
 }
 
 } // namespace kiln

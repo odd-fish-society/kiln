@@ -192,7 +192,7 @@ int main(int argc, char** argv) {
     std::string c_workspace;
     bool c_dead = false;
     clean->add_flag("--traces", c_traces, "also delete the trace store");
-    clean->add_flag("--dead", c_dead, "delete only the cooked outputs whose sources are gone (every build does this too)");
+    clean->add_flag("--dead", c_dead, "delete only dead outputs: cooked outputs whose sources are gone, and variant folders no target's last build used");
     clean->add_option("--workspace", c_workspace, "workspace root (default: auto-detect)");
 
     int rc = 0;

@@ -6,8 +6,10 @@
 #include <fstream>
 
 #include "core/util.h"
+#include "luau/glob.h"
 #include "luau/manifest_env.h"
 #include "test_util.h"
+#include "workspace/expand.h"
 #include "workspace/lower.h"
 
 using namespace kiln;
@@ -533,4 +535,74 @@ TEST_CASE("K4.16 kiln check: typed manifests, typed requires, cluau's strict rul
     CHECK(has("plugins/bad/plugin.build.cluau", 4, "TypeError")); // no field `sourcez` (and `sources` is required)
     CHECK(has("plugins/bad/plugin.build.cluau", 5, "TypeError")); // the helper has no `missing`
     CHECK(has("plugins/bad/plugin.build.cluau", 5, "NoAny"));     // cluau's strict rules
+}
+
+TEST_CASE("glob walks only a pattern's literal directories and matches as a full walk would") {
+    TempDir tmp;
+    fs::path root = tmp.path / "p";
+    write_tree(root, {{"src/a.cpp", ""},
+                      {"src/sub/b.cpp", ""},
+                      {"srcx/d.cpp", ""},
+                      {"other/c.cpp", ""},
+                      {"top.cpp", ""}});
+    fs::create_directory_symlink(root / "other", root / "link");
+    auto files = [](const fs::path& r, const std::string& pattern) {
+        auto g = luau::glob(r, pattern);
+        REQUIRE(g.ok());
+        return g->files;
+    };
+    using V = std::vector<std::string>;
+    CHECK(files(root, "src/*.cpp") == V{"src/a.cpp"});
+    CHECK(files(root, "src/**/*.cpp") == V{"src/a.cpp", "src/sub/b.cpp"});
+    CHECK(files(root, "{src,other}/*.cpp") == V{"other/c.cpp", "src/a.cpp"});
+    CHECK(files(root, "*.cpp") == V{"top.cpp"});
+    CHECK(files(root, "**/*.cpp") ==
+          V{"other/c.cpp", "src/a.cpp", "src/sub/b.cpp", "srcx/d.cpp", "top.cpp"});
+    CHECK(files(root, "missing/*.cpp").empty());
+    CHECK(files(fs::path(root.string() + "/"), "src/*.cpp") == V{"src/a.cpp"});
+    // Symlinks are not followed, whether the link is the walked prefix or
+    // a directory under it.
+    CHECK(files(root, "link/*.cpp").empty());
+    CHECK(files(root, "**/c.cpp") == V{"other/c.cpp"});
+    // A pattern climbing out of the root reports paths relative to it.
+    CHECK(files(root / "src", "../other/*.cpp") == V{"../other/c.cpp"});
+}
+
+TEST_CASE("a run's expansion memo evaluates a manifest once per feature set, its globs once") {
+    // Kept for one run: the build writes nothing under a plugin tree, so a
+    // second target with the same features reuses the first one's result.
+    WS w;
+    write_tree(w.root, {
+        {"kiln.workspace.luau", "workspace \"w\" {}\n"},
+        {"plugins/p/src/a.cpp", ""},
+        {"plugins/p/plugin.build.luau",
+         "plugin \"p\" {}\nmodule \"m\" { sources = glob(\"src/*.cpp\"),\n"
+         "  public_defines = { config.features.flavor == \"x\" and \"X=1\" or \"Y=1\" } }\n"},
+    });
+    auto ws = load_workspace(w.root);
+    REQUIRE(ws.ok());
+    ExpansionMemo memo;
+    auto first = expand_plugin(*ws, "p", "linux", "dev", {{"flavor", "x"}}, &memo);
+    REQUIRE(first.ok());
+    REQUIRE(first->decls.modules.size() == 1);
+    CHECK(first->decls.modules[0].public_defines == std::vector<std::string>{"X=1"});
+
+    // A file add and a manifest edit within the run: the memo answers.
+    write_tree(w.root, {{"plugins/p/src/b.cpp", ""}});
+    auto again = expand_plugin(*ws, "p", "linux", "dev", {{"flavor", "x"}}, &memo);
+    REQUIRE(again.ok());
+    CHECK(again->decls.globs[0].files == first->decls.globs[0].files);
+
+    // Another feature set evaluates the manifest (its own define) but walks
+    // the glob once per run.
+    auto other = expand_plugin(*ws, "p", "linux", "dev", {{"flavor", "y"}}, &memo);
+    REQUIRE(other.ok());
+    CHECK(other->decls.modules[0].public_defines == std::vector<std::string>{"Y=1"});
+    CHECK(other->decls.globs[0].files == first->decls.globs[0].files);
+
+    // A new run (a new memo) sees the add.
+    ExpansionMemo next;
+    auto fresh = expand_plugin(*ws, "p", "linux", "dev", {{"flavor", "x"}}, &next);
+    REQUIRE(fresh.ok());
+    CHECK(fresh->decls.globs[0].files.size() == 2);
 }

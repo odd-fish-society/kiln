@@ -2,6 +2,7 @@
 
 #include <vector>
 
+#include "core/file_hash_cache.h"
 #include "core/hash.h"
 #include "core/util.h"
 
@@ -21,12 +22,13 @@ fs::path resolve_tool(const std::string& tool, const fs::path& workspace_root) {
     return fs::path(util::find_in_path(tool));
 }
 
-bool hash_file_canonical(const fs::path& p, Hash256* out) {
+bool hash_file_canonical(const fs::path& p, Hash256* out, FileHashCache* hashes) {
     std::error_code ec;
     if (p.empty() || !fs::is_regular_file(p, ec))
         return false;
     fs::path real = fs::canonical(p, ec);
-    auto h = Hash256::of_file(ec ? p : real);
+    const fs::path& file = ec ? p : real;
+    auto h = hashes ? hashes->hash_of_abs(file) : Hash256::of_file(file);
     if (!h.ok())
         return false;
     *out = *h;
@@ -36,10 +38,10 @@ bool hash_file_canonical(const fs::path& p, Hash256* out) {
 } // namespace
 
 std::string toolchain_fingerprint(const std::string& tool, const fs::path& workspace_root,
-                                  bool probe_driver) {
+                                  bool probe_driver, FileHashCache* hashes) {
     fs::path driver = resolve_tool(tool, workspace_root);
     Hash256 driver_hash;
-    if (!hash_file_canonical(driver, &driver_hash))
+    if (!hash_file_canonical(driver, &driver_hash, hashes))
         return "unresolved";
 
     CanonicalHasher h;
@@ -63,7 +65,7 @@ std::string toolchain_fingerprint(const std::string& tool, const fs::path& works
                                     ? fs::path(name)
                                     : fs::path(util::find_in_path(name));
             Hash256 ph;
-            if (!hash_file_canonical(resolved, &ph))
+            if (!hash_file_canonical(resolved, &ph, hashes))
                 continue;
             h.item(prog);
             h.item(ph);
@@ -82,7 +84,7 @@ std::string toolchain_fingerprint(const std::string& tool, const fs::path& works
                 continue;
             fs::path resolved(util::trim(out));
             Hash256 fh;
-            if (!resolved.is_absolute() || !hash_file_canonical(resolved, &fh))
+            if (!resolved.is_absolute() || !hash_file_canonical(resolved, &fh, hashes))
                 continue;
             h.item(file);
             h.item(fh);
@@ -101,6 +103,21 @@ bool toolchain_is_clang(const std::string& tool, const fs::path& workspace_root)
     if (util::run_process({driver.generic_string(), "--version"}, workspace_root, &banner) != 0)
         return false;
     return banner.find("clang version") != std::string::npos;
+}
+
+std::string ToolchainProbes::fingerprint(const std::string& tool, const fs::path& workspace_root,
+                                         bool probe_driver) {
+    auto [it, inserted] = fingerprints_.try_emplace((probe_driver ? "1:" : "0:") + tool);
+    if (inserted)
+        it->second = toolchain_fingerprint(tool, workspace_root, probe_driver, hashes);
+    return it->second;
+}
+
+bool ToolchainProbes::is_clang(const std::string& tool, const fs::path& workspace_root) {
+    auto [it, inserted] = clang_.try_emplace(tool);
+    if (inserted)
+        it->second = toolchain_is_clang(tool, workspace_root);
+    return it->second;
 }
 
 } // namespace kiln

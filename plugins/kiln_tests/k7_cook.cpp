@@ -41,7 +41,7 @@ std::vector<std::string> build_args() {
 
 } // namespace
 
-TEST_CASE("K7.1 cook rules produce assets; provider carries the manifest; pack works") {
+TEST_CASE("K7.1 cook rules produce assets; the asset record carries the manifest; pack works") {
     TempDir tmp;
     fs::path tool = tmp.path / "fake_glslc.sh";
     {
@@ -61,9 +61,9 @@ TEST_CASE("K7.1 cook rules produce assets; provider carries the manifest; pack w
     CHECK(file_exists(tmp.path / ".kiln/out/linux-dev/pack/game.kpak.json"));
 
     // Provider JSON carries the asset manifest.
-    auto provider = read_file(graph_file(tmp.path, "linux-dev", "content.provider.json"));
-    CHECK(provider.find("banner.spv") != std::string::npos);
-    CHECK(provider.find("icon.png") != std::string::npos);
+    auto assets = read_file(graph_file(tmp.path, "linux-dev", "content.assets.json"));
+    CHECK(assets.find("banner.spv") != std::string::npos);
+    CHECK(assets.find("icon.png") != std::string::npos);
 
     // kpak index has two assets with stable ids.
     auto index = read_file(tmp.path / ".kiln/out/linux-dev/pack/game.kpak.json");
@@ -159,15 +159,45 @@ TEST_CASE("K7.2 editing the source PNG re-cooks one asset and repacks one archiv
     }
     auto r = run_kiln(tmp.path, build_args());
     REQUIRE(r.code == 0);
-    // Only the copy cook + pack + provider rerun; the shader cook is untouched.
+    // Only the copy cook + asset record + pack rerun; the shader cook is untouched.
     auto out = r.out;
     // The shader cook must not have EXECUTED (a cached line is fine).
     CHECK(out.find("ok plugins/content/content/banner.glsl/cook_shader") ==
           std::string::npos);
-    // A CONTENT-only recook must repack: the provider's asset_manifest now
-    // carries per-asset content hashes, so its output changed ⇒ pack re-runs
+    // A CONTENT-only recook must repack: the asset record carries
+    // per-asset content hashes, so its output changed ⇒ pack re-runs
     // (pre-fix the pack stayed cached).
     CHECK(out.find("] ok build/game.target.luau/pack_target") != std::string::npos);
+}
+
+TEST_CASE("a content edit relinks nothing and a code edit repacks nothing") {
+    // Assets and code have separate records: the pack reads the asset
+    // records, the link the providers.
+    TempDir tmp;
+    fs::path tool = tmp.path / "fake_glslc.sh";
+    {
+        std::ofstream f(tool);
+        f << fake_glslc_script();
+    }
+    chmod(tool.c_str(), 0755);
+    write_tree(tmp.path, fixture(tool));
+    REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
+
+    write_tree(tmp.path, {{"plugins/content/content/icon.png", "PNGDATA-v2"}});
+    auto content = run_kiln(tmp.path, build_args());
+    INFO(content.out);
+    REQUIRE(content.code == 0);
+    CHECK(content.out.find("] ok build/game.target.luau/pack_target") != std::string::npos);
+    CHECK(content.out.find("] ok plugins/content/provider/provider") == std::string::npos);
+    CHECK(content.out.find("] ok build/game.target.luau/link") == std::string::npos);
+
+    write_tree(tmp.path, {{"plugins/app/src/main.cpp", "int main() { return 1; }\n"}});
+    auto code = run_kiln(tmp.path, build_args());
+    INFO(code.out);
+    REQUIRE(code.code == 0);
+    CHECK(code.out.find("] ok build/game.target.luau/link") != std::string::npos);
+    CHECK(code.out.find("] ok build/game.target.luau/pack_target") == std::string::npos);
+    CHECK(code.out.find("/assets/asset_manifest") == std::string::npos);
 }
 
 TEST_CASE("K7.3 tool binary swap re-cooks that rule's tasks only") {
@@ -632,7 +662,7 @@ TEST_CASE("K7.11 pack_tinyasset packs committed containers verbatim under their 
     std::string rock = read_file(tmp.path / "plugins/content/content/models/rock.ctasset");
     CHECK(kpak.find(rock) != std::string::npos);
 
-    // An edit repacks through the provider's declared inputs.
+    // An edit repacks through the asset record's declared inputs.
     write_tree(tmp.path, {{"plugins/content/content/models/rock.ctasset",
                            tinyasset_bytes(4, 1, 0x1122334455667788ull, 0x99aabbccddeeff00ull, "MESH2")}});
     auto r2 = run_kiln(tmp.path, build_args());

@@ -29,7 +29,8 @@ public:
 
     // Returns error for a missing file (distinguished, never a zero hash).
     Result<Hash256> hash_of(const fs::path& workspace_root, const std::string& rel_path);
-    // Hashes an arbitrary file outside the workspace (e.g. a resolved tool binary).
+    // Hashes a file by absolute path (e.g. a resolved tool binary), persisted
+    // under that path like a workspace file.
     Result<Hash256> hash_of_abs(const fs::path& abs_path);
 
 private:

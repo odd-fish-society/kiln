@@ -545,8 +545,8 @@ Result<int> cmd_daemon(const BuildOptions& opts, console::Renderer& renderer) {
                 // fail` event is the report.
                 if (!outcome->failed)
                     hot.offer_patches(renderer);
-                // Asset events: read providers' asset manifests
-                // (.kiln/graph/<platform-config>/<variant>/*.provider.json).
+                // Asset events: read the plugins' asset records
+                // (.kiln/graph/<platform-config>/<variant>/*.assets.json).
                 try {
                     fs::path graph_dir = root / ".kiln/graph";
                     std::error_code ec;
@@ -559,7 +559,7 @@ Result<int> cmd_daemon(const BuildOptions& opts, console::Renderer& renderer) {
                     for (const fs::path& variant : variants) {
                         for (auto& f : fs::directory_iterator(variant, ec)) {
                             if (f.path().extension() != ".json" ||
-                                f.path().filename().generic_string().find(".provider.") ==
+                                f.path().filename().generic_string().find(".assets.") ==
                                     std::string::npos)
                                 continue;
                             auto content = util::read_file(f.path());

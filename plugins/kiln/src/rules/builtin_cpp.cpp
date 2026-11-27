@@ -70,31 +70,65 @@ TaskResult run_archive(TaskCtx& ctx) {
     // on an input the digest doesn't cover (the convergence check broke on
     // exactly this: a fresh-state build archived members in sorted order, an
     // incremental one kept the old file's order).
-    fs::path tmp = ctx.out_dir / "archive.a";
+    //
+    // The archive is THIN (`T`): member paths and the symbol table, not the
+    // members' bytes - a dev engine archive was 1.4 GB, rewritten for one
+    // changed object. A thin archive names its members relative to its own
+    // directory, so the temp file is a sibling of the output, not in the
+    // task's private dir, and ar runs there with the members' paths relative
+    // to it (GNU ar stores a member path as given, llvm-ar rebases it; the
+    // linker reads it relative to the archive either way).
+    const std::string out = param(*ctx.decl, "out");
+    fs::path dst = ctx.workspace_root / out;
+    const fs::path dir = dst.parent_path().lexically_normal();
+    fs::create_directories(dir, ec);
+    fs::path tmp = dst;
+    tmp += ".tmp";
     fs::remove(tmp, ec); // a crash between ar and rename must not leave a stale member set
+    const auto objs = sorted_params_with_prefix(*ctx.decl, "obj.");
+    std::string tool = param(*ctx.decl, "tool", "ar");
+    if (tool.find('/') != std::string::npos && fs::path(tool).is_relative())
+        tool = (ctx.workspace_root / tool).generic_string(); // ar runs in `dir`
     std::vector<std::string> argv;
-    argv.push_back(param(*ctx.decl, "tool", "ar"));
-    argv.push_back("rcsD");
-    argv.push_back(tmp.generic_string());
-    for (auto& obj : sorted_params_with_prefix(*ctx.decl, "obj."))
-        argv.push_back(obj);
-    std::string out;
-    int rc = util::run_process(argv, ctx.workspace_root, &out);
-    if (!out.empty())
-        ctx.log(out);
+    argv.push_back(tool);
+    argv.push_back("rcsDT");
+    argv.push_back(tmp.filename().generic_string());
+    for (auto& obj : objs)
+        argv.push_back(
+            (ctx.workspace_root / obj).lexically_normal().lexically_relative(dir).generic_string());
+    std::string log;
+    int rc = util::run_process(argv, dir, &log);
+    if (!log.empty())
+        ctx.log(log);
     if (rc != 0) {
         r.error = "archive failed (" + std::to_string(rc) + ")";
         return r;
     }
-    fs::path dst = ctx.workspace_root / param(*ctx.decl, "out");
-    fs::create_directories(dst.parent_path(), ec);
+    // A thin archive's bytes can stay the same when a member's content
+    // changes (same path, size and symbols), and an unchanged output would
+    // stop the build before the link. The member record changes exactly when
+    // a member does, so dependents see every object edit.
+    std::string members;
+    for (auto& obj : objs) {
+        auto h = ctx.hash_file(obj);
+        if (!h.ok()) {
+            r.error = "archive: " + h.error;
+            return r;
+        }
+        members += h->hex() + "  " + obj + "\n";
+    }
+    if (!util::write_file(ctx.workspace_root / (out + ".members"), members).ok()) {
+        r.error = "archive: cannot write " + out + ".members";
+        return r;
+    }
     fs::rename(tmp, dst, ec);
     if (ec) {
         r.error = "archive: cannot move into place: " + ec.message();
         return r;
     }
     r.ok = true;
-    r.outputs.push_back(param(*ctx.decl, "out"));
+    r.outputs.push_back(out);
+    r.outputs.push_back(out + ".members");
     return r;
 }
 
@@ -155,7 +189,8 @@ void register_cpp() {
     // the output — v1's in-place `ar r` let member order/staleness depend on
     // the pre-existing archive (behavior change ⇒ version bump ⇒ all archives
     // rebuild deterministically).
-    register_rule("archive", 2, run_archive);
+    // v3: thin archives plus the `<out>.members` record.
+    register_rule("archive", 3, run_archive);
     // v2: a reload-capable config's link also writes the live record.
     register_rule("link", 2, run_link);
 }

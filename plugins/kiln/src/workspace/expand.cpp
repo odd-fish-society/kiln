@@ -12,7 +12,18 @@ namespace kiln {
 
 Result<PluginExpansion> expand_plugin(
     const Workspace& ws, const std::string& plugin, const std::string& platform,
-    const std::string& config, const std::map<std::string, std::string>& features) {
+    const std::string& config, const std::map<std::string, std::string>& features,
+    ExpansionMemo* memo) {
+    std::string key;
+    if (memo) {
+        key = plugin + '\n' + platform + '\n' + config;
+        for (auto& [k, v] : features)
+            key += '\n' + k + '=' + v;
+        std::lock_guard lock(memo->mu);
+        auto hit = memo->results.find(key);
+        if (hit != memo->results.end())
+            return Result<PluginExpansion>::success(hit->second);
+    }
     auto it = ws.plugin_manifest_paths.find(plugin);
     if (it == ws.plugin_manifest_paths.end())
         return Result<PluginExpansion>::fail("no such plugin: " + plugin);
@@ -31,6 +42,7 @@ Result<PluginExpansion> expand_plugin(
     env_opts.c_std = ws.config.c_std;
     env_opts.rule_libraries = ws.config.rules;
     env_opts.lowers_in_cpp = lowers_in_cpp;
+    env_opts.glob_cache = memo ? &memo->globs : nullptr;
 
     auto res = luau::evaluate_file(ws.root / manifest_rel, env_opts);
     if (!res.ok())
@@ -64,6 +76,10 @@ Result<PluginExpansion> expand_plugin(
         c.plugin = plugin;
     for (auto& c : exp.decls.c_libraries)
         c.plugin = plugin;
+    if (memo) {
+        std::lock_guard lock(memo->mu);
+        memo->results.emplace(key, exp);
+    }
     return Result<PluginExpansion>::success(std::move(exp));
 }
 

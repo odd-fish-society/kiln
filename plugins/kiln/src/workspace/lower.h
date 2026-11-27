@@ -8,6 +8,7 @@
 #include "core/config.h"
 #include "core/scheduler.h"
 #include "core/task.h"
+#include "core/toolchain.h"
 #include "luau/decl.h"
 #include "workspace/workspace.h"
 
@@ -44,6 +45,7 @@ struct LowerCtx {
         std::vector<TaskId> archives;      // all module archive task ids
         std::optional<TaskId> interface_task;
         std::optional<TaskId> provider;
+        std::optional<TaskId> assets;      // its asset_manifest task, when it has assets
         std::optional<TaskId> reflect_gen; // the plugin's reflect_gen task, when it has one
         std::string reflect_dluau;         // its <plugin>.d.luau output
         std::string reflect_docs;          // its <plugin>.docs.json output
@@ -56,9 +58,10 @@ struct LowerCtx {
         std::map<std::string, std::vector<std::string>> module_objs; // module → obj paths
         std::map<std::string, std::vector<TaskId>> module_compiles;  // module → compile ids
         std::vector<std::string> cook_assets; // "id=path"
-        std::vector<std::string> packed_inputs; // pack_tinyasset files (the provider's inputs)
+        std::vector<std::string> packed_inputs; // pack_tinyasset files (the asset record's inputs)
         std::string interface_path;
         std::string provider_path;
+        std::string assets_path;
         std::string declset_path;
         std::vector<std::string> cook_outputs;
     };
@@ -74,10 +77,18 @@ struct LowerCtx {
     };
     std::vector<GraphNode> graph_nodes;
 
-    // The toolchain fingerprint per tool spelling, computed
-    // once per lowering (it spawns the driver).
-    std::map<std::string, std::string> toolchain_fingerprints;
-    std::map<std::string, bool> toolchain_clang; // per C++ driver, probed once
+    // The run's toolchain probes (fingerprints, Clang detection), shared by
+    // every target the run lowers.
+    ToolchainProbes* toolchain = nullptr;
+
+    // Every compile task lowered (its source, rule and params, the variant
+    // paths included): `compile_commands.json` is exactly these.
+    struct CompileEntry {
+        std::string file;
+        std::string rule;
+        std::map<std::string, std::string> params;
+    };
+    std::vector<CompileEntry> compile_entries;
 };
 
 // A plugin's DeclSet and provider live per configuration VARIANT: the
@@ -88,6 +99,10 @@ struct LowerCtx {
 std::string graph_dir(const ConfigTuple& ct);
 std::string declset_path(const ConfigTuple& ct, const std::string& plugin);
 std::string provider_path(const ConfigTuple& ct, const std::string& plugin);
+// The plugin's asset record (`<plugin>.assets.json`: the asset manifest the
+// pack and the daemon read), apart from the provider so a code edit never
+// repacks and a content edit never relinks.
+std::string assets_path(const ConfigTuple& ct, const std::string& plugin);
 // The code family lives per CODE variant (lower.cpp's code_variant): one
 // copy for every target building it the same way.
 // `.kiln/graph/<platform-config>/code/<variant>/<plugin>.interface.json`.
@@ -117,6 +132,11 @@ void apply_exclusions(luau::DeclSet& decls);
 bool lowers_in_cpp(const std::string& rule);
 
 // Target-level tasks: link, pack, compile_commands.
+// A target's compile_commands record (`compile_record_path`): the compile
+// tasks it lowered (already lowered), written by one task. The config's
+// `compile_commands.json` is merged from the records after the run.
+Result<void> lower_compile_commands(Scheduler& sched, LowerCtx& ctx, const std::string& target);
+
 Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
                                 const luau::TargetDecl& target);
 

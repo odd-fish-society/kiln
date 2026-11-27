@@ -2,10 +2,13 @@
 // syslibs/link_flags, KILN-4 check_pkg_config.
 #include "hamr/test.h"
 
+#include "nlohmann/json.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sys/stat.h>
 #include <thread>
 
@@ -18,6 +21,7 @@
 #include "rules/registry.h"
 #include "test_util.h"
 #include "workspace/build.h"
+#include "workspace/sweep.h"
 
 using namespace kiln;
 using namespace kiln::testutil;
@@ -427,22 +431,20 @@ TEST_CASE("KILN-2 two targets building a module differently keep their own objec
         if (fs::exists(v.path() / "src/a.cpp.o", ec))
             ++variants;
     CHECK(variants == 2);
-    // Neither rewrites the other's files: the next build runs nothing but
-    // the two targets' writes of the one compile_commands.json (shared by
-    // design: the last target built is the IDE's view).
+    // Neither rewrites the other's files: the next build runs nothing.
     auto r2 = run_kiln(tmp.path, build_ab());
     INFO(r2.out);
     REQUIRE(r2.code == 0);
-    CHECK(count_executed(r2.out) == ran_count(r2.out, "build/a.target.luau/gen_compile_commands") +
-                                        ran_count(r2.out, "build/b.target.luau/gen_compile_commands"));
+    CHECK(count_executed(r2.out) == 0);
     CHECK(r2.out.find("compile_cpp") == std::string::npos);
     CHECK(r2.out.find("kiln: warning:") == std::string::npos);
 }
 
-TEST_CASE("KILN-2 two targets writing one file differently: a warning names them") {
+TEST_CASE("KILN-2 two targets writing one file differently: an error names them, before anything runs") {
     TempDir tmp;
     // A cook's output path is fixed (a runtime contract), so a rule whose
-    // output depends on a target feature makes two targets write one file.
+    // output depends on a target feature makes two targets write one file -
+    // in one graph two tasks racing on it, so the build refuses.
     fs::path tool = tmp.path / "put.sh";
     {
         std::ofstream f(tool);
@@ -472,15 +474,24 @@ TEST_CASE("KILN-2 two targets writing one file differently: a warning names them
     });
     auto r1 = run_kiln(tmp.path, build_ab());
     INFO(r1.out);
-    REQUIRE(r1.code == 0);
-    CHECK(r1.out.find("kiln: warning:") == std::string::npos);
-    // The second build finds each target's file rewritten by the other.
+    CHECK(r1.code == 2);
+    CHECK(r1.out.find("targets 'a:linux-dev' and 'b:linux-dev' both write "
+                      ".kiln/out/linux-dev/assets/content/v.txt with different tasks") !=
+          std::string::npos);
+    CHECK(r1.out.find("compile_cpp") == std::string::npos); // nothing ran
+    // Each alone builds.
+    CHECK(run_kiln(tmp.path, {"build", "--progress=plain", "--workspace", ".", "a"}).code == 0);
+    CHECK(run_kiln(tmp.path, {"build", "--progress=plain", "--workspace", ".", "b"}).code == 0);
+
+    // Cooking it the same way, the two targets share one task: it runs once.
+    write_tree(tmp.path, {{"build/b.target.cluau",
+                           "target \"b\" { platforms = { \"linux\" }, default_config = \"dev\", "
+                           "link = { \"content/main\" }, features = { y = \"1\" } }\n"},
+                          {"plugins/content/content/v.in", "w\n"}});
     auto r2 = run_kiln(tmp.path, build_ab());
     INFO(r2.out);
     REQUIRE(r2.code == 0);
-    CHECK(r2.out.find("kiln: warning: targets 'a' and 'b' (linux-dev) write 1 of the same file") !=
-          std::string::npos);
-    CHECK(r2.out.find("(e.g. .kiln/out/linux-dev/assets/content/v.txt)") != std::string::npos);
+    CHECK(ran_count(r2.out, "plugins/content/content/v.in/") == 1);
 }
 
 TEST_CASE("KILN-2 two modules compiling one source with equal settings are two tasks") {
@@ -508,4 +519,258 @@ TEST_CASE("KILN-2 two modules compiling one source with equal settings are two t
     INFO(r2.out);
     REQUIRE(r2.code == 0);
     CHECK(r2.out.find("compile_cpp") == std::string::npos);
+}
+
+TEST_CASE("compile_commands.json names the objects and PCHs the build wrote") {
+    TempDir tmp;
+    write_tree(tmp.path, {
+        {"kiln.workspace.luau", "workspace \"cc\" { strict_globs = true }\n"},
+        {"build/game.target.luau",
+         "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
+         "  link = { \"app/main\" },\n}\n"},
+        {"plugins/app/plugin.build.luau",
+         "plugin \"app\" {}\nmodule \"main\" {\n  sources = glob(\"src/*.cpp\"),\n"
+         "  pch = \"src/pch.h\",\n  private_includes = { \"src\" },\n}\n"},
+        {"plugins/app/src/pch.h", "#pragma once\n#include <string>\n"},
+        {"plugins/app/src/main.cpp", "#include \"pch.h\"\nint main() { return 0; }\n"},
+    });
+    std::vector<std::string> args = {"build", "--progress=plain", "--workspace", "."};
+    auto r1 = run_kiln(tmp.path, args);
+    INFO(r1.out);
+    REQUIRE(r1.code == 0);
+    auto cc = nlohmann::json::parse(
+        read_file(tmp.path / ".kiln/compile_commands/linux-dev/compile_commands.json"));
+    REQUIRE(cc.size() == 1);
+    std::vector<std::string> argv = cc[0].at("arguments").get<std::vector<std::string>>();
+    int named = 0;
+    for (size_t i = 0; i + 1 < argv.size(); ++i) {
+        if (argv[i] == "-o") {
+            CHECK(fs::exists(tmp.path / argv[i + 1]));
+            ++named;
+        }
+        if (argv[i] == "-include-pch" || argv[i] == "-include") {
+            std::string pch = argv[i + 1];
+            INFO(pch);
+            CHECK((fs::exists(tmp.path / pch) || fs::exists(tmp.path / (pch + ".gch"))));
+            ++named;
+        }
+    }
+    CHECK(named == 2);
+    // A second build leaves it alone.
+    auto r2 = run_kiln(tmp.path, args);
+    CHECK(ran_count(r2.out, "gen_compile_commands") == 0);
+}
+
+namespace {
+
+// The variant folders (ten hex digits) directly under `dir`.
+std::set<std::string> variant_folders(const fs::path& dir) {
+    std::set<std::string> out;
+    std::error_code ec;
+    for (auto& e : fs::directory_iterator(dir, ec))
+        if (e.is_directory(ec) && e.path().filename().generic_string().size() == 10)
+            out.insert(e.path().filename().generic_string());
+    return out;
+}
+
+const char* kObjDir = ".kiln/out/linux-dev/obj/app/main";
+const char* kPchDir = ".kiln/out/linux-dev/pch/app/main";
+const char* kLibDir = ".kiln/out/linux-dev/lib/app";
+
+std::vector<std::string> build_one(const std::string& target) {
+    return {"build", target, "--progress=plain", "--workspace", "."};
+}
+
+// two_target_pch_tree's manifest with one more define: a new module variant.
+std::string manifest_with(const std::string& define) {
+    return "plugin \"app\" {}\nmodule \"main\" {\n  sources = glob(\"src/*.cpp\"),\n"
+           "  pch = \"src/pch.h\",\n  private_includes = { \"src\" },\n"
+           "  private_defines = { \"" + define + "\" },\n}\n";
+}
+
+} // namespace
+
+TEST_CASE("variant_folder_of names the variant folder of each output shape") {
+    CHECK(variant_folder_of(".kiln/out/linux-dev/obj/app/main/0123456789/src/a.cpp.o") ==
+          ".kiln/out/linux-dev/obj/app/main/0123456789");
+    CHECK(variant_folder_of(".kiln/out/linux-dev/obj/app/clib-z/abcdef0123/z.c.o") ==
+          ".kiln/out/linux-dev/obj/app/clib-z/abcdef0123");
+    CHECK(variant_folder_of(".kiln/out/linux-dev/pch/app/main/0123456789/pch.h.gch") ==
+          ".kiln/out/linux-dev/pch/app/main/0123456789");
+    CHECK(variant_folder_of(".kiln/out/linux-dev/lib/app/0123456789/libmain.a") ==
+          ".kiln/out/linux-dev/lib/app/0123456789");
+    CHECK(variant_folder_of(".kiln/graph/linux-dev/code/0123456789/app.interface.json") ==
+          ".kiln/graph/linux-dev/code/0123456789");
+    CHECK(variant_folder_of(".kiln/graph/linux-dev/0123456789/app.declset.json") ==
+          ".kiln/graph/linux-dev/0123456789");
+    // Not a variant: the binaries, a cooked asset, a non-hex or short name.
+    CHECK(variant_folder_of(".kiln/out/linux-dev/bin/game").empty());
+    CHECK(variant_folder_of(".kiln/out/linux-dev/assets/app/0123456789/x.ctasset").empty());
+    CHECK(variant_folder_of(".kiln/out/linux-dev/obj/app/main/0123456789x/a.o").empty());
+    CHECK(variant_folder_of(".kiln/out/linux-dev/obj/app/main/ABCDEF0123/a.o").empty());
+    CHECK(variant_folder_of(".kiln/graph/linux-dev/graph.json").empty());
+}
+
+TEST_CASE("a settings change leaves only the new variant, a revert only the old") {
+    TempDir tmp;
+    write_tree(tmp.path, two_target_pch_tree("c++", "0"));
+    write_tree(tmp.path, {{"plugins/app/plugin.build.luau", manifest_with("A=1")}});
+    auto r1 = run_kiln(tmp.path, build_one("a"));
+    INFO(r1.out);
+    REQUIRE(r1.code == 0);
+    const auto obj1 = variant_folders(tmp.path / kObjDir);
+    REQUIRE(obj1.size() == 1);
+    REQUIRE(variant_folders(tmp.path / kPchDir).size() == 1);
+    REQUIRE(variant_folders(tmp.path / kLibDir).size() == 1);
+
+    write_tree(tmp.path, {{"plugins/app/plugin.build.luau", manifest_with("A=2")}});
+    auto r2 = run_kiln(tmp.path, build_one("a"));
+    INFO(r2.out);
+    REQUIRE(r2.code == 0);
+    const auto obj2 = variant_folders(tmp.path / kObjDir);
+    CHECK(obj2.size() == 1);
+    CHECK(obj2 != obj1);
+    CHECK(variant_folders(tmp.path / kPchDir).size() == 1);
+    CHECK(variant_folders(tmp.path / kLibDir).size() == 1);
+    CHECK(r2.out.find("old variant folder") != std::string::npos);
+
+    write_tree(tmp.path, {{"plugins/app/plugin.build.luau", manifest_with("A=1")}});
+    auto r3 = run_kiln(tmp.path, build_one("a"));
+    INFO(r3.out);
+    REQUIRE(r3.code == 0);
+    CHECK(variant_folders(tmp.path / kObjDir) == obj1);
+
+    // A no-op deletes nothing.
+    auto r4 = run_kiln(tmp.path, build_one("a"));
+    REQUIRE(r4.code == 0);
+    CHECK(count_executed(r4.out) == 0);
+    CHECK(variant_folders(tmp.path / kObjDir) == obj1);
+}
+
+TEST_CASE("a failed build after a settings change keeps the old variant") {
+    TempDir tmp;
+    write_tree(tmp.path, two_target_pch_tree("c++", "0"));
+    write_tree(tmp.path, {{"plugins/app/plugin.build.luau", manifest_with("A=1")}});
+    auto r1 = run_kiln(tmp.path, build_one("a"));
+    INFO(r1.out);
+    REQUIRE(r1.code == 0);
+    const auto obj1 = variant_folders(tmp.path / kObjDir);
+    REQUIRE(obj1.size() == 1);
+
+    write_tree(tmp.path, {{"plugins/app/plugin.build.luau", manifest_with("A=2")},
+                          {"plugins/app/src/a.cpp", "#include \"pch.h\"\nint a() { return }\n"}});
+    auto r2 = run_kiln(tmp.path, build_one("a"));
+    INFO(r2.out);
+    REQUIRE(r2.code != 0);
+    const auto after_fail = variant_folders(tmp.path / kObjDir);
+    CHECK(after_fail.count(*obj1.begin()) == 1);
+
+    write_tree(tmp.path, {{"plugins/app/src/a.cpp", "#include \"pch.h\"\nint a() { return 1; }\n"}});
+    auto r3 = run_kiln(tmp.path, build_one("a"));
+    INFO(r3.out);
+    REQUIRE(r3.code == 0);
+    const auto obj3 = variant_folders(tmp.path / kObjDir);
+    CHECK(obj3.size() == 1);
+    CHECK(obj3.count(*obj1.begin()) == 0);
+}
+
+TEST_CASE("a variant another target still builds stays; a removed target's go") {
+    TempDir tmp;
+    write_tree(tmp.path, two_target_pch_tree("c++", "0"));
+    auto r1 = run_kiln(tmp.path, build_ab());
+    INFO(r1.out);
+    REQUIRE(r1.code == 0);
+    const auto shared = variant_folders(tmp.path / kObjDir);
+    REQUIRE(shared.size() == 1);
+
+    // b moves to its own variant; a, not built this run, still uses the old.
+    write_tree(tmp.path, two_target_pch_tree("c++", "1"));
+    auto r2 = run_kiln(tmp.path, build_one("b"));
+    INFO(r2.out);
+    REQUIRE(r2.code == 0);
+    const auto both = variant_folders(tmp.path / kObjDir);
+    CHECK(both.size() == 2);
+    CHECK(both.count(*shared.begin()) == 1);
+
+    // a leaves the workspace: the folder only it used goes, with its records.
+    fs::remove(tmp.path / "build/a.target.luau");
+    auto r3 = run_kiln(tmp.path, build_one("b"));
+    INFO(r3.out);
+    REQUIRE(r3.code == 0);
+    const auto left = variant_folders(tmp.path / kObjDir);
+    CHECK(left.size() == 1);
+    CHECK(left.count(*shared.begin()) == 0);
+    CHECK(!fs::exists(tmp.path / ".kiln/graph/linux-dev/targets/a.variants"));
+    CHECK(!fs::exists(tmp.path / compile_record_path("linux-dev", "a")));
+}
+
+TEST_CASE("clean --dead removes a variant folder no record lists and keeps the recorded") {
+    TempDir tmp;
+    write_tree(tmp.path, two_target_pch_tree("c++", "0"));
+    auto r1 = run_kiln(tmp.path, build_one("a"));
+    INFO(r1.out);
+    REQUIRE(r1.code == 0);
+    const auto live = variant_folders(tmp.path / kObjDir);
+    REQUIRE(live.size() == 1);
+    write_tree(tmp.path, {{std::string(kObjDir) + "/0123456789/src/a.cpp.o", "stale"},
+                          {std::string(kLibDir) + "/0123456789/libmain.a", "stale"},
+                          {std::string(kObjDir) + "/keep-me/x.o", "not a variant"}});
+    auto c = run_kiln(tmp.path, {"clean", "--dead", "--workspace", "."});
+    INFO(c.out);
+    REQUIRE(c.code == 0);
+    CHECK(!fs::exists(tmp.path / kObjDir / "0123456789"));
+    CHECK(!fs::exists(tmp.path / kLibDir / "0123456789"));
+    CHECK(fs::exists(tmp.path / kObjDir / "keep-me/x.o"));
+    CHECK(variant_folders(tmp.path / kObjDir) == live);
+    auto r2 = run_kiln(tmp.path, build_one("a"));
+    INFO(r2.out);
+    REQUIRE(r2.code == 0);
+    CHECK(count_executed(r2.out) == 0);
+}
+
+TEST_CASE("compile_commands.json holds every target's entries, whichever was built last") {
+    TempDir tmp;
+    write_tree(tmp.path, {
+        {"kiln.workspace.luau", "workspace \"cc\" { strict_globs = true }\n"},
+        {"build/a.target.luau",
+         "target \"a\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"app/main\" }, "
+         "disable_plugins = { \"tool\" } }\n"},
+        {"build/b.target.luau",
+         "target \"b\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"tool/main\" }, "
+         "disable_plugins = { \"app\" } }\n"},
+        {"plugins/app/plugin.build.luau",
+         "plugin \"app\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"},
+        {"plugins/tool/plugin.build.luau",
+         "plugin \"tool\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"},
+        {"plugins/app/src/main.cpp", "int main() { return 0; }\n"},
+        {"plugins/tool/src/t.cpp", "int main() { return 0; }\n"},
+    });
+    const fs::path cc_path = tmp.path / ".kiln/compile_commands/linux-dev/compile_commands.json";
+    auto files_of = [&]() {
+        std::set<std::string> files;
+        for (auto& e : nlohmann::json::parse(read_file(cc_path)))
+            files.insert(e.at("file").get<std::string>());
+        return files;
+    };
+    auto r1 = run_kiln(tmp.path, build_one("a"));
+    INFO(r1.out);
+    REQUIRE(r1.code == 0);
+    CHECK(files_of() == std::set<std::string>{"plugins/app/src/main.cpp"});
+    auto r2 = run_kiln(tmp.path, build_one("b"));
+    INFO(r2.out);
+    REQUIRE(r2.code == 0);
+    const std::set<std::string> both = {"plugins/app/src/main.cpp", "plugins/tool/src/t.cpp"};
+    CHECK(files_of() == both);
+
+    // Building either again changes nothing: same bytes, same mtime, no task.
+    const std::string bytes = read_file(cc_path);
+    const auto mtime = fs::last_write_time(cc_path);
+    for (const char* t : {"a", "b"}) {
+        auto r = run_kiln(tmp.path, build_one(t));
+        INFO(r.out);
+        REQUIRE(r.code == 0);
+        CHECK(count_executed(r.out) == 0);
+        CHECK(read_file(cc_path) == bytes);
+        CHECK(fs::last_write_time(cc_path) == mtime);
+    }
 }

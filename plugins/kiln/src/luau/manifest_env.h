@@ -30,6 +30,8 @@ struct ManifestEnvOptions {
     // when a cook names a rule `lowers_in_cpp` does not claim.
     std::vector<std::string> rule_libraries;
     std::function<bool(const std::string&)> lowers_in_cpp;
+    // The run's glob results (optional): globs are walked once per run.
+    class GlobCache* glob_cache = nullptr;
     uint64_t interrupt_budget = 50000000;
     size_t memory_cap = 256ull * 1024 * 1024; // enforced in the VM allocator
 };

@@ -210,7 +210,7 @@ TEST_CASE("cook_tinyasset: ../-escaped inputs land under assets/<plugin>/ (D1)")
 
     // Deterministic AssetID from the resolved plugin-relative path.
     std::string expected_id = Hash256::of_string("content/shared/shaders/test.vert").hex();
-    std::string provider = read_file(graph_file(tmp.path, "linux-dev", "content.provider.json"));
+    std::string provider = read_file(graph_file(tmp.path, "linux-dev", "content.assets.json"));
     CHECK(provider.find(expected_id) != std::string::npos);
 }
 
@@ -311,7 +311,7 @@ TEST_CASE("cook_tinyasset: a .tasset source is packed under its document's own i
     INFO(r.out);
     REQUIRE(r.code == 0);
 
-    std::string provider = read_file(graph_file(tmp.path, "linux-dev", "content.provider.json"));
+    std::string provider = read_file(graph_file(tmp.path, "linux-dev", "content.assets.json"));
     INFO(provider);
     CHECK(provider.find("\"0123456789abcdef0123456789abcdef\"") != std::string::npos);
     CHECK(provider.find(Hash256::of_string("content/content/level.tasset").hex()) == std::string::npos);

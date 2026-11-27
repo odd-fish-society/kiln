@@ -8,6 +8,7 @@
 #include "nlohmann/json.hpp"
 #include "core/trace_store.h"
 #include "workspace/build.h"
+#include "workspace/sweep.h"
 #include "workspace/workspace.h"
 
 namespace kiln {
@@ -16,26 +17,35 @@ using json = nlohmann::json;
 
 namespace {
 
-// Reads graph.json for the given config (or the most recently modified one).
+// The config the last build ran: the one whose graph.json is newest. Not a
+// config folder's own mtime: it changes only when an entry is added or
+// removed (a new variant folder), so an older config could look newest.
+std::string last_built_config(const fs::path& root) {
+    std::string chosen;
+    fs::file_time_type newest{};
+    std::error_code ec;
+    for (auto& e : fs::directory_iterator(root / ".kiln/graph", ec)) {
+        if (!e.is_directory(ec))
+            continue;
+        std::error_code fec;
+        auto t = fs::last_write_time(e.path() / "graph.json", fec);
+        if (fec)
+            continue;
+        if (chosen.empty() || t > newest) {
+            chosen = e.path().filename().generic_string();
+            newest = t;
+        }
+    }
+    return chosen;
+}
+
+// Reads graph.json for the given config (or the last built one).
 Result<json> load_graph(const fs::path& root, const std::string& config) {
     fs::path graph_dir = root / ".kiln/graph";
     std::error_code ec;
     if (!fs::is_directory(graph_dir, ec))
         return Result<json>::fail("no built graph found — run `kiln build` first");
-    std::string chosen = config;
-    if (chosen.empty()) {
-        // Pick the most recently modified config dir.
-        fs::file_time_type newest{};
-        for (auto& e : fs::directory_iterator(graph_dir, ec)) {
-            if (e.is_directory(ec)) {
-                auto t = e.last_write_time(ec);
-                if (chosen.empty() || t > newest) {
-                    chosen = e.path().filename().generic_string();
-                    newest = t;
-                }
-            }
-        }
-    }
+    std::string chosen = config.empty() ? last_built_config(root) : config;
     if (chosen.empty())
         return Result<json>::fail("no graphs found under " + graph_dir.generic_string());
     auto content = util::read_file(graph_dir / chosen / "graph.json");
@@ -262,21 +272,7 @@ Result<int> cmd_setup_clion(const fs::path& root_in, const std::string& config) 
             return Result<int>::fail(found.error);
         root = *found;
     }
-    std::string cfg = config;
-    if (cfg.empty()) {
-        fs::path dir = root / ".kiln/compile_commands";
-        std::error_code ec;
-        fs::file_time_type newest{};
-        for (auto& e : fs::directory_iterator(dir, ec)) {
-            if (e.is_directory(ec)) {
-                auto t = e.last_write_time(ec);
-                if (cfg.empty() || t > newest) {
-                    cfg = e.path().filename().generic_string();
-                    newest = t;
-                }
-            }
-        }
-    }
+    std::string cfg = config.empty() ? last_built_config(root) : config;
     if (cfg.empty())
         return Result<int>::fail(
             "no compile_commands generated — run `kiln build` first");
@@ -310,6 +306,18 @@ Result<int> cmd_clean(const fs::path& root_in, bool traces, bool dead) {
         PruneStats stats = prune_dead_cooks(root, store);
         std::printf("removed %zu stale cooked output%s (%zu dead trace%s)\n", stats.files,
                     stats.files == 1 ? "" : "s", stats.traces, stats.traces == 1 ? "" : "s");
+        auto ws = load_workspace(root);
+        if (!ws.ok())
+            return Result<int>::fail(ws.error);
+        std::set<std::string> targets;
+        for (auto& [name, _] : ws->targets)
+            targets.insert(name);
+        SweepStats swept = sweep_all_variants(root, targets);
+        std::printf("removed %zu variant folder%s no target's last build used\n", swept.folders,
+                    swept.folders == 1 ? "" : "s");
+        if (swept.unrecorded_targets > 0)
+            std::printf("(a target not built in a config since its records began had nothing "
+                        "kept there; it recompiles on its next build)\n");
         return Result<int>::success(0);
     }
     std::error_code ec;

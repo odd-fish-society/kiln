@@ -68,6 +68,11 @@ public:
     // satisfied immediately; tasks are not run until run().
     Result<size_t> add(TaskDecl decl);
 
+    // While set, every add() appends the task's index (new or already in the
+    // graph) to `sink`: one graph holds every target of a run, and each
+    // target's reports name the tasks it asked for. Main thread only.
+    void record_into(std::vector<size_t>* sink) { record_ = sink; }
+
     // Drains the ready queue. Blocks until the graph is idle. Returns error on
     // task-level cycle detection.
     Result<void> run();
@@ -128,6 +133,7 @@ private:
     bool dispatching_ = false;
     bool shutdown_ = false;
     bool failed_ = false;
+    std::vector<size_t>* record_ = nullptr;
     std::vector<std::thread> workers_;
 };
 

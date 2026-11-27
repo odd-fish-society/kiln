@@ -44,13 +44,40 @@ Result<size_t> Scheduler::add(TaskDecl decl) {
     std::unique_lock lock(mu_);
     auto th = decl.id.stable_hash();
     auto existing = graph_.find(th);
-    if (existing)
+    if (existing) {
+        // One identity, one piece of work: a second request must ask for
+        // exactly what the first did (targets of a run share the graph).
+        const TaskDecl& have = graph_.nodes()[*existing].decl;
+        if (have.params != decl.params || have.declared_outputs != decl.declared_outputs ||
+            have.declared_inputs != decl.declared_inputs) {
+            std::string what = "its outputs or inputs";
+            for (auto& [k, v] : decl.params) {
+                auto it = have.params.find(k);
+                if (it == have.params.end() || it->second != v) {
+                    what = "param '" + k + "'";
+                    break;
+                }
+            }
+            if (what == "its outputs or inputs")
+                for (auto& [k, v] : have.params)
+                    if (!decl.params.count(k)) {
+                        what = "param '" + k + "'";
+                        break;
+                    }
+            return Result<size_t>::fail("task " + decl.id.display() +
+                                        " is requested twice differently (" + what + ")");
+        }
+        if (record_)
+            record_->push_back(*existing);
         return Result<size_t>::success(*existing);
+    }
 
     auto idx_res = graph_.add(std::move(decl));
     if (!idx_res.ok())
         return Result<size_t>::fail(idx_res.error);
     size_t idx = *idx_res;
+    if (record_)
+        record_->push_back(idx);
 
     runtime_.resize(graph_.size());
     session_.resize(graph_.size());
