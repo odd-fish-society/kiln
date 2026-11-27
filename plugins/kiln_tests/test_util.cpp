@@ -171,19 +171,19 @@ bool file_exists(const fs::path& p) {
 
 std::map<std::string, std::string> basic_fixture_files() {
     return {
-        {"kiln.workspace.luau",
+        {"kiln.workspace.cluau",
          "workspace \"demo\" {\n  pools = { link = 1 },\n  strict_globs = true,\n  "
          "cpp_std = \"c++20\",\n  default_config = \"dev\",\n}\n"},
-        {"build/demo.target.luau",
+        {"build/demo.target.cluau",
          "target \"demo\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n "
          " link = { \"app/main\" },\n}\n"},
-        {"plugins/core/plugin.build.luau",
+        {"plugins/core/plugin.build.cluau",
          "plugin \"core\" {}\n\nmodule \"core\" {\n  sources = glob(\"src/*.cpp\"),\n  "
          "public_includes = { \"include\" },\n}\n"},
         {"plugins/core/include/core.h", "#pragma once\nint core_value();\n"},
         {"plugins/core/src/core.cpp",
          "#include \"core.h\"\nint core_value() { return 42; }\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" { public_deps = { \"core\" } }\n\nmodule \"main\" {\n  sources = "
          "glob(\"src/*.cpp\"),\n  deps = { public = { \"core/core\" } },\n}\n"},
         {"plugins/app/src/main.cpp",

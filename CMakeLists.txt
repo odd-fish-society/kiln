@@ -1,4 +1,4 @@
-# Kiln: a content-hashed build pipeline with Luau/cluau manifests
+# Kiln: a content-hashed build pipeline with cluau manifests
 #
 # NOTE (do not delete): this CMake build is the PERMANENT external-build bootstrap
 # ("escape hatch") for Kiln's self-hosting chain. Kiln builds itself via
@@ -43,8 +43,9 @@ add_library(sqlite3 STATIC plugins/sqlite/sqlite3.c)
 target_include_directories(sqlite3 PUBLIC plugins/sqlite)
 target_compile_definitions(sqlite3 PRIVATE SQLITE_THREADSAFE=1 SQLITE_DQS=0)
 
-# ---- cluau: the.cluau manifest translator (no deps) -------
-file(GLOB CLUAU_SOURCES CONFIGURE_DEPENDS plugins/cluau/cluau/src/translate/*.cpp)
+# ---- cluau: the manifest translator and converter (no deps) ----
+file(GLOB CLUAU_SOURCES CONFIGURE_DEPENDS plugins/cluau/cluau/src/translate/*.cpp
+  plugins/cluau/cluau/src/convert/*.cpp)
 add_library(cluau STATIC ${CLUAU_SOURCES})
 target_include_directories(cluau PUBLIC plugins/cluau/cluau/include
   PRIVATE plugins/cluau/cluau/src/translate)

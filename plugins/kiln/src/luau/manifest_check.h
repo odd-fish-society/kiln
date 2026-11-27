@@ -1,10 +1,10 @@
 #pragma once
 
 // `kiln check`: the manifests type-checked against
-// types/build.d.luau before anything evaluates them. A .cluau manifest is
+// types/build.d.luau before anything evaluates them. Every manifest is cluau,
 // checked in Luau's strict mode with cluau's strict rules (no `any` without
-// an `// allow-any: <reason>` exemption, annotations, `const`); a .luau one
-// in nonstrict mode (type errors only). `require "build/x"` resolves to the
+// an `// allow-any: <reason>` exemption, annotations, `const`).
+// `require "build/x"` resolves to the
 // helper module itself, so its type flows into the manifest that requires it.
 
 #include <filesystem>

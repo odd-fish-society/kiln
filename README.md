@@ -9,8 +9,8 @@ the object comes out the same, nothing downstream runs either. Shaders, textures
 fonts are cooked by ordinary tasks in the same graph, so they get the same caching,
 parallelism and error reporting as your compiles.
 
-You describe a project in Luau manifests (or cluau, a brace-style dialect of Luau). They
-run in a sandbox, they're type-checked, and your editor can autocomplete them. Code is
+You describe a project in manifests written in cluau, a brace-style dialect of Luau.
+They run in a sandbox and `kiln check` type-checks them. Code is
 organised into plugins, each with public and private dependencies, and each can be
 switched on or off per target, platform or config. Plugins can live in layered roots,
 such as external, engine, tools and game, and Kiln refuses a dependency that points to a
@@ -53,25 +53,25 @@ The smallest useful workspace has three files and some sources:
 
 ```
 mygame/
-  kiln.workspace.luau
-  build/game.target.luau
-  plugins/core/plugin.build.luau
+  kiln.workspace.cluau
+  build/game.target.cluau
+  plugins/core/plugin.build.cluau
   plugins/core/include/  src/
 ```
 
-`kiln.workspace.luau`:
+`kiln.workspace.cluau`:
 
-```lua
-workspace {
+```cluau
+workspace "mygame" {
     cpp_std = "c++20",
     pools = { link = 2 },
     tools = { glslc = "glslc", basisu = "basisu" },
 }
 ```
 
-`plugins/core/plugin.build.luau`:
+`plugins/core/plugin.build.cluau`:
 
-```lua
+```cluau
 plugin "core" {}
 
 module "core" {
@@ -80,13 +80,13 @@ module "core" {
 }
 ```
 
-`build/game.target.luau`:
+`build/game.target.cluau`:
 
-```lua
+```cluau
 target "game" {
     platforms = { "linux" },
     default_config = "dev",
-    link = { "core" },
+    link = { "core/core" },   // plugin/module
 }
 ```
 
@@ -107,8 +107,8 @@ tiers, you can declare several roots instead. Each root is a layer, the order yo
 them in is the layer order, and a plugin may depend only on plugins in its own layer or
 a lower one:
 
-```lua
-workspace {
+```cluau
+workspace "mygame" {
     cpp_std = "c++20",
     pools = { link = 2 },
     tools = { glslc = "glslc", basisu = "basisu" },
@@ -123,8 +123,8 @@ workspace {
 
 ```
 mygame/
-  kiln.workspace.luau
-  build/game.target.luau  editor.target.luau
+  kiln.workspace.cluau
+  build/game.target.cluau  editor.target.cluau
   external/stb/
   engine/core/  renderer/  audio/
   tools/level_editor/
@@ -135,6 +135,19 @@ A plugin's layer is the root it sits in, so there's no field to get wrong. If an
 plugin depends on a game plugin, the error names both plugins, their layers and the line
 to fix. Dependencies refer to plugins by name, never by path, so moving a plugin to
 another root is a `git mv` and nothing else.
+
+### Coming from Luau manifests
+
+Kiln 0.2 reads cluau manifests only. If a workspace still has Luau ones, Kiln stops at
+the first and names it, and `kiln convert` moves them across:
+
+```sh
+kiln convert kiln.workspace.luau build/*.target.luau plugins/*/plugin.build.luau
+```
+
+It writes each `.cluau` file beside its `.luau`, checks that the result translates back
+to the same code, and only then removes the old file. Add `--check` to see what it
+would do first.
 
 ## Day-to-day commands
 
@@ -152,11 +165,11 @@ kiln smoke                          # run the workspace's hamr suite
 kiln <command> [args...]            # a command your workspace declares (see kiln --help)
 ```
 
-A workspace can add its own commands in `kiln.workspace.luau`. Kiln builds the targets
+A workspace can add its own commands in `kiln.workspace.cluau`. Kiln builds the targets
 the command lists, then runs its program from the workspace root with your arguments
 added at the end:
 
-```lua
+```cluau
 command "audit" {
     help = "Audit the release binaries",
     build = { "auditor" },
@@ -175,40 +188,41 @@ TeamCity service messages when it runs under TeamCity.
 
 ## Writing manifests
 
-Manifests are Luau running in a sandbox. You can loop and build declarations in code,
+Manifests are cluau, translated to Luau and run in a sandbox. You can loop and build
+declarations in code,
 but a manifest can't read files, check the clock or make random numbers. That's what
 lets Kiln cache a manifest's evaluation like any other step. There are four kinds of
 declaration.
 
-A `plugin` is the unit you depend on and switch on or off. Each `plugin.build.luau`
+A `plugin` is the unit you depend on and switch on or off. Each `plugin.build.cluau`
 declares one:
 
-```lua
+```cluau
 plugin "audio" {
-    public_deps  = { "core" },       -- whoever uses audio also sees core's headers
-    private_deps = { "dsp" },        -- an implementation detail of audio
-    optional_deps = { "profiler" },  -- defines KILN_HAS_PROFILER as 0 or 1
+    public_deps  = { "core" },       // whoever uses audio also sees core's headers
+    private_deps = { "dsp" },        // an implementation detail of audio
+    optional_deps = { "profiler" },  // defines KILN_HAS_PROFILER as 0 or 1
     supported_platforms = { "linux", "windows" },
-    supported_configs   = { "dev", "editor" },   -- for example, never in shipping
+    supported_configs   = { "dev", "editor" },   // for example, never in shipping
     enabled_by_default  = true,
 }
 ```
 
 A `module` is compiled code inside a plugin:
 
-```lua
+```cluau
 module "mixer" {
     sources = glob "src/mixer/**.cpp",
     public_includes = { "include" },
     public_defines  = { "AUDIO_ENABLED=1" },
     deps = { private = { "dsp" } },
-    platforms = { "linux" },         -- a filter, not logic
+    platforms = { "linux" },         // a filter, not logic
 }
 ```
 
 A `cook` turns assets into their built form:
 
-```lua
+```cluau
 cook "ui_atlas" {
     rule = "cook_texture",
     inputs = glob "content/ui/*.png",
@@ -216,12 +230,12 @@ cook "ui_atlas" {
 }
 ```
 
-A `target` lives in `build/*.target.luau` and is what you actually build:
+A `target` lives in `build/*.target.cluau` and is what you actually build:
 
-```lua
+```cluau
 target "game" {
     platforms = { "linux", "windows" },
-    link = { "core", "audio", "game" },
+    link = { "gameplay/main" },   // its dependencies link with it
     enable_plugins  = { "net" },
     disable_plugins = { "devtools" },
     features = { renderer = "vulkan" },
@@ -233,10 +247,11 @@ gives you a build that is subtly wrong. Keep a plugin's sources and content insi
 in `src/`, `include/` and `content/`, and give even a vendored library its own plugin.
 A `../` glob can help while you migrate a tree, but don't keep it. Glob results are
 sorted and hashed, so a new file is picked up without any work from you. Shared helpers
-go in `build/*.luau`, and you pull them in with `require "build/helpers"`.
+go in `build/*.cluau`, and you pull them in with `require "build/helpers"`.
 
-For editor support, copy the provided `.luaurc` and point luau-lsp at
-`types/build.d.luau`. You'll get completion and type errors for every field above.
+`kiln check` type-checks every manifest against `types/build.d.luau` in strict mode, with
+the errors on your cluau lines, so it's worth running before you build. There's no
+language server for cluau manifests yet.
 
 ## Writing rules
 
@@ -246,7 +261,7 @@ ships `cook_shader`, `cook_texture`, `cook_font` and `cook_copy` in
 libraries of its own:
 
 ```
-workspace "game" { rules = { "build/rules/gen" } }
+workspace "mygame" { rules = { "build/rules/gen" } }
 ```
 
 `build/rules/gen.cluau`:

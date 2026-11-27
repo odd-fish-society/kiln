@@ -19,25 +19,25 @@ namespace {
 // core ← audio ← game fixture.
 std::map<std::string, std::string> fixture() {
     return {
-        {"kiln.workspace.luau",
+        {"kiln.workspace.cluau",
          "workspace \"k5\" {\n  pools = { link = 1 },\n  strict_globs = true,\n}\n"},
-        {"build/game.target.luau",
+        {"build/game.target.cluau",
          "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n "
          " link = { \"game/main\" },\n}\n"},
-        {"plugins/core/plugin.build.luau",
+        {"plugins/core/plugin.build.cluau",
          "plugin \"core\" {}\nmodule \"core\" {\n  sources = glob(\"src/*.cpp\"),\n  "
          "public_includes = { \"include\" },\n}\n"},
         {"plugins/core/include/core.h", "#pragma once\nint core_value();\n"},
         {"plugins/core/src/core.cpp",
          "#include \"core.h\"\nint core_value() { return 1; }\n"},
         {"plugins/audio/include/audio.h", "#pragma once\nint audio_value();\n"},
-        {"plugins/audio/plugin.build.luau",
+        {"plugins/audio/plugin.build.cluau",
          "plugin \"audio\" { public_deps = { \"core\" } }\n"
          "module \"audio\" {\n  sources = glob(\"src/*.cpp\"),\n  deps = { public = { "
          "\"core/core\" } },\n  public_includes = { \"include\" },\n}\n"},
         {"plugins/audio/src/audio.cpp",
          "#include \"core.h\"\nint audio_value() { return core_value() + 1; }\n"},
-        {"plugins/game/plugin.build.luau",
+        {"plugins/game/plugin.build.cluau",
          "plugin \"game\" { public_deps = { \"audio\" } }\n"
          "module \"main\" {\n  sources = glob(\"src/*.cpp\"),\n  deps = { public = { "
          "\"audio/audio\" } },\n}\n"},
@@ -107,18 +107,18 @@ TEST_CASE("K5.2 edit core .cpp ⇒ dependents relink, never recompile") {
  TEST_CASE("K5.9 edit a NON-first module archive ⇒ dependents relink (multi-archive impl_hash)") {
     TempDir tmp;
     write_tree(tmp.path, {
-        {"kiln.workspace.luau",
+        {"kiln.workspace.cluau",
          "workspace \"k5m\" {\n  pools = { link = 1 },\n  strict_globs = true,\n}\n"},
-        {"build/game.target.luau",
+        {"build/game.target.cluau",
          "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n "
          " link = { \"app/main\" },\n}\n"},
-        {"plugins/lib/plugin.build.luau",
+        {"plugins/lib/plugin.build.cluau",
          "plugin \"lib\" {}\n"
          "module \"first\" { sources = glob(\"src/first.cpp\") }\n"
          "module \"second\" { sources = glob(\"src/second.cpp\") }\n"},
         {"plugins/lib/src/first.cpp", "int first() { return 1; }\n"},
         {"plugins/lib/src/second.cpp", "int second() { return 2; }\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" { public_deps = { \"lib\" } }\n"
          "module \"main\" { sources = glob(\"src/*.cpp\") }\n"},
         {"plugins/app/src/main.cpp",
@@ -135,24 +135,24 @@ TEST_CASE("K5.2 edit core .cpp ⇒ dependents relink, never recompile") {
     }
     auto r = run_kiln(tmp.path, build_args());
     REQUIRE(r.code == 0);
-    CHECK(r.out.find("] ok build/game.target.luau/link") != std::string::npos);
+    CHECK(r.out.find("] ok build/game.target.cluau/link") != std::string::npos);
     CHECK(read_file(tmp.path / ".kiln/out/linux-dev/bin/game") != before);
 }
 
 TEST_CASE("K5.10 removing a source drops its archive member (archive built fresh)") {
     TempDir tmp;
     write_tree(tmp.path, {
-        {"kiln.workspace.luau",
+        {"kiln.workspace.cluau",
          "workspace \"k5r\" {\n  pools = { link = 1 },\n  strict_globs = true,\n}\n"},
-        {"build/game.target.luau",
+        {"build/game.target.cluau",
          "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n "
          " link = { \"app/main\" },\n}\n"},
-        {"plugins/lib/plugin.build.luau",
+        {"plugins/lib/plugin.build.cluau",
          "plugin \"lib\" {}\n"
          "module \"lib\" { sources = glob(\"src/*.cpp\") }\n"},
         {"plugins/lib/src/keep.cpp", "int keep() { return 1; }\n"},
         {"plugins/lib/src/drop.cpp", "int drop() { return 2; }\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" { public_deps = { \"lib\" } }\n"
          "module \"main\" { sources = glob(\"src/*.cpp\") }\n"},
         {"plugins/app/src/main.cpp", "int keep(); int main() { return keep() - 1; }\n"},
@@ -183,15 +183,15 @@ TEST_CASE("a thin archive relinks on a member edit that keeps its size and symbo
     // can stay the same across an edit; its member record must not.
     TempDir tmp;
     write_tree(tmp.path, {
-        {"kiln.workspace.luau",
+        {"kiln.workspace.cluau",
          "workspace \"k5t\" {\n  pools = { link = 1 },\n  strict_globs = true,\n}\n"},
-        {"build/game.target.luau",
+        {"build/game.target.cluau",
          "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n "
          " link = { \"app/main\" },\n}\n"},
-        {"plugins/lib/plugin.build.luau",
+        {"plugins/lib/plugin.build.cluau",
          "plugin \"lib\" {}\nmodule \"lib\" { sources = glob(\"src/*.cpp\") }\n"},
         {"plugins/lib/src/keep.cpp", "int keep() { return 1; }\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" { public_deps = { \"lib\" } }\n"
          "module \"main\" { sources = glob(\"src/*.cpp\") }\n"},
         {"plugins/app/src/main.cpp", "int keep(); int main() { return keep() - 1; }\n"},
@@ -237,11 +237,11 @@ TEST_CASE("K5.4 comment edit in a manifest re-expands; early cutoff stops downst
     REQUIRE(run_kiln(tmp.path, build_args()).code == 0);
 
     {
-        std::ifstream in(tmp.path / "plugins/audio/plugin.build.luau");
+        std::ifstream in(tmp.path / "plugins/audio/plugin.build.cluau");
         std::string content((std::istreambuf_iterator<char>(in)),
                             std::istreambuf_iterator<char>());
-        content = "-- unrelated comment\n" + content;
-        std::ofstream out(tmp.path / "plugins/audio/plugin.build.luau");
+        content = "// unrelated comment\n" + content;
+        std::ofstream out(tmp.path / "plugins/audio/plugin.build.cluau");
         out << content;
     }
     auto r = run_kiln(tmp.path, build_args());
@@ -270,10 +270,10 @@ TEST_CASE("query without --config reads the graph the last build wrote") {
     // variant folder), so it is no sign of which config was built last.
     TempDir tmp;
     write_tree(tmp.path, {
-        {"kiln.workspace.luau", "workspace \"q\" { strict_globs = true }\n"},
-        {"build/game.target.luau",
+        {"kiln.workspace.cluau", "workspace \"q\" { strict_globs = true }\n"},
+        {"build/game.target.cluau",
          "target \"game\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"app/main\" } }\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" {}\nmodule \"main\" { sources = glob(config.config == \"dev\" and "
          "\"dev/*.cpp\" or \"rel/*.cpp\") }\n"},
         {"plugins/app/dev/main.cpp", "int main() { return 0; }\n"},
@@ -316,7 +316,7 @@ TEST_CASE("K5.7 plugin cycle errors with a readable chain") {
     write_tree(tmp.path, fixture());
     // Introduce a cycle: core depends on audio.
     {
-        std::ofstream f(tmp.path / "plugins/core/plugin.build.luau");
+        std::ofstream f(tmp.path / "plugins/core/plugin.build.cluau");
         f << "plugin \"core\" { public_deps = { \"audio\" } }\n"
              "module \"core\" { sources = glob(\"src/*.cpp\"), public_includes = { "
              "\"include\" } }\n";
@@ -330,7 +330,7 @@ TEST_CASE("K5.8 undeclared cross-plugin reference is a hard error") {
     TempDir tmp;
     write_tree(tmp.path, fixture());
     {
-        std::ofstream f(tmp.path / "plugins/game/plugin.build.luau");
+        std::ofstream f(tmp.path / "plugins/game/plugin.build.cluau");
         f << "plugin \"game\" { }\n"
              "module \"main\" { sources = glob(\"src/*.cpp\") }\n";
     }
@@ -356,7 +356,7 @@ TEST_CASE("K5b.1 cross-plugin overlap: game compiles before core's link finishes
         f << "#!/bin/sh\nsleep 2\nexec /usr/bin/ar \"$@\"\n";
     }
     chmod(ar.c_str(), 0755);
-    files["kiln.workspace.luau"] =
+    files["kiln.workspace.cluau"] =
         "workspace \"k5\" {\n  pools = { link = 1 },\n  strict_globs = true,\n"
         "  tools = { ar = \"" +
         ar.generic_string() + "\" },\n}\n";
@@ -427,7 +427,7 @@ TEST_CASE("K5c.1 toolchain upgrade: a changed compiler reruns compiles + link") 
     };
     write_cxx("v1");
     chmod(cxx.c_str(), 0755);
-    files["kiln.workspace.luau"] =
+    files["kiln.workspace.cluau"] =
         "workspace \"k5\" {\n  pools = { link = 1 },\n  strict_globs = true,\n"
         "  tools = { cxx = \"" +
         cxx.generic_string() + "\" },\n}\n";
@@ -471,7 +471,7 @@ TEST_CASE("K5c.2 the pinned linker (tools.ld): passed as --ld-path, a changed li
         f << "#!/bin/sh\n# " << tag << "\n";
     };
     write_ld("v1");
-    files["kiln.workspace.luau"] =
+    files["kiln.workspace.cluau"] =
         "workspace \"k5\" {\n  pools = { link = 1 },\n  strict_globs = true,\n"
         "  tools = { cxx = \"" +
         cxx.generic_string() + "\", ld = \"" + ld.generic_string() + "\" },\n}\n";
@@ -507,10 +507,10 @@ TEST_CASE("K5.10 two targets with different features keep their own graph files 
     // tasks (they used to rewrite one shared path in turn).
     TempDir tmp;
     auto files = fixture();
-    files["build/tool.target.luau"] =
+    files["build/tool.target.cluau"] =
         "target \"tool\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
         "  features = { flavor = \"tool\" },\n  link = { \"game/main\" },\n}\n";
-    files["plugins/core/plugin.build.luau"] =
+    files["plugins/core/plugin.build.cluau"] =
         "plugin \"core\" {}\nmodule \"core\" {\n  sources = glob(\"src/*.cpp\"),\n"
         "  public_includes = { \"include\" },\n"
         "  public_defines = { config.features.flavor == \"tool\" and \"CORE_TOOL=1\" or \"CORE_GAME=1\" },\n}\n";
@@ -553,16 +553,16 @@ TEST_CASE("the targets of one run build in one graph: b compiles before a's arch
     }
     chmod(ar.c_str(), 0755);
     write_tree(tmp.path, {
-        {"kiln.workspace.luau",
+        {"kiln.workspace.cluau",
          "workspace \"k5g\" {\n  strict_globs = true,\n  tools = { ar = \"" + ar.generic_string() +
              "\" },\n}\n"},
-        {"build/a.target.luau",
+        {"build/a.target.cluau",
          "target \"a\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"one/main\" } }\n"},
-        {"build/b.target.luau",
+        {"build/b.target.cluau",
          "target \"b\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"two/main\" } }\n"},
-        {"plugins/one/plugin.build.luau", "plugin \"one\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"},
+        {"plugins/one/plugin.build.cluau", "plugin \"one\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"},
         {"plugins/one/src/main.cpp", "int main() { return 0; }\n"},
-        {"plugins/two/plugin.build.luau", "plugin \"two\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"},
+        {"plugins/two/plugin.build.cluau", "plugin \"two\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"},
         {"plugins/two/src/main.cpp", "int main() { return 0; }\n"},
     });
     kiln::rules::register_builtin_rules();

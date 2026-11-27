@@ -12,21 +12,21 @@ namespace {
 
 std::map<std::string, std::string> fixture() {
     return {
-        {"kiln.workspace.luau", "workspace \"k6\" { strict_globs = true }\n"},
-        {"build/game.target.luau",
+        {"kiln.workspace.cluau", "workspace \"k6\" { strict_globs = true }\n"},
+        {"build/game.target.cluau",
          "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n "
          " disable_plugins = { \"devtools\" },\n  link = { \"app/main\" },\n}\n"},
-        {"plugins/devtools/plugin.build.luau",
+        {"plugins/devtools/plugin.build.cluau",
          "plugin \"devtools\" { enabled_by_default = false, public_deps = { \"core\" } "
          "}\nmodule \"dt\" { sources = glob(\"src/*.cpp\") }\n"},
         {"plugins/devtools/src/dt.cpp", "int dt() { return 7; }\n"},
-        {"plugins/core/plugin.build.luau",
+        {"plugins/core/plugin.build.cluau",
          "plugin \"core\" {}\nmodule \"core\" { sources = glob(\"src/*.cpp\"), "
          "public_includes = { \"include\" } }\n"},
         {"plugins/core/include/core.h", "#pragma once\nint core_value();\n"},
         {"plugins/core/src/core.cpp",
          "#include \"core.h\"\nint core_value() { return 1; }\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" {\n  public_deps = { \"core\" },\n  optional_deps = { "
          "\"devtools\" },\n}\nmodule \"main\" {\n  sources = glob(\"src/*.cpp\"),\n  deps = "
          "{ public = { \"core/core\" } },\n  private_defines = { \"WITH_DT=1\" },\n}\n"},
@@ -104,7 +104,7 @@ TEST_CASE("K6.2 toggling devtools off→on rebuilds only what references it") {
 TEST_CASE("K6.3 enabling a plugin unsupported on this platform is an error") {
     TempDir tmp;
     auto files = fixture();
-    files["plugins/winonly/plugin.build.luau"] =
+    files["plugins/winonly/plugin.build.cluau"] =
         "plugin \"winonly\" { supported_platforms = { \"windows\" } }\n";
     write_tree(tmp.path, files);
     auto r = run_kiln(tmp.path, [&] {
@@ -120,7 +120,7 @@ TEST_CASE("K6.3 enabling a plugin unsupported on this platform is an error") {
 TEST_CASE("K6.4 dependency chain error names the whole chain") {
     TempDir tmp;
     auto files = fixture();
-    files["build/game.target.luau"] =
+    files["build/game.target.cluau"] =
         "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n "
         " disable_plugins = { \"core\" },\n  link = { \"app/main\" },\n}\n";
     write_tree(tmp.path, files);

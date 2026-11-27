@@ -168,15 +168,15 @@ TEST_CASE("R1.2 a workspace rule library: exec with env, depfile and dyndep; cac
 TEST_CASE("R1.3 lowering is part of the expansion: deterministic, recorded on the cook") {
     TempDir tmp;
     write_tree(tmp.path, {
-                             {"plugins/p/plugin.build.luau",
+                             {"plugins/p/plugin.build.cluau",
                               "plugin \"p\" {}\n"
                               "cook \"s\" { rule = \"cook_shader\", inputs = glob(\"c/*.frag\"), params = { "
                               "[\"define.1\"] = \"B=2\", [\"define.0\"] = \"A=1\", stage = \"frag\" } }\n"},
                              {"plugins/p/c/x.frag", ""},
                              {"plugins/p/c/y.frag", ""},
                          });
-    auto a = luau::evaluate_file(tmp.path / "plugins/p/plugin.build.luau", plugin_opts(tmp.path, "p"));
-    auto b = luau::evaluate_file(tmp.path / "plugins/p/plugin.build.luau", plugin_opts(tmp.path, "p"));
+    auto a = luau::evaluate_file(tmp.path / "plugins/p/plugin.build.cluau", plugin_opts(tmp.path, "p"));
+    auto b = luau::evaluate_file(tmp.path / "plugins/p/plugin.build.cluau", plugin_opts(tmp.path, "p"));
     INFO((a.ok() ? "" : a.error));
     REQUIRE(a.ok());
     REQUIRE(b.ok());
@@ -207,12 +207,12 @@ TEST_CASE("R1.4 rule errors name the cook, the rule and what is wrong") {
         write_tree(tmp.path, tree);
         auto o = plugin_opts(tmp.path, "p");
         o.rule_libraries = libraries;
-        auto r = luau::evaluate_file(tmp.path / "plugins/p/plugin.build.luau", o);
+        auto r = luau::evaluate_file(tmp.path / "plugins/p/plugin.build.cluau", o);
         return r.ok() ? std::string() : r.error;
     };
     auto manifest = [](const std::string& cook) {
         return std::map<std::string, std::string>{
-            {"plugins/p/plugin.build.luau", "plugin \"p\" {}\n" + cook}, {"plugins/p/c/x.frag", ""}};
+            {"plugins/p/plugin.build.cluau", "plugin \"p\" {}\n" + cook}, {"plugins/p/c/x.frag", ""}};
     };
 
     std::string e = eval_error(manifest("cook \"s\" { rule = \"cook_shadr\", inputs = glob(\"c/*.frag\") }\n"));
@@ -252,7 +252,14 @@ TEST_CASE("R1.4 rule errors name the cook, the rule and what is wrong") {
                    {"build/rules/missing"});
     CHECK(e.find("cannot find rule library 'build/rules/missing'") != std::string::npos);
 
-    e = eval_error({{"plugins/p/plugin.build.luau", "plugin \"p\" {}\nrule \"x\" { version = 1 }\n"}});
+    // A rule library left in Luau is refused, never treated as missing.
+    auto luau_tree = manifest("cook \"s\" { rule = \"cook_shader\", inputs = glob(\"c/*.frag\") }\n");
+    luau_tree["build/rules/old.luau"] = "rule \"old\" { version = 1, lower = function() return {} end }\n";
+    e = eval_error(luau_tree, {"build/rules/old"});
+    CHECK(e.find("build/rules/old.luau: Kiln reads cluau manifests only") != std::string::npos);
+    CHECK(e.find("`kiln convert build/rules/old.luau`") != std::string::npos);
+
+    e = eval_error({{"plugins/p/plugin.build.cluau", "plugin \"p\" {}\nrule \"x\" { version = 1 }\n"}});
     CHECK(e.find("`rule` is only allowed in a rule library") != std::string::npos);
 }
 

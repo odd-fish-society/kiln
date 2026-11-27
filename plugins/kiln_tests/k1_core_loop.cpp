@@ -173,7 +173,7 @@ TEST_CASE("digest stability and canonical hashing") {
 TEST_CASE("F3 link argv passes --build-id explicitly (spec §7a.3)") {
     TaskDecl d;
     d.id.rule = "link";
-    d.id.primary_input = "build/game.target.luau";
+    d.id.primary_input = "build/game.target.cluau";
     d.id.config_hash = Hash256::of_string("c");
     d.params["tool"] = "c++";
     d.params["out"] = ".kiln/out/bin/game";

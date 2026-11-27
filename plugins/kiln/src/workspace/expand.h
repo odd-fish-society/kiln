@@ -29,7 +29,7 @@ struct ExpansionMemo {
     std::map<std::string, PluginExpansion> results; // "<plugin>\n<platform>\n<config>\n<k=v>..."
 };
 
-// Evaluates plugins/<plugin>/plugin.build.luau in the manifest env.
+// Evaluates plugins/<plugin>/plugin.build.cluau in the manifest env.
 // Deterministic: same inputs ⇒ identical DeclSet (canary-tested).
 Result<PluginExpansion> expand_plugin(
     const Workspace& ws, const std::string& plugin, const std::string& platform,

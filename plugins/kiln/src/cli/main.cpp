@@ -100,7 +100,7 @@ int main(int argc, char** argv) {
 
     CLI::App app{
         "Kiln: content-hashed, incrementally-correct build pipeline.\n"
-        "Workspace: any directory containing kiln.workspace.luau.",
+        "Workspace: any directory containing kiln.workspace.cluau.",
         "kiln"};
     app.require_subcommand(1);
     app.set_version_flag("--version", std::string("kiln ") + kVersion);
@@ -200,10 +200,17 @@ int main(int argc, char** argv) {
     smoke->add_option("--workspace", s2_workspace, "workspace root (default: auto-detect)");
 
     // ---- check ----------------------------------------------------------------------
-    auto* check = app.add_subcommand("check", "Type-check the manifests against types/build.d.luau (cluau's strict rules for .cluau)");
+    auto* check = app.add_subcommand("check", "Type-check the manifests against types/build.d.luau with cluau's strict rules");
     std::string ck_workspace, ck_defs;
     check->add_option("--defs", ck_defs, "the manifest definitions (default: types/build.d.luau)");
     check->add_option("--workspace", ck_workspace, "workspace root (default: auto-detect)");
+
+    // ---- convert --------------------------------------------------------------------
+    auto* convert = app.add_subcommand("convert", "Convert Luau manifests to cluau (writes <stem>.cluau beside each, then removes the .luau)");
+    std::vector<std::string> cv_files;
+    bool cv_check = false;
+    convert->add_option("files", cv_files, "the .luau manifests, helpers or rule libraries")->required();
+    convert->add_flag("--check", cv_check, "show what would be converted and write nothing");
 
     // ---- clean ----------------------------------------------------------------------
     auto* clean = app.add_subcommand("clean", "Delete build outputs (and traces)");
@@ -328,6 +335,11 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
         } else if (*check) {
             auto r = cmd_check(fs::path(ck_workspace), ck_defs);
+            rc = r.ok() ? *r : 2;
+            if (!r.ok())
+                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
+        } else if (*convert) {
+            auto r = cmd_convert(cv_files, cv_check);
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());

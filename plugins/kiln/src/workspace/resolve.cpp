@@ -206,7 +206,7 @@ Result<void> check_plugin_cycles(const std::map<std::string, luau::PluginDecl>& 
             msg += cyc[i];
         }
         msg += " -> " + cyc.front();
-        msg += " (" + cyc.front() + "/plugin.build.luau:" +
+        msg += " (" + cyc.front() + "/plugin.build.cluau:" +
                std::to_string(plugins.at(cyc.front()).line) + ")";
         return Result<void>::fail(msg);
     }

@@ -17,11 +17,11 @@ using namespace kiln::testutil;
 TEST_CASE("K8.1 daemon rebuilds on file change and exits cleanly") {
     TempDir tmp;
     write_tree(tmp.path, {
-        {"kiln.workspace.luau", "workspace \"k8\" { strict_globs = true }\n"},
-        {"build/game.target.luau",
+        {"kiln.workspace.cluau", "workspace \"k8\" { strict_globs = true }\n"},
+        {"build/game.target.cluau",
          "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n "
          " link = { \"app/main\" },\n}\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"},
         {"plugins/app/src/main.cpp", "int main() { return 0; }\n"},
     });

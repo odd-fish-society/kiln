@@ -44,7 +44,7 @@ Result<int> cmd_check(const fs::path& root_in, const std::string& defs_in) {
         files.push_back(path);
     for (auto& e : fs::directory_iterator(root / "build", ec)) {
         const std::string ext = e.path().extension().generic_string();
-        if (e.is_regular_file(ec) && (ext == ".luau" || ext == ".cluau"))
+        if (e.is_regular_file(ec) && ext == ".cluau")
             files.push_back(util::norm(fs::relative(e.path(), root).generic_string()));
     }
     // The workspace's rule libraries (std/ ones are Kiln's, checked by its
@@ -53,11 +53,8 @@ Result<int> cmd_check(const fs::path& root_in, const std::string& defs_in) {
     for (auto& name : ws->config.rules) {
         if (util::starts_with(name, "std/"))
             continue;
-        for (const char* ext : {".cluau", ".luau"})
-            if (fs::is_regular_file(root / (name + ext), ec)) {
-                libraries.push_back(util::norm(name + ext));
-                break;
-            }
+        if (fs::is_regular_file(root / (name + ".cluau"), ec))
+            libraries.push_back(util::norm(name + ".cluau"));
     }
     files.insert(files.end(), libraries.begin(), libraries.end());
     std::sort(files.begin(), files.end());

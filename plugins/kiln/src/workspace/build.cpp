@@ -628,7 +628,7 @@ Result<BuildOutcome> run_build(const BuildOptions& opts, console::Renderer& rend
             specs.push_back(TargetSpec{ws->targets.begin()->first, "", ""});
         } else if (ws->targets.empty()) {
             return Result<BuildOutcome>::fail(
-                "no targets defined (no build/*.target.luau files)");
+                "no targets defined (no build/*.target.cluau files)");
         } else {
             std::string avail;
             for (auto& [name, t] : ws->targets)

@@ -1,12 +1,13 @@
 // cluau: C-syntax-flavoured Luau, its own repository (github.com/odd-fish-society/cluau)
 // checked out at cluau/ as a git submodule. A consuming workspace that also
 // vendors cluau pins the same commit (its own tooling checks that). Kiln
-// translates .cluau manifests with `cluau` (the translator: no dependencies).
+// translates manifests with `cluau` (the translator, no dependencies), and
+// `kiln convert` uses its Luau-to-cluau converter.
 
 plugin "cluau" {}
 
 c_library "cluau" {
-    sources = glob("cluau/src/translate/*.cpp"),
+    sources = { glob("cluau/src/translate/*.cpp"), glob("cluau/src/convert/*.cpp") },
     includes = { "cluau/include", "cluau/src/translate" },
     public_includes = { "cluau/include" },
     cpp_std = "c++17",

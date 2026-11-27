@@ -53,7 +53,6 @@ struct Watcher {
         fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
         if (fd < 0)
             return Result<void>::fail("inotify_init1 failed");
-        add_watch(root / "kiln.workspace.luau", false);
         add_watch(root / "kiln.workspace.cluau", false);
         std::error_code ec;
         // Every configured root. The default (no plugin_roots declared) is

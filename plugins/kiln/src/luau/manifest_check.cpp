@@ -49,16 +49,14 @@ struct ManifestFiles : ::Luau::FileResolver {
         return ::Luau::SourceCode{t.Luau, ::Luau::SourceCode::Module};
     }
 
-    // Kiln's require form: `require "build/x"` is build/x.cluau or build/x.luau.
+    // Kiln's require form: `require "build/x"` is build/x.cluau.
     std::optional<::Luau::ModuleInfo> resolveModule(const ::Luau::ModuleInfo*, ::Luau::AstExpr* node) override {
         auto* expr = node->as<::Luau::AstExprConstantString>();
         if (!expr)
             return std::nullopt;
         std::string rel = util::norm(std::string(expr->value.data, expr->value.size));
-        if (rel.find('.') == std::string::npos) {
-            std::error_code ec;
-            rel += fs::is_regular_file(root / (rel + ".cluau"), ec) ? ".cluau" : ".luau";
-        }
+        if (rel.find('.') == std::string::npos)
+            rel += ".cluau";
         std::error_code ec;
         if (!fs::is_regular_file(root / rel, ec))
             return std::nullopt;

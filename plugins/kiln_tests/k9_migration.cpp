@@ -111,11 +111,11 @@ TEST_CASE("KILN-2 pch rule is outputs_opaque (gch bytes are non-reproducible)") 
 TEST_CASE("KILN-2 pch end-to-end: recompiles on header edit, not on output loss") {
     TempDir tmp;
     write_tree(tmp.path, {
-        {"kiln.workspace.luau", "workspace \"k2\" { strict_globs = true }\n"},
-        {"build/game.target.luau",
+        {"kiln.workspace.cluau", "workspace \"k2\" { strict_globs = true }\n"},
+        {"build/game.target.cluau",
          "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
          "  link = { \"app/main\" },\n}\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" {}\nmodule \"main\" {\n  sources = glob(\"src/*.cpp\"),\n"
          "  pch = \"src/pch.h\",\n  private_includes = { \"src\" },\n}\n"},
         {"plugins/app/src/pch.h", "#pragma once\n#include <string>\n"},
@@ -172,17 +172,17 @@ TEST_CASE("KILN-3 syslibs propagate through c_library to the target link") {
     // A c_library whose implementation needs zlib at link time declares
     // public_syslibs={"z"}; the target does NOT declare it (KILN-3 propagation).
     write_tree(tmp.path, {
-        {"kiln.workspace.luau", "workspace \"k3\" { strict_globs = true }\n"},
-        {"build/game.target.luau",
+        {"kiln.workspace.cluau", "workspace \"k3\" { strict_globs = true }\n"},
+        {"build/game.target.cluau",
          "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
          "  link = { \"app/main\" },\n  link_flags = { \"-rdynamic\" },\n}\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" { public_deps = { \"zlib\" } }\n"
          "module \"main\" {\n  sources = glob(\"src/*.cpp\"),\n  deps = { public = { "
          "\"zlib/zt\" } },\n}\n"},
         {"plugins/app/src/main.cpp",
          "int zt();\nint main() { return zt() == 0 ? 0 : 1; }\n"},
-        {"plugins/zlib/plugin.build.luau",
+        {"plugins/zlib/plugin.build.cluau",
          "plugin \"zlib\" {}\n"
          "c_library \"zt\" {\n  sources = glob(\"src/*.cpp\"),\n"
          "  public_includes = { \"include\" },\n  public_syslibs = { \"z\" },\n}\n"},
@@ -239,21 +239,21 @@ TEST_CASE("KILN-2/3 manifest fields round-trip through the DeclSet JSON") {
     fs::create_directories(root / "plugins/p/src");
     write_tree(root, {{"plugins/p/src/a.cpp", ""},
                       {"plugins/p/tepch.h", "#pragma once\n"},
-                      {"plugins/p/plugin.build.luau",
+                      {"plugins/p/plugin.build.cluau",
                        "plugin \"p\" {}\n"
                        "module \"m\" {\n  sources = glob(\"src/*.cpp\"),\n"
                        "  pch = \"tepch.h\",\n"
                        "  syslibs = { \"dl\" },\n  public_syslibs = { \"m\" },\n}\n"
                        "c_library \"c\" {\n  sources = glob(\"src/*.cpp\"),\n"
                        "  public_syslibs = { \"z\" },\n}\n"},
-                      {"build/game.target.luau",
+                      {"build/game.target.cluau",
                        "target \"game\" {\n  platforms = { \"linux\" },\n"
                        "  syslibs = { \"X11\" },\n  link_flags = { \"-rdynamic\" },\n}\n"}});
     luau::ManifestEnvOptions o;
     o.workspace_root = root;
     o.manifest_dir = root / "plugins/p";
     o.kind = luau::FileKind::PluginManifest;
-    auto res = luau::evaluate_file(root / "plugins/p/plugin.build.luau", o);
+    auto res = luau::evaluate_file(root / "plugins/p/plugin.build.cluau", o);
     REQUIRE(res.ok());
     REQUIRE(res->decls.modules.size() == 1);
     CHECK(res->decls.modules[0].pch == "plugins/p/tepch.h");
@@ -272,7 +272,7 @@ TEST_CASE("KILN-2/3 manifest fields round-trip through the DeclSet JSON") {
     to.workspace_root = root;
     to.manifest_dir = root / "build";
     to.kind = luau::FileKind::TargetFile;
-    auto tres = luau::evaluate_file(root / "build/game.target.luau", to);
+    auto tres = luau::evaluate_file(root / "build/game.target.cluau", to);
     REQUIRE(tres.ok());
     CHECK(tres->decls.target->syslibs == std::vector<std::string>{"X11"});
     CHECK(tres->decls.target->link_flags == std::vector<std::string>{"-rdynamic"});
@@ -287,14 +287,14 @@ namespace {
 std::map<std::string, std::string> two_target_pch_tree(const std::string& cxx,
                                                        const std::string& feature_b) {
     return {
-        {"kiln.workspace.luau",
+        {"kiln.workspace.cluau",
          "workspace \"k2\" { strict_globs = true, tools = { cxx = \"" + cxx + "\" } }\n"},
-        {"build/a.target.luau",
+        {"build/a.target.cluau",
          "target \"a\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"app/main\" } }\n"},
-        {"build/b.target.luau",
+        {"build/b.target.cluau",
          "target \"b\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"app/main\" }, "
          "features = { x = \"" + feature_b + "\" } }\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" {}\nmodule \"main\" {\n  sources = glob(\"src/*.cpp\"),\n"
          "  pch = \"src/pch.h\",\n  private_includes = { \"src\" },\n"
          "  private_defines = { config.features.x == \"1\" and \"X=1\" or nil },\n}\n"},
@@ -452,12 +452,12 @@ TEST_CASE("KILN-2 two modules compiling one source with equal settings are two t
     // A flavor pair: the same sources under two module names (one per
     // target), compiled identically. Each module keeps its own objects.
     write_tree(tmp.path, {
-        {"kiln.workspace.luau", "workspace \"k2\" { strict_globs = true }\n"},
-        {"build/a.target.luau",
+        {"kiln.workspace.cluau", "workspace \"k2\" { strict_globs = true }\n"},
+        {"build/a.target.cluau",
          "target \"a\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"app/one\" } }\n"},
-        {"build/b.target.luau",
+        {"build/b.target.cluau",
          "target \"b\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"app/two\" } }\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" {}\n"
          "module \"one\" { sources = glob(\"src/*.cpp\") }\n"
          "module \"two\" { sources = glob(\"src/*.cpp\") }\n"},
@@ -477,11 +477,11 @@ TEST_CASE("KILN-2 two modules compiling one source with equal settings are two t
 TEST_CASE("compile_commands.json names the objects and PCHs the build wrote") {
     TempDir tmp;
     write_tree(tmp.path, {
-        {"kiln.workspace.luau", "workspace \"cc\" { strict_globs = true }\n"},
-        {"build/game.target.luau",
+        {"kiln.workspace.cluau", "workspace \"cc\" { strict_globs = true }\n"},
+        {"build/game.target.cluau",
          "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
          "  link = { \"app/main\" },\n}\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" {}\nmodule \"main\" {\n  sources = glob(\"src/*.cpp\"),\n"
          "  pch = \"src/pch.h\",\n  private_includes = { \"src\" },\n}\n"},
         {"plugins/app/src/pch.h", "#pragma once\n#include <string>\n"},
@@ -567,7 +567,7 @@ TEST_CASE("variant_folder_of names the variant folder of each output shape") {
 TEST_CASE("a settings change leaves only the new variant, a revert only the old") {
     TempDir tmp;
     write_tree(tmp.path, two_target_pch_tree("c++", "0"));
-    write_tree(tmp.path, {{"plugins/app/plugin.build.luau", manifest_with("A=1")}});
+    write_tree(tmp.path, {{"plugins/app/plugin.build.cluau", manifest_with("A=1")}});
     auto r1 = run_kiln(tmp.path, build_one("a"));
     INFO(r1.out);
     REQUIRE(r1.code == 0);
@@ -576,7 +576,7 @@ TEST_CASE("a settings change leaves only the new variant, a revert only the old"
     REQUIRE(variant_folders(tmp.path / kPchDir).size() == 1);
     REQUIRE(variant_folders(tmp.path / kLibDir).size() == 1);
 
-    write_tree(tmp.path, {{"plugins/app/plugin.build.luau", manifest_with("A=2")}});
+    write_tree(tmp.path, {{"plugins/app/plugin.build.cluau", manifest_with("A=2")}});
     auto r2 = run_kiln(tmp.path, build_one("a"));
     INFO(r2.out);
     REQUIRE(r2.code == 0);
@@ -587,7 +587,7 @@ TEST_CASE("a settings change leaves only the new variant, a revert only the old"
     CHECK(variant_folders(tmp.path / kLibDir).size() == 1);
     CHECK(r2.out.find("old variant folder") != std::string::npos);
 
-    write_tree(tmp.path, {{"plugins/app/plugin.build.luau", manifest_with("A=1")}});
+    write_tree(tmp.path, {{"plugins/app/plugin.build.cluau", manifest_with("A=1")}});
     auto r3 = run_kiln(tmp.path, build_one("a"));
     INFO(r3.out);
     REQUIRE(r3.code == 0);
@@ -603,14 +603,14 @@ TEST_CASE("a settings change leaves only the new variant, a revert only the old"
 TEST_CASE("a failed build after a settings change keeps the old variant") {
     TempDir tmp;
     write_tree(tmp.path, two_target_pch_tree("c++", "0"));
-    write_tree(tmp.path, {{"plugins/app/plugin.build.luau", manifest_with("A=1")}});
+    write_tree(tmp.path, {{"plugins/app/plugin.build.cluau", manifest_with("A=1")}});
     auto r1 = run_kiln(tmp.path, build_one("a"));
     INFO(r1.out);
     REQUIRE(r1.code == 0);
     const auto obj1 = variant_folders(tmp.path / kObjDir);
     REQUIRE(obj1.size() == 1);
 
-    write_tree(tmp.path, {{"plugins/app/plugin.build.luau", manifest_with("A=2")},
+    write_tree(tmp.path, {{"plugins/app/plugin.build.cluau", manifest_with("A=2")},
                           {"plugins/app/src/a.cpp", "#include \"pch.h\"\nint a() { return }\n"}});
     auto r2 = run_kiln(tmp.path, build_one("a"));
     INFO(r2.out);
@@ -646,7 +646,7 @@ TEST_CASE("a variant another target still builds stays; a removed target's go") 
     CHECK(both.count(*shared.begin()) == 1);
 
     // a leaves the workspace: the folder only it used goes, with its records.
-    fs::remove(tmp.path / "build/a.target.luau");
+    fs::remove(tmp.path / "build/a.target.cluau");
     auto r3 = run_kiln(tmp.path, build_one("b"));
     INFO(r3.out);
     REQUIRE(r3.code == 0);
@@ -684,16 +684,16 @@ TEST_CASE("clean --dead removes a variant folder no record lists and keeps the r
 TEST_CASE("compile_commands.json holds every target's entries, whichever was built last") {
     TempDir tmp;
     write_tree(tmp.path, {
-        {"kiln.workspace.luau", "workspace \"cc\" { strict_globs = true }\n"},
-        {"build/a.target.luau",
+        {"kiln.workspace.cluau", "workspace \"cc\" { strict_globs = true }\n"},
+        {"build/a.target.cluau",
          "target \"a\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"app/main\" }, "
          "disable_plugins = { \"tool\" } }\n"},
-        {"build/b.target.luau",
+        {"build/b.target.cluau",
          "target \"b\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"tool/main\" }, "
          "disable_plugins = { \"app\" } }\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"},
-        {"plugins/tool/plugin.build.luau",
+        {"plugins/tool/plugin.build.cluau",
          "plugin \"tool\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"},
         {"plugins/app/src/main.cpp", "int main() { return 0; }\n"},
         {"plugins/tool/src/t.cpp", "int main() { return 0; }\n"},

@@ -45,4 +45,7 @@ std::string command_listing(const fs::path& root);
 // .cluau manifests); 1 when any error.
 Result<int> cmd_check(const fs::path& root, const std::string& defs);
 
+// `kiln convert <file.luau>... [--check]`: Luau manifests to cluau, verified.
+Result<int> cmd_convert(const std::vector<std::string>& files, bool check_only);
+
 } // namespace kiln

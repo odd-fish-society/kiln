@@ -26,11 +26,11 @@ namespace {
 
 std::map<std::string, std::string> live_fixture() {
     return {
-        {"kiln.workspace.luau", "workspace \"k11\" { strict_globs = true, link_record = { \"dev\" } }\n"},
-        {"build/game.target.luau",
+        {"kiln.workspace.cluau", "workspace \"k11\" { strict_globs = true, link_record = { \"dev\" } }\n"},
+        {"build/game.target.cluau",
          "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n "
          " link = { \"app/main\" },\n}\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"},
         {"plugins/app/src/a.cpp", "int a_value() { return 1; }\n"},
         {"plugins/app/src/b.cpp", "int b_value() { return 2; }\n"},

@@ -82,11 +82,11 @@ TEST_CASE("K3.4 a moved/deleted recorded dynamic dep does not fail the digest") 
     // digest. The run re-discovers the current dep set.
     TempDir tmp;
     write_tree(tmp.path, {
-        {"kiln.workspace.luau", "workspace \"k3d\" { strict_globs = true }\n"},
-        {"build/game.target.luau",
+        {"kiln.workspace.cluau", "workspace \"k3d\" { strict_globs = true }\n"},
+        {"build/game.target.cluau",
          "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
          "  link = { \"app/main\" },\n}\n"},
-        {"plugins/app/plugin.build.luau",
+        {"plugins/app/plugin.build.cluau",
          "plugin \"app\" {}\nmodule \"main\" {\n  sources = glob(\"src/*.cpp\"),\n"
          "  private_includes = { \"src\" },\n}\n"},
         {"plugins/app/src/main.cpp", "#include \"thing.h\"\nint main() { return thing(); }\n"},

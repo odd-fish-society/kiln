@@ -23,7 +23,7 @@ luau::PluginDecl decl(const std::string& name, bool enabled_by_default = true,
     d.public_deps = std::move(pub);
     d.private_deps = std::move(priv);
     d.optional_deps = std::move(opt);
-    d.file = "plugins/" + name + "/plugin.build.luau";
+    d.file = "plugins/" + name + "/plugin.build.cluau";
     d.line = 1;
     return d;
 }
@@ -43,7 +43,7 @@ std::optional<luau::TargetDecl> target(std::string name,
     t.platforms = {"linux"};
     t.enable_plugins = std::move(enable);
     t.disable_plugins = std::move(disable);
-    t.file = "build/game.target.luau";
+    t.file = "build/game.target.cluau";
     t.line = 1;
     return t;
 }

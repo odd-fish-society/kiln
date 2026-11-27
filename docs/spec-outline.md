@@ -84,9 +84,9 @@ docs/                         this outline, decisions.md, kpak-format.md
 
 ```
 <workspace>/
-  kiln.workspace.luau         marks the root and holds global settings (plugin_roots too)
-  build/                      target files (*.target.luau) and shared helpers
-  <root>/<name>/plugin.build.luau     one per plugin, in each plugin root (default: plugins/)
+  kiln.workspace.cluau        marks the root and holds global settings (plugin_roots too)
+  build/                      target files (*.target.cluau) and shared helpers
+  <root>/<name>/plugin.build.cluau    one per plugin, in each plugin root (default: plugins/)
   <root>/<name>/src/  include/  content/
   .kiln/                      all of Kiln's state (gitignored): traces.sqlite,
                               hashcache.sqlite, graph/, out/, logs/, compile_commands/
@@ -96,12 +96,12 @@ A game project with layers usually looks like this:
 
 ```
 <workspace>/
-  kiln.workspace.luau
+  kiln.workspace.cluau
   build/
-  external/<name>/plugin.build.luau
-  engine/<name>/plugin.build.luau
-  tools/<name>/plugin.build.luau
-  game/<name>/plugin.build.luau
+  external/<name>/plugin.build.cluau
+  engine/<name>/plugin.build.cluau
+  tools/<name>/plugin.build.cluau
+  game/<name>/plugin.build.cluau
 ```
 
 Everything the graph builds lives inside a plugin directory: module sources (`src/`,
@@ -117,7 +117,7 @@ away from, not a layout to keep (§6.4).
 The workspace file may declare several plugin roots:
 
 ```lua
-workspace {
+workspace "mygame" {
     plugin_roots = {
         { path = "external", layer = "external" },
         { path = "engine",   layer = "engine" },
@@ -130,7 +130,7 @@ workspace {
 Without `plugin_roots` there is one root, `plugins`, and no layering, so a workspace
 that never mentions roots behaves as it always has. Each `path` is workspace-relative
 with forward slashes, and Kiln finds plugins in it the same way as in the single root:
-`<path>/*/plugin.build.luau`, one level deep.
+`<path>/*/plugin.build.cluau`, one level deep.
 
 Roots must not overlap. If one root's path equals another's or starts with it (`engine`
 and `engine/extra`), that's a configuration error and Kiln exits with code 2. A root
@@ -474,11 +474,11 @@ The tests check that an edit to an indirectly included shader file reruns exactl
 right shaders, that a removed include leaves the trace after one rebuild, and that
 reporting a path outside the workspace or SDK roots fails the task with a clear message.
 
-## 6. The Luau layer
+## 6. Manifests and rules
 
 ### 6.1 VM lifecycle
 
-Every manifest or target file is evaluated in a fresh `lua_State`, created from a shared
+Every manifest is cluau (§6.7), translated to Luau and then evaluated in a fresh `lua_State`, created from a shared
 cache of compiled bytecode keyed by the source's hash. The global table is built by
 hand and contains only the base library without `print` and `loadstring`, `table`,
 `string`, `math` without `random` and `randomseed`, `bit32`, and Kiln's API below.
@@ -500,52 +500,52 @@ required.
 
 ```
 plugin(name: string)(spec: {
-  enabled_by_default: boolean?,        -- default true
-  supported_platforms: {string}?,      -- absent: all
+  enabled_by_default: boolean?,        // default true
+  supported_platforms: {string}?,      // absent: all
   supported_configs: {string}?,
   public_deps: {string}?, private_deps: {string}?, optional_deps: {string}?,
-  version: string?,                    -- informational, not hashed
+  version: string?,                    // informational, not hashed
 })
 
 module(name: string)(spec: {
-  sources: FileSet*,                   -- from glob() or a list of paths
-  exclude: FileSet?,                   -- removed from sources after expansion (plugin-relative)
-  public_includes: {string}?,          -- plugin-relative directories; default {"include"}
+  sources: FileSet*,                   // from glob() or a list of paths
+  exclude: FileSet?,                   // removed from sources after expansion (plugin-relative)
+  public_includes: {string}?,          // plugin-relative directories; default {"include"}
   private_includes: {string}?,
   public_defines: {string}?, private_defines: {string}?,
-  deps: { public: {string}?, private: {string}? }?,  -- "plugin/module" or "module"
-  platforms: {string}?, configs: {string}?,          -- filters, data rather than logic
-  cpp_std: string?,                    -- default from the workspace
+  deps: { public: {string}?, private: {string}? }?,  // "plugin/module" or "module"
+  platforms: {string}?, configs: {string}?,          // filters, data rather than logic
+  cpp_std: string?,                    // default from the workspace
 })
 
 cook(name: string)(spec: {
-  rule: string*,                       -- a rule from a rule library (§6.8) or a C++ rule
+  rule: string*,                       // a rule from a rule library (§6.8) or a C++ rule
   inputs: FileSet*,
-  exclude: FileSet?,                   -- removed from inputs after expansion (plugin-relative)
-  params: {[string]: string}?,         -- flat, hashed
+  exclude: FileSet?,                   // removed from inputs after expansion (plugin-relative)
+  params: {[string]: string}?,         // flat, hashed
   platforms: {string}?, configs: {string}?,
 })
 
-target(name: string)(spec: {           -- only in build/*.target.luau
+target(name: string)(spec: {           // only in build/*.target.cluau
   platforms: {string}*, default_config: string?,
   enable_plugins: {string}?, disable_plugins: {string}?,
   features: {[string]: string}?,
-  link: {string}?,                     -- root modules linked into the binary
+  link: {string}?,                     // root modules linked into the binary
 })
 
-command(name: string)(spec: {          -- only in kiln.workspace.luau
-  help: string?,                       -- its line in `kiln --help`
-  build: {string}?,                    -- targets built first, in the command's config
-  run: {string}*,                      -- the argv, with the tokens below; the user's args follow
-  config: string?,                     -- default: the workspace's default_config
+command(name: string)(spec: {          // only in kiln.workspace.cluau
+  help: string?,                       // its line in `kiln --help`
+  build: {string}?,                    // targets built first, in the command's config
+  run: {string}*,                      // the argv, with the tokens below; the user's args follow
+  config: string?,                     // default: the workspace's default_config
 })
 
-glob(pattern: string) -> FileSet       -- see §6.4 (not available in rule libraries)
+glob(pattern: string) -> FileSet       // see §6.4 (not available in rule libraries)
 path.join(a, b), path.parent(p), path.basename(p),
 path.norm(p), path.extension(p), path.replace_extension(p, ext),
-path.relative(p, base)                 -- pure string helpers
-rule(name: string)(spec: { ... })      -- only in a rule library (§6.8)
-config: frozen table {platform, config, features}   -- read-only, for data filters
+path.relative(p, base)                 // pure string helpers
+rule(name: string)(spec: { ... })      // only in a rule library (§6.8)
+config: frozen table {platform, config, features}   // read-only, for data filters
 ```
 
 `plugin`, `module` and `cook` are only allowed in a plugin manifest, `target` only in a
@@ -584,8 +584,8 @@ exempt, since they define functions.
 ### 6.3 require()
 
 Kiln implements `require` itself. `require "build/cpp_defaults"` loads
-`<workspace>/build/cpp_defaults.luau`. A path with `..` or an absolute path is an
-error. A required module runs in the same restricted environment and is cached for the
+`<workspace>/build/cpp_defaults.cluau`. A path with `..` or an absolute path is an
+error, and so is a module left in Luau (§6.7). A required module runs in the same restricted environment and is cached for the
 rest of the evaluation, and each required file's path and content hash become inputs of
 the expansion.
 
@@ -626,9 +626,9 @@ measures already cover it.
 
 ### 6.6 build.d.luau
 
-`types/build.d.luau` holds complete luau-lsp type definitions for the API in §6.2, and
-the repository ships a `.luaurc` template for workspaces. The definitions follow the
-C++ API, and a test compares the exported names. `kiln check` (§6.7) loads them for
+`types/build.d.luau` holds complete Luau type definitions for the API in §6.2. They are
+a Luau file because definitions are, even though every manifest is cluau. The
+definitions follow the C++ API, and a test compares the exported names. `kiln check` (§6.7) loads them for
 every manifest, so they are real Luau declarations (`declare x: T`, never `declare
 const`), free of `any`, and describe exactly what the evaluator accepts. A FileSet can
 nest (`{ [number]: string | FileSet }`), a list of strings is `{ string? }` because nil
@@ -637,36 +637,58 @@ replace the built-in the checker uses to type a resolved module.
 
 ### 6.7 cluau manifests
 
-Any manifest can be written in cluau, the C-flavoured Luau dialect whose translator is
-vendored in `plugins/cluau`. That covers `kiln.workspace.cluau`, `build/*.target.cluau`,
-`plugins/<name>/plugin.build.cluau` and helpers under `build/<name>.cluau`. A directory
-may hold only one manifest per role, so having both names is an error, and
-`require "build/x"` finds `x.cluau` or `x.luau` (both is an error too).
+Every manifest is written in cluau, the C-flavoured Luau dialect whose translator is
+vendored in `plugins/cluau`. The roles are `kiln.workspace.cluau`, `build/*.target.cluau`,
+`plugins/<name>/plugin.build.cluau`, helpers under `build/<name>.cluau` and rule
+libraries (§6.8), and `require "build/x"` finds `x.cluau`.
 
-A `.cluau` manifest is translated in manifest mode, which forbids `function`, `while`,
+Kiln reads no other manifest language, and it never skips a manifest it can't read.
+Wherever it looks for a role and finds the old Luau name instead (a
+`plugin.build.luau`, a `kiln.workspace.luau` while walking up for the root, a
+`build/*.target.luau`, a required `build/x.luau` or a rule library `x.luau`), it stops
+with exit code 2 and names the file and the command that converts it:
+
+```
+plugins/audio/plugin.build.luau: Kiln reads cluau manifests only. Convert it with
+`kiln convert plugins/audio/plugin.build.luau`, which writes plugin.build.cluau beside it.
+```
+
+A Luau file beside its cluau form is refused the same way, so it can never quietly
+shadow or be shadowed. Other `.luau` files, such as a data file a project's own tool
+reads, aren't manifests and are left alone.
+
+`kiln convert <file.luau>... [--check]` uses cluau's own converter. For each file it
+converts the Luau, translates the result back and checks that it gives the same code,
+then writes `<stem>.cluau` beside the file and removes the `.luau`. It never overwrites
+an existing `.cluau`, and a file whose conversion fails or doesn't check out is left as
+it was. `--check` shows what it would convert and writes nothing. It doesn't load the
+workspace, since a workspace still on Luau no longer loads.
+
+A manifest is translated in manifest mode, which forbids `function`, `while`,
 `do { } while` and `class`, before the syntax check of §6.2 and the compile. The
 translation keeps every line where it was, so every `file:line` in a diagnostic points
 at the cluau source without any mapping. The expansion's parameters include the
 translator's version, so a new translator re-evaluates every manifest, and the
-determinism canary includes cluau fixtures. Kiln's own manifests are cluau.
+determinism canary runs on cluau fixtures.
 
 `kiln check` type-checks every manifest against the definitions of §6.6 before
-anything is evaluated: `.cluau` files in strict mode with cluau's own strict rules
-(`cluau_check`, vendored next to the translator), `.luau` files in nonstrict mode.
-`require "build/x"` resolves to the helper, so its types carry through, and diagnostics
-point at the cluau lines. `kiln smoke` runs the check.
+anything is evaluated, in strict mode with cluau's own strict rules (`cluau_check`,
+vendored next to the translator). `require "build/x"` resolves to the helper, so its
+types carry through, and diagnostics point at the cluau lines. `kiln smoke` runs the
+check, and it is also what editors have: there is no language server for cluau
+manifests yet.
 
 ### 6.8 Rule libraries
 
-A rule is written in cluau or Luau, not in Kiln's C++. A rule library declares rules:
+A rule is written in cluau, not in Kiln's C++. A rule library declares rules:
 
 ```
 rule(name: string)(spec: {
-  version: number*,          -- a positive integer, the rule_version of its tasks
-  params: {string}?,         -- the cook params it accepts: a name, or "name." and any suffix;
-                             --   absent: unchecked; anything else a cook passes is an error
-  kind: "cook" | "aggregate"?, -- default "cook" (see aggregate rules below)
-  prune_dead_outputs: boolean?, -- see dead outputs below
+  version: number*,          // a positive integer, the rule_version of its tasks
+  params: {string}?,         // the cook params it accepts: a name, or "name." and any suffix;
+                             //   absent: unchecked; anything else a cook passes is an error
+  kind: "cook" | "aggregate"?, // default "cook" (see aggregate rules below)
+  prune_dead_outputs: boolean?, // see dead outputs below
   lower: (cook, ctx) -> {Action}*,
 })
 ```
@@ -676,7 +698,7 @@ rule(name: string)(spec: {
 Kiln's standard library (`std/cook`, with its sources in
 `plugins/kiln/std/`) is compiled into the binary and always loaded. A workspace adds
 its own libraries with `workspace { rules = { "build/rules/x" } }`, resolved like
-`require` (`x.cluau` or `x.luau`, not both). A library is translated as an ordinary
+`require` (`x.cluau`; a library left in Luau is refused, §6.7). A library is translated as an ordinary
 cluau module, so functions are allowed, and runs in the manifest sandbox: no I/O, no
 clock, and no `glob` or declarations other than `rule`. It may require helpers. A rule
 name defined twice is an error that names both places.
@@ -988,8 +1010,8 @@ stripping or symbol stripping.
 Kiln resolves the plugin dependency graph from the manifests' dependency lists before it
 schedules any expansion. It finds strongly connected components with Tarjan's
 algorithm, and any component with more than one plugin is an error:
-`plugin dependency cycle: audio -> dsp -> audio (audio/plugin.build.luau:3,
-dsp/plugin.build.luau:5)`. Module dependencies inside a plugin are checked the same
+`plugin dependency cycle: audio -> dsp -> audio (audio/plugin.build.cluau:3,
+dsp/plugin.build.cluau:5)`. Module dependencies inside a plugin are checked the same
 way, and that error names modules.
 
 When layering is on (§0), the same pass checks layers. A plugin's layer is the layer of
@@ -1000,7 +1022,7 @@ Otherwise Kiln exits with 2 and this message:
 
 ```
 plugin 'renderer' (layer engine) depends on 'gameplay' (layer game). Dependencies must
-not point upward (engine/renderer/plugin.build.luau:4)
+not point upward (engine/renderer/plugin.build.cluau:4)
 ```
 
 The check only covers dependencies. A target may enable and link plugins from any mix
@@ -1116,7 +1138,7 @@ resolve_enabled(all_plugins, target, platform, config, cli_enable[], cli_disable
   Then every enabled plugin's non-optional dependencies must be enabled too;
   otherwise the error shows the whole chain:
     "target 'game': plugin 'audio' requires 'dsp', which is disabled by target 'game'
-     (build/game.target.luau:7). Enable 'dsp' or make the dependency optional."
+     (build/game.target.cluau:7). Enable 'dsp' or make the dependency optional."
   For each optional dependency, the parameter "KILN_HAS_<UPPER>=0|1" goes into the
   dependent's module compile parameters, so it's in their digests and flipping it
   recompiles the consumers. Public headers can use it through a generated header,
@@ -1236,10 +1258,10 @@ the IntelliJ Platform Gradle plugin and supports CLion 2024.2 and later. It is o
 client of `kiln plugins --json`, `kiln build`, `kiln query --json`, the serialized
 DeclSets and `why-dirty`. It has a tool window with a target and config picker, build
 and clean buttons and a console that links `path:line:col`. It has a tree of plugin
-checkboxes that writes overrides to `build/kiln.local.luau`, a layer between the target
+checkboxes that writes overrides to `build/kiln.local.cluau`, a layer between the target
 and the command line that isn't part of §8's resolution, and then regenerates
-compile_commands (§11). It runs luau-lsp on `*.luau` build files, and it offers why-dirty
-as a context action. It has no project model or indexing of its own; CLion's
+compile_commands (§11). It shows `kiln check`'s diagnostics on the build files, and it
+offers why-dirty as a context action. It has no project model or indexing of its own; CLion's
 compilation-database support does that.
 
 ## 13. Commands
@@ -1260,6 +1282,7 @@ kiln clean --dead                         # deletes dead cooks and variant folde
 kiln test [<target>] [-j N] [--platform=] [--config=]   # build and run; default: the test_target
 kiln smoke [--nightly] [-j N] [-- <hamr run args>]       # the workspace's hamr suite
 kiln check [--defs=]                      # type-check the manifests
+kiln convert <file.luau>... [--check]     # convert Luau manifests to cluau (§6.7)
 kiln run [--config=C] [-j N] [<name> [args...]]          # a workspace command (§6.2); no name lists them
 kiln <name> [args...]                     # the same, for any name that isn't a built-in verb
 ```

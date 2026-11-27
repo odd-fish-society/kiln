@@ -27,7 +27,7 @@ struct PluginRoot {
     std::string layer; // empty ⇒ layering disabled for this root
 };
 
-// Global workspace settings from kiln.workspace.luau.
+// Global workspace settings from kiln.workspace.cluau.
 struct WorkspaceConfig {
     std::string name;
     std::map<std::string, int> pools;         // named concurrency caps ("link" = 2)

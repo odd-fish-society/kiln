@@ -884,3 +884,29 @@ needs instead of rejecting a field it doesn't know yet.
 
 The boundary lint no longer has to stand in for a repository boundary, but we kept it,
 because it keeps project names out of what Kiln ships.
+
+## Manifests are cluau only
+
+From 0.2.0 Kiln reads cluau manifests and nothing else: the workspace file, targets,
+plugin manifests, `build/` helpers and rule libraries (now in spec §6.7). Kiln's own
+manifests and its first project's had long been cluau, and supporting two languages
+meant two names for every role, a rule against having both, a nonstrict type-check path
+for the Luau side, and examples that had to pick one. Dropping Luau removes all of that.
+
+The one thing we were careful about is what happens to a workspace that still has Luau
+manifests. Silently ignoring a `plugin.build.luau` would make a plugin disappear, which
+is exactly the failure that makes unknown fields errors. So wherever Kiln looks for a
+role and finds the Luau name, even beside a cluau file of the same role, it stops and
+names the file and the command that converts it. A `.luau` file that isn't a manifest,
+such as a project tool's data file under `build/`, isn't Kiln's business and is left
+alone.
+
+We added `kiln convert` rather than pointing people at cluau's own command-line tool,
+because Kiln doesn't ship that tool and a workspace that can no longer load needs a way
+across. It uses cluau's converter, translates the result back to check it, and only then
+replaces the file. It never overwrites a `.cluau` file.
+
+The luau-lsp advice and the `.luaurc` template went too. luau-lsp can't read cluau, so
+they only ever helped Luau manifests. `kiln check` is the type-checker for manifests
+now, and `types/build.d.luau` stays a Luau definitions file, since that is what the
+checker reads.

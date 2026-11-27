@@ -29,20 +29,21 @@ struct Workspace {
     std::map<std::string, TargetDecl> targets;
     std::map<std::string, std::string> target_files;      // name → rel path
     std::vector<luau::CommandDecl> commands;              // declaration order
-    std::string workspace_file = "kiln.workspace.luau";   // or kiln.workspace.cluau
+    std::string workspace_file = "kiln.workspace.cluau";
 };
 
-// A manifest role is `<stem>.luau` or `<stem>.cluau` (a .cluau manifest is
-// translated before it is evaluated). The file name found in `dir`, "" when
-// neither exists; both is an error.
-Result<std::string> find_manifest(const fs::path& dir, const std::string& stem);
+// A manifest role is `<stem>.cluau`, translated before it is evaluated. The file
+// name found in `dir`, or "" when there is none. A `<stem>.luau` there is an
+// error (Kiln reads cluau only); it names the file relative to `root`, or in
+// full when `root` is empty.
+Result<std::string> find_manifest(const fs::path& dir, const std::string& stem, const fs::path& root);
 
-// Locates the workspace root by walking up for kiln.workspace.luau (or .cluau).
+// Locates the workspace root by walking up for kiln.workspace.cluau.
 Result<fs::path> find_workspace_root(const fs::path& start);
 
-// Loads kiln.workspace.luau, enumerates the configured plugin roots and
-// build/*.target.luau. With no plugin_roots declared, discovery is
-// plugins/*/plugin.build.luau (the back-compat default).
+// Loads kiln.workspace.cluau, enumerates the configured plugin roots and
+// build/*.target.cluau. With no plugin_roots declared, discovery is
+// plugins/*/plugin.build.cluau.
 Result<Workspace> load_workspace(const fs::path& root);
 
 std::string host_platform();

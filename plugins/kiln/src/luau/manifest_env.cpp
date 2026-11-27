@@ -19,20 +19,21 @@ namespace kiln::luau {
 
 const std::set<std::string>& builtin_verbs() {
     static const std::set<std::string> v = {"build", "plugins", "query", "why-dirty", "daemon",
-                                            "setup-clion", "test", "smoke", "check", "clean",
+                                            "setup-clion", "test", "smoke", "check", "convert", "clean",
                                             "run", "help"};
     return v;
 }
 
 namespace {
 
-// A.cluau manifest (or required helper) is translated to Luau in manifest
+// Every manifest and required helper is cluau, translated to Luau in manifest
 // mode (no function / while / do-while / class) before the lint and the
 // compile. The translation keeps every line on its line, so every later
-// file:line diagnostic points at the cluau source unmapped.
+// file:line diagnostic points at the cluau source unmapped. Anything else is
+// refused here, the one place every evaluation passes through.
 Result<std::string> translate_luau(const std::string& bytes, const std::string& display, bool manifest) {
     if (!cluau::IsCluauPath(display))
-        return Result<std::string>::success(bytes);
+        return Result<std::string>::fail(cluau_only_error(display));
     cluau::TranslateOptions options;
     options.Manifest = manifest;
     cluau::TranslateResult r = cluau::Translate(bytes, options);
@@ -385,12 +386,14 @@ int require_impl(lua_State* L) {
                 luaL_error(L, "require: '%s' escapes the workspace (no '..' allowed)", name);
     }
     if (rel.find('.') == std::string::npos) {
-        // `require "build/x"` is build/x.luau or build/x.cluau (both is an error).
-        const bool luau = fs::is_regular_file(st->opts.workspace_root / (rel + ".luau"));
-        const bool cluau = fs::is_regular_file(st->opts.workspace_root / (rel + ".cluau"));
-        if (luau && cluau)
-            luaL_error(L, "require: '%s' is both %s.luau and %s.cluau (one per module)", name, rel.c_str(), rel.c_str());
-        rel += cluau ? ".cluau" : ".luau";
+        // `require "build/x"` is build/x.cluau. A build/x.luau left from before
+        // is an error, never a module that silently stopped loading.
+        if (!fs::is_regular_file(st->opts.workspace_root / (rel + ".cluau")) &&
+            fs::is_regular_file(st->opts.workspace_root / (rel + ".luau")))
+            luaL_error(L, "require: %s", cluau_only_error(rel + ".luau").c_str());
+        rel += ".cluau";
+    } else if (!cluau::IsCluauPath(rel)) {
+        luaL_error(L, "require: %s", cluau_only_error(rel).c_str());
     }
 
     fs::path abs = st->opts.workspace_root / rel;
@@ -438,7 +441,7 @@ int decl_plugin(lua_State* L) {
     EvalState* st = state_from(L);
     const char* name = luaL_checkstring(L, 1);
     if (current_kind(st) != FileKind::PluginManifest)
-        luaL_error(L, "`plugin` is only allowed in a plugin manifest (plugin.build.luau)");
+        luaL_error(L, "`plugin` is only allowed in a plugin manifest (plugin.build.cluau)");
     if (st->decls.plugin)
         luaL_error(L, "plugin '%s' declared twice (first at %s)", name,
                    st->decl_sites[name].c_str());
@@ -481,7 +484,7 @@ int decl_module(lua_State* L) {
     EvalState* st = state_from(L);
     const char* name = luaL_checkstring(L, 1);
     if (current_kind(st) != FileKind::PluginManifest)
-        luaL_error(L, "`module` is only allowed in a plugin manifest (plugin.build.luau)");
+        luaL_error(L, "`module` is only allowed in a plugin manifest (plugin.build.cluau)");
     if (st->decl_sites.count(std::string("module:") + name))
         luaL_error(L, "module '%s' declared twice (first at %s)", name,
                    st->decl_sites[std::string("module:") + name].c_str());
@@ -667,7 +670,7 @@ int decl_cook(lua_State* L) {
     EvalState* st = state_from(L);
     const char* name = luaL_checkstring(L, 1);
     if (current_kind(st) != FileKind::PluginManifest)
-        luaL_error(L, "`cook` is only allowed in a plugin manifest (plugin.build.luau)");
+        luaL_error(L, "`cook` is only allowed in a plugin manifest (plugin.build.cluau)");
     if (st->decl_sites.count(std::string("cook:") + name))
         luaL_error(L, "cook '%s' declared twice (first at %s)", name,
                    st->decl_sites[std::string("cook:") + name].c_str());
@@ -718,7 +721,7 @@ int decl_target(lua_State* L) {
     EvalState* st = state_from(L);
     const char* name = luaL_checkstring(L, 1);
     if (current_kind(st) != FileKind::TargetFile)
-        luaL_error(L, "`target` is only allowed in build/*.target.luau files");
+        luaL_error(L, "`target` is only allowed in build/*.target.cluau files");
     if (st->target_sites.count(name))
         luaL_error(L, "target '%s' declared twice (first at %s)", name,
                    st->target_sites[name].c_str());
@@ -772,7 +775,7 @@ int spec_target(lua_State* L) {
 int decl_workspace(lua_State* L) {
     EvalState* st = state_from(L);
     if (current_kind(st) != FileKind::Workspace)
-        luaL_error(L, "`workspace` is only allowed in kiln.workspace.luau");
+        luaL_error(L, "`workspace` is only allowed in kiln.workspace.cluau");
     if (st->decls.workspace)
         luaL_error(L, "workspace declared twice");
     WorkspaceDecl w;
@@ -930,7 +933,7 @@ int decl_command(lua_State* L) {
     EvalState* st = state_from(L);
     const char* name = luaL_checkstring(L, 1);
     if (current_kind(st) != FileKind::Workspace)
-        luaL_error(L, "%s: `command` is only allowed in kiln.workspace.luau", call_site(L, st).c_str());
+        luaL_error(L, "%s: `command` is only allowed in kiln.workspace.cluau", call_site(L, st).c_str());
     if (!valid_command_name(name))
         luaL_error(L, "%s: command name '%s' must be lowercase letters, digits and '-', starting with a letter",
                    call_site(L, st).c_str(), name);
@@ -1080,15 +1083,13 @@ void load_rule_libraries(lua_State* L, EvalState* st) {
         if (rel.empty() || rel[0] == '/' || rel == "." || rel == ".." || util::starts_with(rel, "../") ||
             rel.find("/../") != std::string::npos)
             luaL_error(L, "workspace rules: '%s' must be a workspace-relative library name", name.c_str());
-        const bool luau = fs::is_regular_file(st->opts.workspace_root / (rel + ".luau"));
-        const bool cluau = fs::is_regular_file(st->opts.workspace_root / (rel + ".cluau"));
-        if (luau && cluau)
-            luaL_error(L, "workspace rules: '%s' is both %s.luau and %s.cluau (one per library)", name.c_str(),
-                       rel.c_str(), rel.c_str());
-        if (!luau && !cluau)
-            luaL_error(L, "workspace rules: cannot find rule library '%s' (looked for %s.cluau and %s.luau)",
-                       name.c_str(), rel.c_str(), rel.c_str());
-        rel += cluau ? ".cluau" : ".luau";
+        if (!fs::is_regular_file(st->opts.workspace_root / (rel + ".cluau"))) {
+            if (fs::is_regular_file(st->opts.workspace_root / (rel + ".luau")))
+                luaL_error(L, "workspace rules: %s", cluau_only_error(rel + ".luau").c_str());
+            luaL_error(L, "workspace rules: cannot find rule library '%s' (looked for %s.cluau)", name.c_str(),
+                       rel.c_str());
+        }
+        rel += ".cluau";
         auto raw = util::read_file(st->opts.workspace_root / rel);
         if (!raw.ok())
             luaL_error(L, "workspace rules: %s", raw.error.c_str());
@@ -1506,6 +1507,12 @@ int eval_source(lua_State* L, EvalState* st, const std::string& source,
 void install_api(lua_State* L, EvalState* st);
 
 } // namespace
+
+std::string cluau_only_error(const std::string& rel_path) {
+    const fs::path p(rel_path);
+    return rel_path + ": Kiln reads cluau manifests only. Convert it with `kiln convert " + rel_path +
+           "`, which writes " + p.stem().generic_string() + ".cluau beside it.";
+}
 
 Result<EvalOutput> evaluate_file(const fs::path& file, const ManifestEnvOptions& opts) {
     auto raw = util::read_file(file);
