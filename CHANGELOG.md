@@ -4,6 +4,26 @@ Each release is an annotated tag (`v0.x.0`, or `v0.x.y` for a release of
 fixes only) whose message is the entry below. Versions before 1.0 may change
 the manifest API; every entry says whether existing manifests need to change.
 
+## 0.2.0
+
+Manifests are cluau only. This changes the manifest API: every Luau manifest has to
+be converted.
+
+- Kiln reads the workspace file, targets, plugin manifests, `build/` helpers and rule
+  libraries as cluau (`kiln.workspace.cluau`, `build/*.target.cluau`,
+  `plugin.build.cluau`, `build/<name>.cluau`) and nothing else. A Luau manifest left
+  in place stops the build with exit code 2 and names the file; Kiln never skips it.
+  Other `.luau` files, such as a tool's data under `build/`, are left alone.
+- `kiln convert <file.luau>... [--check]` converts Luau manifests with cluau's
+  converter, checks that each result translates back to the same code, and only then
+  replaces the file. Run it over a workspace's Luau manifests to move to 0.2:
+  `kiln convert kiln.workspace.luau build/*.target.luau plugins/*/plugin.build.luau`.
+- `kiln check` checks every manifest in strict mode with cluau's rules.
+- The documentation is rewritten in plain prose, and the spec is now
+  `docs/spec-outline.md`. Kiln's messages no longer use em dashes.
+- `.luaurc` and the luau-lsp advice are gone; `types/build.d.luau` stays, as the
+  definitions `kiln check` uses.
+
 ## 0.1.0
 
 The first release.
