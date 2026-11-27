@@ -603,7 +603,7 @@ as above (SHOULD choices logged, MUST deviations fixed: none remain):
 
 - Kiln reads `.cluau` manifests next to `.luau` ones (spec §6.7): the
   vendored translator (`plugins/cluau`, a submodule of
-  github.com/Aosiee/cluau, no dependencies) runs in `manifest_env` before
+  github.com/odd-fish-society/cluau, no dependencies) runs in `manifest_env` before
   the AST lint and the compile, in manifest mode, so the restrictions are
   the translator's errors and then the lint's as before. The external
   (CMake) build compiles the translator too, so even the escape hatch reads
@@ -655,7 +655,7 @@ as above (SHOULD choices logged, MUST deviations fixed: none remain):
   check was a Kiln edit. Kiln is the generic build tool; what a workspace
   checks belongs to the workspace.
 - The checks are now the workspace's `hamr.cluau`, run by hamr
-  (github.com/Aosiee/hamr): a test runner whose suites, scheduler and
+  (github.com/odd-fish-society/hamr): a test runner whose suites, scheduler and
   reports are cluau. Each step declares its budget, timeout, resources and
   needs; hamr times every process (wall, CPU, peak RSS), runs independent
   steps side by side, writes the `hamr/1` report and keeps the history.

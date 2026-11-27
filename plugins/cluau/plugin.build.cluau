@@ -1,4 +1,4 @@
-// cluau: C-syntax-flavoured Luau, its own repository (github.com/Aosiee/cluau)
+// cluau: C-syntax-flavoured Luau, its own repository (github.com/odd-fish-society/cluau)
 // checked out at cluau/ as a git submodule. A consuming workspace that also
 // vendors cluau pins the same commit (its own tooling checks that). Kiln
 // translates .cluau manifests with `cluau` (the translator: no dependencies).
