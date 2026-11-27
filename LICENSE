@@ -1,10 +1,10 @@
 Odd Fish Society License
 
-Copyright (c) 2026 Felipe Lara
+Copyright (c) 2026 Odd Fish Society / Felipe Lara
 
-This license is shared by the libraries Felipe Lara releases under it (the "Odd Fish
-Society libraries"), among them Kiln, cluau, hamr, loom, Wisp, Hearth and tmath. In
-this copy, "the Software" means Kiln and its documentation.
+This license is shared by the libraries Odd Fish Society / Felipe Lara releases under
+it (the "Odd Fish Society libraries"), among them Kiln, cluau, hamr, loom, Wisp, Hearth
+and tmath. In this copy, "the Software" means Kiln and its documentation.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -20,16 +20,16 @@ furnished to do so, subject to the following conditions:
    product's credits (a credits screen or menu, end credits, or an about box;
    where the product has no credits, in its documentation or in a notice file
    distributed with it), with the line
-   "Uses Kiln - Copyright (c) 2026 Felipe Lara" or a substantially similar
-   one. No logo, splash screen, or display before or during use of the product
-   is required.
+   "Uses Kiln - Copyright (c) 2026 Odd Fish Society / Felipe Lara" or a
+   substantially similar one. No logo, splash screen, or display before or
+   during use of the product is required.
 
 3. One credit for several libraries. A Covered Product that owes a credit to
    more than one Odd Fish Society library may give a single credit that names
    each of them and gives the copyright notice once, on one line or on
    consecutive lines, for example
-   "Uses Kiln, cluau and Wisp - Copyright (c) 2026 Felipe Lara". That credit
-   satisfies condition 2 of every library it names.
+   "Uses Kiln, cluau and Wisp - Copyright (c) 2026 Odd Fish Society / Felipe Lara".
+   That credit satisfies condition 2 of every library it names.
 
 "Covered Product" means any product that:
 
