@@ -407,10 +407,10 @@ changed, and `CONTRIBUTING.md` covers branches and how a release is made.
 
 ## License
 
-Kiln is released under the Odd Fish Society License ([`LICENSE`](LICENSE)), which is MIT
-with one added condition. A product that includes Kiln, or is built with it, credits it
-in its credits, about box or documentation, as "Uses Kiln - Copyright (c) 2026 Odd Fish
+kiln is released under the Odd Fish Society License ([`LICENSE`](LICENSE)), which is MIT
+with one added condition. A product that includes kiln, or is built with it, credits it
+in its credits, about box or documentation, as "Uses kiln - Copyright (c) 2026 Odd Fish
 Society / Felipe Lara". A product that uses several Odd Fish Society libraries can
-credit them together, on one line or several, such as "Uses Kiln, cluau and Wisp -
+credit them together, on one line or several, such as "Uses kiln, cluau and wisp -
 Copyright (c) 2026 Odd Fish Society / Felipe Lara". No logo or splash screen is
 required.
