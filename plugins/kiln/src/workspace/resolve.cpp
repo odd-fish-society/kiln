@@ -233,14 +233,14 @@ Result<void> check_layer_edges(
         for (auto& dep : deps) {
             auto dep_it = layer_index_of.find(dep);
             if (dep_it == layer_index_of.end())
-                continue; // unknown name — closure check errors on it
+                continue; // unknown name: the closure check errors on it
             if (dep_it->second > self_it->second) {
                 std::string self_layer = layer_of.at(name);
                 std::string dep_layer = layer_of.at(dep);
                 return Result<void>::fail(
                     "plugin '" + name + "' (layer " + self_layer +
                     ") depends on '" + dep + "' (layer " + dep_layer +
-                    ") — dependencies must not point upward (" + decl.file +
+                    "). Dependencies must not point upward (" + decl.file +
                     ")");
             }
         }

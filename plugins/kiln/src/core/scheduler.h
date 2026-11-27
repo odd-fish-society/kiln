@@ -49,7 +49,7 @@ struct BuildStats {
 
 // Applicative topological worker pool. A session accumulates tasks across
 // waves (expansion → lowering → actions); run() drains until idle, then more
-// tasks may be added and run() called again (see docs/decisions.md, K5).
+// tasks may be added and run() called again (see "The two-graph model" in docs/decisions.md).
 class Scheduler {
 public:
     struct Options {

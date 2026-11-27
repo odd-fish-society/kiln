@@ -101,7 +101,7 @@ TEST_CASE("KILN-2 compile argv carries -include <copied pch> + -Werror=invalid-p
 
 TEST_CASE("KILN-2 pch rule is outputs_opaque (gch bytes are non-reproducible)") {
     // Two GCC gch builds from identical inputs/flags/
-    // paths differ by millions of bytes — PCH is a compiler-state dump, NOT
+    // paths differ by millions of bytes. PCH is a compiler-state dump, NOT
     // reproducible. The rule therefore registers outputs_opaque: dependents
     // key on the pch task's INPUT digest, not its output bytes.
     rules::register_builtin_rules();
@@ -136,14 +136,14 @@ TEST_CASE("KILN-2 pch end-to-end: recompiles on header edit, not on output loss"
     REQUIRE(!gch.empty());
     const fs::path pch_copy = gch.parent_path() / "pch.h";
 
-    // Warm rebuild: everything cached (no settle build — the pch's own
+    // Warm rebuild: everything cached (no settle build: the pch's own
     // outputs are excluded from its dynamic deps, so no one-build lag).
     auto r2 = run_kiln(tmp.path, args());
     REQUIRE(r2.code == 0);
     CHECK(count_executed(r2.out) == 0);
 
     // Edit the PCH header: pch re-runs and ALL module compiles re-run
-    // (dependents key on the pch's INPUT digest — the header changed).
+    // (dependents key on the pch's INPUT digest, and the header changed).
     {
         std::ofstream f(tmp.path / "plugins/app/src/pch.h", std::ios::app);
         f << "// edit\n";

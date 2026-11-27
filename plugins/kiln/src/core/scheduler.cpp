@@ -351,7 +351,7 @@ Result<void> Scheduler::run() {
             }
             break;
         }
-        // Nothing ready, nothing running, but non-terminal nodes exist — they
+        // Nothing ready, nothing running, but non-terminal nodes exist. They
         // must be pool-blocked only if running_ > 0, which contradicts the wait.
         // Defensive: mark them skipped (should be unreachable).
         for (size_t i = 0; i < runtime_.size(); ++i) {

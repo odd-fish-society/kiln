@@ -13,8 +13,8 @@ struct lua_State;
 namespace kiln::luau {
 
 // One fresh lua_State per expansion unit (spec §6.1). Sandboxed: explicit
-// positive env only — base (minus print/loadstring), table, string,
-// math (minus random/randomseed), bit32 — plus the Kiln API installed by
+// positive env only: base (minus print/loadstring), table, string,
+// math (minus random/randomseed), bit32, plus the Kiln API installed by
 // the caller. luaL_sandbox applied. TWO budgets, both required (spec §6.1):
 //   - memory: 256 MiB live-heap cap enforced in the lua_Alloc callback
 //     (returns NULL over cap ⇒ Luau raises a memory error); few instructions

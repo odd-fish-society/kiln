@@ -118,7 +118,7 @@ Executor::Result Executor::run_task(const TaskDecl& decl,
     }
 
     // Cache hit: verify outputs exist with recorded hashes. always_run tasks
-    // (check rules) bypass this — a cached check is a check that never fires.
+    // (check rules) bypass this: a cached check is a check that never fires.
     bool missing_output = false;
     std::string missing_path;
     if (!decl.always_run && old_trace && old_trace->action_digest == *digest && !cancelled) {

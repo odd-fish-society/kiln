@@ -20,7 +20,7 @@ enum class ProgressMode { Fancy, Plain, None };
 
 ProgressMode parse_progress_mode(const std::string& s);
 
-// Owns stdout. Tasks NEVER print directly — all output flows through events.
+// Owns stdout. Tasks NEVER print directly. All output flows through events.
 class Renderer {
 public:
     struct Options {
@@ -35,7 +35,7 @@ public:
     void push(Event e);          // thread-safe (scheduler workers)
     void note(std::string line); // informational line above the progress region
     void finish();               // drain queue, tear down region
-    // Clears the pinned region (always call on exit — never leave a dead bar).
+    // Clears the pinned region (always call on exit, never leave a dead bar).
     // This and print_summary run ON the consumer thread (blocking until done),
     // or inline once finish() has joined it: the thread owns stdout and the
     // region/failure state, and the main thread printing alongside it raced.

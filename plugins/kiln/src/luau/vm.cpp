@@ -68,7 +68,7 @@ void VM::interrupt_cb(lua_State* L, int gc) {
 }
 
 // Memory cap lives HERE, in the allocator (spec §6.1): the interrupt budget
-// does not bound memory — string.rep and table growth allocate unboundedly in
+// does not bound memory: string.rep and table growth allocate unboundedly in
 // few instructions. Returning NULL over the cap makes Luau raise a memory
 // error ("not enough memory"); the VM maps that to the friendly budget error
 // when memory_cap_exceeded() is set.

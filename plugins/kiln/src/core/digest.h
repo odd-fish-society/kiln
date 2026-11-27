@@ -25,7 +25,7 @@ Hash256 output_summary_hash(const std::vector<OutputRecord>& outputs);
 
 // INPUT summary: CanonicalHasher over sorted (path, hash) pairs of a task's
 // recorded inputs. Used as the dep contribution for outputs_opaque rules
-// (their outputs are not byte-reproducible — see decisions.md).
+// (their outputs are not byte-reproducible, see decisions.md).
 Hash256 input_summary_hash(const std::vector<InputRecord>& inputs);
 
 // Action digest per spec §2.2. Dep output summaries come from the PREVIOUS

@@ -28,7 +28,7 @@ std::vector<std::string> sorted_params_with_prefix(const TaskDecl& decl,
 
 TaskResult run_compile(TaskCtx& ctx) {
     TaskResult r;
-    // The depfile and object dirs may not exist yet — create them.
+    // The depfile and object dirs may not exist yet, so create them.
     std::error_code ec;
     fs::create_directories((ctx.workspace_root / param(*ctx.decl, "out")).parent_path(), ec);
     fs::create_directories((ctx.workspace_root / param(*ctx.decl, "depfile")).parent_path(),
@@ -66,7 +66,7 @@ TaskResult run_archive(TaskCtx& ctx) {
     // Build into a task-private temp file and rename over the output: `ar r`
     // replaces members IN PLACE, so a pre-existing archive would (a) keep a
     // member order that depends on the archive's own history and (b) retain
-    // members removed from the module — both making the output bytes depend
+    // members removed from the module, both making the output bytes depend
     // on an input the digest doesn't cover (the convergence check broke on
     // exactly this: a fresh-state build archived members in sorted order, an
     // incremental one kept the old file's order).
@@ -186,7 +186,7 @@ void register_cpp() {
     register_rule("compile_cpp", 1, run_compile);
     register_rule("compile_c", 1, run_compile);
     // v2: archives are built into a task-private temp file and renamed over
-    // the output — v1's in-place `ar r` let member order/staleness depend on
+    // the output, because v1's in-place `ar r` let member order/staleness depend on
     // the pre-existing archive (behavior change ⇒ version bump ⇒ all archives
     // rebuild deterministically).
     // v3: thin archives plus the `<out>.members` record.

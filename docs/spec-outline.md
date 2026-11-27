@@ -1,86 +1,98 @@
-# Kiln specification
+# Kiln: how it works
 
-This is Kiln's reference specification: the contracts, formats, hashing rules and
-invariants the code follows. Where it says MUST or MUST NOT, any difference in behaviour
-is a bug. Where it says SHOULD, there's room for judgment, and a choice that departs from
-it is written down in `docs/decisions.md`. Where the spec says nothing, Kiln takes the
-simplest option that keeps the invariants, and that choice goes in `docs/decisions.md`
-too.
+This outline describes what Kiln does and the rules its code keeps: how tasks are
+identified, what goes into a hash, when something rebuilds, and what each command
+promises. Where it says "must", a difference in behaviour is a bug. Where it leaves room,
+the choice Kiln made is recorded in `docs/decisions.md`, along with the reasons.
 
-The code refers to sections as "spec §n", so section numbers are stable.
+The code cites sections by number ("spec §6.2"), so the numbers stay put even when a
+section is rewritten.
 
----
+## 0. Ground rules
 
-## 0. Global conventions
+### The invariants
 
-- **Architecture invariants:**
-  1. Task identity = `(rule_name, primary_input, config_hash)`. Never positional, never
-     parent-derived. `config_hash` is the task's content variant (§7.2a: the code
-     family's settings, every other task's params and dependencies), never the
-     target that asked for it; expansions alone keep the ConfigTuple (§7.1).
-  2. Action digest = `hash(input content hashes, params, tool/rule version, config tuple)`.
-  3. Trace store maps identity → `(action_digest, output_hashes, dynamic_deps)`. SQLite.
-  4. Rebuilder: verifying traces + recorded dynamic deps (depfile model) + early cutoff.
-  5. Scheduler: applicative topological worker pool. There is no suspending or
-     coroutine scheduler.
-  6. Two evaluation contexts, one language: manifest env (declaration-only) and rule env
-     (host primitives). Determinism is API-enforced: no io/os, no wall clock, no
-     `math.random`, inputs passed in.
-  7. Expansion (Luau evaluation) is itself a memoized task; its digest covers manifest
-     content, all `require`d files, rule versions, and the resolved config tuple
-     (including the enabled-plugin set).
-- **Language/std:** C++20. No exceptions across module boundaries: internal code may use
-  them, but public core APIs return `Result<T>` (see spec §2.6). No RTTI requirements.
-- **Build of Kiln itself:** CMake + Ninja, single `kiln` executable plus `kiln_core` static
-  lib (so tests link the lib). Presets: `dev` (ASan+UBSan), `release`.
-- **Third-party libraries** (each vendored in its own plugin under `plugins/`): BLAKE3
-  (the C implementation), the SQLite amalgamation, Luau, cluau and hamr (git submodules
-  at pinned commits), CLI11 (header-only), and `nlohmann/json`. hamr supplies the C++ test
-  library (`hamr/test.h`). JSON is used ONLY at the edges, never in a hash path (spec §2.3).
-- **Platforms:** Linux first (inotify, TIOCGWINSZ). The design allows for Windows, where
-  the file watcher and the console code may be stubbed behind `#ifdef`. There is no macOS
-  support.
-- **Repository:** Kiln is its own repository. A project uses it as a release binary or
-  pins it as a submodule. Kiln MUST NOT reference any project that consumes it: no
-  includes of a project's headers and no project-identifying paths or strings in
-  anything Kiln ships (its plugins, docs, types and README). The boundary lint in
-  spec §14 enforces this. Everything project-specific lives in the project's own
-  workspace files. Luau, cluau and hamr are nested submodules, so a clone needs
-  `--recursive` (the README says so). The documentation (spec §16) lives in the same
-  repository, at the same commit as the tool it describes.
-- **Repository layout:**
+Seven ideas hold the design together. Most of the rest of this outline is detail
+around them.
+
+1. A task is identified by its rule, its primary input and its config hash, and by
+   nothing else. Its position in the graph and the task that asked for it play no part.
+   The config hash is the task's content variant (§7.2a), never the target that wanted
+   it. Only expansions use the whole ConfigTuple (§7.1).
+2. A task's action digest is a hash of its inputs' contents, its parameters, its rule
+   and tool versions, and its config.
+3. The trace store, a SQLite database, maps each task identity to its last action
+   digest, the hashes of its outputs and the inputs it discovered while running.
+4. Rebuilding follows the verifying-traces model: a task reruns when its digest no longer
+   matches its trace, dynamic dependencies come from the previous run (as with
+   depfiles), and a task whose outputs come out unchanged stops the rebuild from
+   spreading (early cutoff).
+5. The scheduler is a plain worker pool over a topologically ordered graph. Tasks never
+   suspend.
+6. There are two evaluation contexts and one language. Manifests can only declare
+   things. Rules get a small set of host functions. Neither can read files, the clock or
+   random numbers; what they need is passed in.
+7. Evaluating a manifest is itself a cached task. Its digest covers the manifest, every
+   file it requires, the rule versions and the resolved configuration, including the
+   set of enabled plugins.
+
+### Language and libraries
+
+Kiln is C++20. Internal code may throw, but exceptions never cross a module boundary:
+public core APIs return `Result<T>` (§2.6). Nothing depends on RTTI.
+
+CMake and Ninja build a single `kiln` executable and a `kiln_core` static library that
+the tests link. The presets are `dev` (with ASan and UBSan) and `release`.
+
+Each third-party library is vendored in its own plugin under `plugins/`: the BLAKE3 C
+implementation, the SQLite amalgamation, CLI11 (header-only), `nlohmann/json`, and
+Luau, cluau and hamr as git submodules at pinned commits. hamr also provides the C++
+test library, `hamr/test.h`. JSON is only used at the edges, to read and write files,
+and never on a path that produces a hash (§2.3).
+
+Linux comes first (inotify, TIOCGWINSZ). The design leaves room for Windows, where the
+file watcher and console code may be stubbed behind `#ifdef`. There is no macOS support.
+
+### The repository
+
+Kiln is its own repository. A project either uses a release binary or pins Kiln as a
+submodule. Kiln must not refer to any project that uses it. Nothing it ships (its
+plugins, docs, types and README) may include a project's headers or name a project's
+paths or tools. The boundary lint in §14 checks this, and everything project-specific
+lives in the project's own workspace files. Luau, cluau and hamr are nested submodules,
+so a clone needs `--recursive`. The documentation (§16) lives in the same repository,
+at the same commit as the code it describes.
 
 ```
 CMakeLists.txt  bootstrap.sh  kiln.workspace.cluau  build/kiln.target.cluau
 plugins/kiln/src/core/        hashing, the trace store, tasks, the graph, the scheduler,
-                              the executor, configs (the runtime)
-plugins/kiln/src/workspace/   workspace loading, plugin resolution, expansion, lowering,
-                              the dead-output sweep (the target-graph layer)
+                              the executor and configs (the runtime)
+plugins/kiln/src/workspace/   workspace loading, plugin resolution, expansion, lowering
+                              and the dead-output sweep (the target graph)
 plugins/kiln/src/luau/        the VM, the manifest environment, declarations, glob, lints
-plugins/kiln/src/rules/       the built-in rules: C/C++, PCH, exec, copy, checks, ...
-plugins/kiln/src/cli/         main.cpp and one file per verb group
+plugins/kiln/src/rules/       the built-in rules: C and C++, PCH, exec, copy, checks
+plugins/kiln/src/cli/         main.cpp and one file per group of verbs
 plugins/kiln/src/console/     the progress renderer and ANSI helpers
 plugins/kiln/std/cook.cluau   the standard cook rules, built into the binary
-plugins/kiln_tests/           one file per area (k1_core_loop.cpp, ...) and fixtures/
+plugins/kiln_tests/           one test file per area (k1_core_loop.cpp, ...) and fixtures/
 plugins/<library>/            blake3, sqlite, luau, cluau, hamr, cli11, json
-types/build.d.luau            the Luau typedefs for the manifest and rule API
-docs/                         this spec, decisions.md, kpak-format.md
+types/build.d.luau            the Luau type definitions for manifests and rules
+docs/                         this outline, decisions.md, kpak-format.md
 ```
 
-- **Workspace layout Kiln operates on** (the project's repository):
+### The workspace Kiln works on
 
 ```
 <workspace>/
-  kiln.workspace.luau         workspace root marker + global settings (incl. plugin_roots)
-  build/                      targets/*.target.luau, shared helpers (require-able)
-  <root>/<name>/plugin.build.luau     for each configured plugin root (default: plugins/)
+  kiln.workspace.luau         marks the root and holds global settings (plugin_roots too)
+  build/                      target files (*.target.luau) and shared helpers
+  <root>/<name>/plugin.build.luau     one per plugin, in each plugin root (default: plugins/)
   <root>/<name>/src/  include/  content/
-  .kiln/                      all Kiln state (gitignored): traces.sqlite, hashcache.sqlite,
-                              graph/ (serialized expansions), out/ (task outputs),
-                              logs/, compile_commands/
+  .kiln/                      all of Kiln's state (gitignored): traces.sqlite,
+                              hashcache.sqlite, graph/, out/, logs/, compile_commands/
 ```
 
-  Layered example (the shape a game project's workspace typically takes):
+A game project with layers usually looks like this:
 
 ```
 <workspace>/
@@ -92,16 +104,17 @@ docs/                         this spec, decisions.md, kpak-format.md
   game/<name>/plugin.build.luau
 ```
 
-- **Residency principle:** everything the graph BUILDS lives inside a plugin
-  directory: module sources (`src/`, `include/`), cook content (`content/`), and
-  vendored library sources (inside the plugin hosting their `c_library` decl, upstream
-  submodules included). The workspace root holds only non-graph files: the workspace
-  file, `build/` (target files and shared helpers: targets are graph roots and
-  compositions, not dependency units), docs, the bootstrap escape
-  hatch, and `.kiln/` state. A source tree at workspace root that plugins reach via
-  `../` globs is a migration state, not a destination (spec §6.4).
+Everything the graph builds lives inside a plugin directory: module sources (`src/`,
+`include/`), cook content (`content/`) and vendored library sources, which sit in the
+plugin that declares their `c_library`, submodules included. The workspace root holds
+only what the graph doesn't build: the workspace file, `build/` (targets compose
+plugins, they aren't dependencies themselves), docs, the bootstrap script and `.kiln/`.
+A source tree at the root that plugins reach with `../` globs is something to migrate
+away from, not a layout to keep (§6.4).
 
-- **Plugin roots & layers:** `kiln.workspace.luau` MAY declare:
+### Plugin roots and layers
+
+The workspace file may declare several plugin roots:
 
 ```lua
 workspace {
@@ -114,49 +127,50 @@ workspace {
 }
 ```
 
-  Normative rules:
-  - Default when absent: `{ { path = "plugins" } }`, layering disabled. This is the
-    back-compat contract; a workspace without `plugin_roots` behaves exactly as before.
-  - `path` is workspace-relative, forward-slash (path rules below). Discovery per root
-    is the single-root rule applied at that path: `<path>/*/plugin.build.luau`, one
-    directory level, no recursion.
-  - Roots MUST NOT overlap: no root path may equal or be a path-prefix of another
-    (`engine` + `engine/extra` ⇒ config error, exit 2). A missing or
-    empty root directory is LEGAL (zero plugins): a root may exist in config before
-    its first plugin does.
-  - `layer` is an identifier string. Either EVERY root declares a layer or NONE does;
-    mixed ⇒ config error. Layer names MUST be unique across roots: one root per layer,
-    one layer per root (two roots sharing a layer is a config error; if that need ever
-    arises, it is a spec change, not a loophole). Declaration order of `plugin_roots`
-    is the layer order, index 0 lowest. When no root declares a layer, layering is
-    disabled and no layer validation runs. Layer semantics: spec §7.3.
-  - Plugin NAMES remain a single global namespace across all roots (deps reference
-    names, never paths: unchanged). A name collision across roots ⇒ error listing
-    both manifest paths, same voice as the duplicate-name error (spec §6.2).
-  - Hashing: `layer` strings and the root list itself MUST NOT enter any digest
-    (precedent: `version`, spec §6.2: informational/validation-time fields are unhashed).
-    Moving a plugin between roots changes its manifest path ⇒ expansion identity ⇒
-    rebuild of that plugin's tasks; that is the path mechanism working as designed,
-    not layer data being hashed.
+Without `plugin_roots` there is one root, `plugins`, and no layering, so a workspace
+that never mentions roots behaves as it always has. Each `path` is workspace-relative
+with forward slashes, and Kiln finds plugins in it the same way as in the single root:
+`<path>/*/plugin.build.luau`, one level deep.
 
-- **Path rules:** All paths in identities, digests, traces, and serialized output are
-  workspace-relative, forward-slash, NFC-normalized UTF-8. Absolute paths MUST NOT enter
-  any hashed value. Output paths live under `.kiln/out/<config-name>/...`.
+Roots must not overlap. If one root's path equals another's or starts with it (`engine`
+and `engine/extra`), that's a configuration error and Kiln exits with code 2. A root
+directory that is missing or empty is fine, and has no plugins yet.
 
-## 1. Core value types (`src/core/`)
+A `layer` is an identifier. Either every root declares one or none does, and two roots
+can't share a layer. The order of `plugin_roots` is the layer order, lowest first.
+Without layers, no layer checks run. §7.3 says what layers mean.
+
+Plugin names form one namespace across all roots, because dependencies refer to names,
+never paths. Two plugins with the same name in different roots are an error that lists
+both manifests, like the duplicate-name error in §6.2.
+
+Neither layer names nor the list of roots enter any digest. They only matter when
+manifests are checked, like a plugin's `version` field (§6.2). Moving a plugin to
+another root does rebuild its tasks, because its manifest path changes and the path is
+part of its identity.
+
+### Paths
+
+Every path in an identity, a digest, a trace or a serialized file is workspace-relative,
+uses forward slashes and is NFC-normalized UTF-8. No absolute path may enter a hashed
+value. Outputs go under `.kiln/out/<config-name>/`.
+
+## 1. Core value types
+
+These live in `src/core/`.
 
 ```cpp
 // hash.h
-struct Hash256 {                 // BLAKE3 output
+struct Hash256 {                 // a BLAKE3 output
   std::array<uint8_t, 32> bytes;
-  std::string hex() const;       // lowercase, 64 chars
+  std::string hex() const;       // lowercase, 64 characters
   static Hash256 of_bytes(std::span<const uint8_t>);
-  static Result<Hash256> of_file(const fs::path&);   // streams, 1 MiB chunks;
-                                                     // missing file = distinguished error
+  static Result<Hash256> of_file(const fs::path&);   // streams 1 MiB chunks; a missing
+                                                     // file is its own error
   auto operator<=>(const Hash256&) const = default;
 };
 
-// A canonical hasher: the ONLY way structured data becomes a hash. See spec §2.3.
+// The only way structured data becomes a hash (§2.3).
 class CanonicalHasher { public:
   void field(std::string_view key, std::string_view val);
   void field(std::string_view key, uint64_t val);
@@ -169,10 +183,10 @@ class CanonicalHasher { public:
 
 ```cpp
 // task.h
-struct TaskId {                  // identity: see invariant 1
+struct TaskId {                  // identity, invariant 1
   std::string rule;              // e.g. "compile_cpp"
   std::string primary_input;     // workspace-relative, e.g. "plugins/audio/src/mixer.cpp"
-  Hash256     config_hash;       // the task's content variant (§7.2a); expansions: the ConfigTuple
+  Hash256     config_hash;       // the content variant (§7.2a); for an expansion, the ConfigTuple
   Hash256     stable_hash() const;   // CanonicalHasher over the three fields
   std::string display() const;   // "plugins/audio/compile_cpp:src/mixer.cpp@win64-dev"
 };
@@ -181,35 +195,35 @@ enum class TaskState { Pending, Running, SkippedUpToDate, Succeeded, Failed, Ski
 
 struct TaskDecl {
   TaskId id;
-  std::vector<std::string> declared_inputs;    // files (workspace-relative)
-  std::vector<TaskId>      dep_tasks;          // explicit task deps (edges)
+  std::vector<std::string> declared_inputs;    // files, workspace-relative
+  std::vector<TaskId>      dep_tasks;          // explicit edges
   std::vector<std::string> declared_outputs;   // under .kiln/out/
-  std::string pool;                            // "" = default pool
-  // Params: opaque, canonical, hashed. Flat string map is REQUIRED (no nesting):
-  // nested config must be flattened by the rule ("defines.0=FOO", "opt_level=2").
-  std::map<std::string, std::string> params;   // std::map ⇒ sorted ⇒ deterministic
-  uint32_t rule_version;                       // bump when rule impl changes behavior
+  std::string pool;                            // "" is the default pool
+  // Parameters are a flat string map: a rule flattens anything nested
+  // ("defines.0=FOO", "opt_level=2"). std::map keeps them sorted.
+  std::map<std::string, std::string> params;
+  uint32_t rule_version;                       // bumped when the rule's behaviour changes
 };
 
-// Execution callback. MUST be pure w.r.t. declared+dynamic inputs.
+// A task's body must depend only on its declared and discovered inputs.
 struct TaskCtx {
   const TaskDecl& decl;
-  fs::path out_dir;                                  // pre-created, task-private
-  std::function<void(std::string_view)> log;          // buffered, see spec §3
-  // Report a discovered input (dynamic dep). Path must exist; recorded in trace.
+  fs::path out_dir;                                  // created beforehand, private to the task
+  std::function<void(std::string_view)> log;          // buffered (§3)
+  // Reports an input found while running. The path must exist; it goes in the trace.
   std::function<void(std::string_view path)> report_dep;
-  std::function<bool()> cancelled;                    // poll in long tasks
+  std::function<bool()> cancelled;                    // long tasks poll this
 };
-struct TaskResult { bool ok; std::string error;      // error shown on failure
-                    std::vector<std::string> outputs; }; // actual outputs (≥ declared)
+struct TaskResult { bool ok; std::string error;      // shown when the task fails
+                    std::vector<std::string> outputs; }; // at least the declared outputs
 using TaskFn = std::function<TaskResult(TaskCtx&)>;
 ```
 
-## 2. Digests, traces, rebuild logic
+## 2. Digests, traces and rebuilds
 
 ### 2.1 File hash cache
 
-SQLite db `.kiln/hashcache.sqlite`:
+File hashes are cached in `.kiln/hashcache.sqlite`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS file_hash (
@@ -217,12 +231,14 @@ CREATE TABLE IF NOT EXISTS file_hash (
   hash BLOB NOT NULL CHECK(length(hash)=32));
 ```
 
-`hash_of(path)`: stat; on `(mtime_ns,size)` match return cached; else rehash, upsert.
-A file outside the workspace (a toolchain binary, keyed by its absolute path) is cached
-the same way: the toolchain fingerprint's files are hashed once per `(mtime_ns,size)`,
-and each driver is probed once per kiln run, not once per target.
-Missing file ⇒ distinguished error (not a zero hash). Directory hashing is NOT a thing;
-globs are resolved to file lists at expansion time (spec §6.4).
+To hash a path, Kiln stats it. If the modification time and size match the cached row,
+it uses the cached hash; otherwise it rehashes the file and updates the row. Files
+outside the workspace, such as toolchain binaries, are cached the same way under their
+absolute path, so the toolchain fingerprint costs one hash per file change and each
+compiler driver is probed once per run, not once per target.
+
+A missing file is an error of its own, never a zero hash. Directories are never hashed:
+globs become file lists when a manifest is evaluated (§6.4).
 
 ### 2.2 Action digest
 
@@ -236,30 +252,35 @@ action_digest = CanonicalHasher {
                           item(p); item(hash_of(p));                          end_list
   begin_list "deps";    for t in sorted(dep_tasks by stable_hash):
                           item(t.stable_hash());
-                          item(output_summary_hash(t));   // spec §2.5
+                          item(output_summary_hash(t));   // §2.5
                         end_list
 }
 ```
 
-`primary_input` is part of *identity*, and also appears in `inputs` (it must be listed
-in `declared_inputs`). Dynamic deps come from the *previous* trace (verifying-traces
-model); on first build the set is empty.
+The primary input is part of the task's identity, and it is also one of its declared
+inputs, so it appears in the digest too. Dynamic dependencies come from the previous
+trace. On a first build there are none.
 
-### 2.3 Canonical hashing rules (determinism-critical)
+### 2.3 Canonical hashing
 
-- `CanonicalHasher` is a keyed streaming BLAKE3 with unambiguous framing: every field is
-  `len(key)||key||len(value)||value` with 4-byte LE lengths; lists frame each item the
-  same way plus begin/end sentinels. No JSON, no printf, no locale anywhere near it.
-- All lists hashed MUST be sorted with `std::sort` on byte value (no locale collation).
-- Floats never enter digests. Timestamps never enter digests. Absolute paths never enter
-  digests. Env vars enter only via the config tuple's explicit allowlist (spec §4).
-- Layer names and the `plugin_roots` configuration never enter digests (spec §0): layers are
-  validation-time data; root paths act only through discovered manifest paths, which
-  task identity already covers.
+Reproducible builds depend on these rules.
+
+`CanonicalHasher` is a keyed, streaming BLAKE3 with unambiguous framing. Each field is
+written as `len(key) || key || len(value) || value`, with 4-byte little-endian lengths,
+and list items are framed the same way between begin and end markers. JSON, printf and
+locales never come near it.
+
+Every list that gets hashed is sorted with `std::sort` on byte values, never with a
+locale's collation. Floats, timestamps and absolute paths never enter a digest.
+Environment variables enter only through the config's explicit allowlist (§4).
+
+Layer names and the `plugin_roots` setting never enter a digest either (§0). Layers
+are only checked, and roots matter only through the manifest paths found in them, which
+task identities already include.
 
 ### 2.4 Trace store
 
-SQLite db `.kiln/traces.sqlite`, WAL mode, `synchronous=NORMAL`:
+Traces live in `.kiln/traces.sqlite`, in WAL mode with `synchronous=NORMAL`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS trace (
@@ -267,74 +288,83 @@ CREATE TABLE IF NOT EXISTS trace (
   task_display TEXT NOT NULL,
   action_digest BLOB NOT NULL,
   outputs TEXT NOT NULL,               -- JSON: [{"path":..,"hash":<hex>}, ...]
-  inputs TEXT NOT NULL,                -- JSON: [{"path":..,"hash":<hex>}, ...] (why-dirty)
+  inputs TEXT NOT NULL,                -- JSON: [{"path":..,"hash":<hex>}, ...], for why-dirty
   dynamic_deps TEXT NOT NULL,          -- JSON: ["path", ...]
-  params TEXT NOT NULL,                -- JSON of decl.params (why-dirty diffing)
+  params TEXT NOT NULL,                -- JSON of decl.params, for why-dirty
   rule_version INTEGER NOT NULL, config_hash BLOB NOT NULL,
   wall_ms INTEGER NOT NULL, when_ns INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT); -- schema_version=2
--- Schema ships at version 2 from day one (per-input hashes included); there is no
--- v1→v2 migration. Any future schema change bumps the version ⇒ drop-and-rebuild.
 ```
 
-Schema version mismatch ⇒ drop and rebuild the db (traces are a cache, never precious).
+The schema started at version 2, with the per-input hashes already in it, so there is
+no migration from an older one. If the stored version doesn't match, Kiln drops the
+database and rebuilds. Traces are a cache, and losing them costs a rebuild, nothing more.
 
-### 2.5 The task loop (normative pseudocode)
+### 2.5 The task loop
 
 ```
 run_task(decl):
   trace   = trace_store.get(decl.id)
   digest  = compute_action_digest(decl, trace ? trace.dynamic_deps : [])
   if trace && trace.action_digest == digest && all outputs exist with recorded hashes:
-      state = SkippedUpToDate;  return trace          # cache hit (verify outputs on disk!)
-  result  = execute(decl)                             # buffered logs, dyn deps collected
+      state = SkippedUpToDate;  return trace          # a cache hit (outputs checked on disk)
+  result  = execute(decl)                             # logs buffered, dynamic deps collected
   if !result.ok: state = Failed; keep old trace; return
   out_hashes = hash each result.output
   if collected_dyn_deps != trace.dynamic_deps and every newly discovered dep
      was last written before the task started (§5):
-      digest = compute_action_digest(decl, collected_dyn_deps)  # pre-run hashes reused
+      digest = compute_action_digest(decl, collected_dyn_deps)  # reuses the pre-run hashes
   new_trace  = {digest, out_hashes, collected_dyn_deps, wall_ms}
-  # EARLY CUTOFF: compare output_summary_hash(old) vs (new)
+  # early cutoff: did the outputs change?
   changed = (trace == null) || (summary(old.outputs) != summary(new.outputs))
   trace_store.put(new_trace)
   state = Succeeded; return {trace: new_trace, outputs_changed: changed}
 
-output_summary_hash(t) = CanonicalHasher over sorted (path, hash) pairs of t's outputs.
+output_summary_hash(t) = CanonicalHasher over the sorted (path, hash) pairs of t's outputs
 ```
 
-Downstream tasks embed `output_summary_hash` of each dep in their digest (spec §2.2), so
-`outputs_changed == false` automatically yields cache hits downstream: early cutoff
-falls out of the digest structure; there is no separate dirty-propagation code path.
-This is intentional: there is no boolean dirty bit, and there MUST NOT be one.
+Each task puts its dependencies' output summaries into its own digest (§2.2). When a
+dependency reruns and produces the same outputs, the dependent's digest doesn't change,
+so it's a cache hit. Early cutoff falls out of the digest; there is no separate code to
+propagate dirtiness, and there must never be a dirty flag.
 
 ### 2.6 Errors
 
-`template<class T> struct Result { std::optional<T> val; std::string err; }` with
-`ok()`, `KILN_TRY` macro. Every user-facing error message MUST name the task display
-string and, where relevant, a file path + line.
+Errors travel as `template<class T> struct Result { std::optional<T> val; std::string
+err; }`, with `ok()` and the `KILN_TRY` macro. Every error a user sees names the task
+(its display string) and, where it applies, a file and line.
 
-**Acceptance tests** (fixtures under `tests/fixtures/k1/`):
-1. Build twice ⇒ second run executes zero tasks (assert via executor counters).
-2. Touch a file *without changing content* (bump mtime) ⇒ rehash happens, zero tasks run.
-3. Change a comment in `a.glsl` included by `b.glsl`'s compile ⇒ shader task runs; a
-   downstream copy task whose input is the (unchanged) SPIR-V does NOT run (early cutoff).
-4. Delete an output under `.kiln/out/` ⇒ next build re-runs exactly that task.
-5. Change `rule_version` ⇒ all tasks of that rule re-run.
-6. Corrupt/mis-versioned trace db ⇒ warning + full rebuild, no crash.
+The tests for this part build twice and check the second build runs nothing. They also
+check that:
 
-## 3. Scheduler & executor
+- touching a file without changing it rehashes the file and runs nothing;
+- a comment change in a shader include reruns the shader compile, but not a copy of its
+  unchanged SPIR-V;
+- deleting one output reruns exactly that task;
+- a new `rule_version` reruns every task of the rule;
+- a corrupt or mis-versioned trace database gives a warning and a full rebuild, never a
+  crash.
 
-- Graph: `std::vector<TaskDecl>` + adjacency built from `dep_tasks`. Detect task-level
-  cycles with iterative DFS; error lists the cycle as display strings.
-- Ready queue: compute in-degrees; workers pop from a mutex+condvar deque (nothing lock-free). On task completion, decrement dependents; enqueue at zero.
-- **Pools:** `map<string, semaphore>` from workspace config (`pools = { link = 2 }` in
-  `kiln.workspace.luau`). Default pool size = hardware_concurrency, overridable `-j N`.
-- **Keep-going (default ON):** on failure, mark transitive dependents
-  `SkippedUpstreamFailed`; continue independent work; process exit code 1 if any failure.
-  `--fail-fast` flips to cancel-outstanding (cooperative via `TaskCtx::cancelled`).
-- **Log buffering:** each task writes to a private buffer; flushed to the renderer as one
-  block on completion. A task's buffer is capped at 4 MiB (tail kept, marker inserted).
-- Executor emits events (single consumer = renderer thread):
+## 3. Scheduler and executor
+
+The graph is a vector of `TaskDecl`s with edges from `dep_tasks`. Kiln finds cycles with
+an iterative depth-first search and reports a cycle as a list of display strings.
+
+Workers take ready tasks from a deque guarded by a mutex and a condition variable (no
+lock-free structures). When a task finishes, its dependents' in-degrees drop, and a
+dependent with none left becomes ready.
+
+The workspace can limit pools, for example `pools = { link = 2 }`, and each pool is a
+semaphore. The default pool's size is the number of hardware threads, or `-j N`.
+
+By default Kiln keeps going after a failure: the failed task's dependents are marked
+`SkippedUpstreamFailed`, independent work continues, and the process exits with 1.
+`--fail-fast` cancels the outstanding work instead, which long tasks notice through
+`TaskCtx::cancelled`.
+
+Each task logs into a private buffer, capped at 4 MiB (the tail is kept and a marker
+shows the cut). The buffer goes to the renderer as one block when the task finishes.
+The executor sends the renderer events, and the renderer thread is their only reader:
 
 ```cpp
 struct Event { enum { GraphGrew, TaskStarted, TaskFinished, LogBlock, BuildDone } kind;
@@ -342,404 +372,490 @@ struct Event { enum { GraphGrew, TaskStarted, TaskFinished, LogBlock, BuildDone 
                uint32_t done, total, running; };
 ```
 
-**Acceptance:** parallel speedup test (N sleep-tasks finish in ~N/j time);
-keep-going leaves independent subgraph built; deterministic *content* of logs (order of
-blocks may vary; interleaving within a block may not).
+The tests check that N sleeping tasks finish in about N/j of the time, that keep-going
+leaves an independent part of the graph built, and that log content is deterministic.
+Blocks may arrive in any order, but one block's lines are never interleaved with
+another's.
 
 ## 3a. Console renderer
 
-- Renderer thread owns stdout. Modes: `fancy` (default when `isatty(1)` && TERM≠dumb),
-  `plain`, `none`; flag `--progress=`, env `NO_COLOR` respected.
-- **Fancy mode:** two pinned bottom lines:
-  line 1 `[done/total] <last-started short display>`; line 2 the bar:
-  `[####....]  P%   R running   MM:SS` (bar glyphs: `█░` when UTF-8 locale, `#-` otherwise).
-  Repaint on event arrival (condvar wake), coalescing with a MINIMUM repaint interval of
-  33 ms (≈30 Hz ceiling): a fixed slow poll (e.g. 250 ms) is non-compliant: the bar must
-  feel live. Per repaint:
-  `ESC[?2026h`, cursor to pinned start (track by counting our own newlines), `ESC[2K` per
-  line, print pending scroll lines, repaint pinned, `ESC[?2026l`. Width from TIOCGWINSZ,
-  refreshed on SIGWINCH (self-pipe trick; no async-signal-unsafe calls in handler).
-- Total may grow (GraphGrew): display new denominator immediately; if expansions pending,
-  append `…` after the denominator: `[137/212…]`.
-- Failures: on TaskFinished(Failed), immediately scroll the task's LogBlock wrapped in
-  red header/footer. On exit, ALWAYS clear pinned lines, then print summary:
-  `✓ 212 tasks, 38 cached, 1m12s` or `✗ 3 failed:` + display list.
-- **Plain mode:** one line per finished task `[137/212] ok  <display>  412ms`; heartbeat
-  every 5s if nothing finished. If env `TEAMCITY_VERSION` set, also emit
-  `##teamcity[progressMessage '[137/212] ...']` (escape per TC rules).
+The renderer thread owns stdout. Its modes are `fancy` (the default when stdout is a
+terminal and `TERM` isn't `dumb`), `plain` and `none`, chosen with `--progress=`, and it
+respects `NO_COLOR`.
 
-**Acceptance:** golden-output test for plain mode; fancy mode smoke-tested via PTY
-(openpty) asserting no output after the clear-on-exit; SIGWINCH during build ⇒ no crash.
+Fancy mode pins two lines to the bottom of the terminal. The first shows
+`[done/total]` and the last task that started. The second is a progress bar,
+`[####....]  P%   R running   MM:SS`, drawn with `█░` in a UTF-8 locale and `#-`
+otherwise. The renderer repaints when an event arrives, at most every 33 ms (about
+30 Hz), so the bar feels live; a slow fixed poll such as 250 ms isn't good enough. A
+repaint wraps everything in `ESC[?2026h` and `ESC[?2026l`, moves the cursor back to the
+pinned lines (it counts the newlines it wrote), clears each line with `ESC[2K`, prints
+the lines that scroll, then redraws the pinned ones. The width comes from TIOCGWINSZ
+and is refreshed on SIGWINCH through a self-pipe, so the signal handler does nothing
+unsafe.
 
-## 4. Configuration model
+The total can grow while the build runs. The new total shows at once, followed by `…`
+while manifests are still being evaluated: `[137/212…]`.
+
+When a task fails, its log scrolls up at once between a red header and footer. On exit
+the renderer always clears the pinned lines, then prints a summary such as
+`✓ 212 tasks, 38 cached, 1m12s`, or `✗ 3 failed:` and the failed tasks.
+
+Plain mode prints one line per finished task, `[137/212] ok  <display>  412ms`, and a
+heartbeat every 5 seconds when nothing finishes. When `TEAMCITY_VERSION` is set, it also
+emits `##teamcity[progressMessage '[137/212] ...']`, escaped as TeamCity expects.
+
+Plain mode has golden-output tests. Fancy mode is smoke-tested through a pseudo-terminal
+(`openpty`): nothing is printed after the final clear, and a SIGWINCH during a build
+doesn't crash it.
+
+## 4. Configuration
 
 ```cpp
 struct ConfigTuple {
-  std::string platform;         // "linux" | "windows" (extensible)
+  std::string platform;         // "linux" | "windows" (more may come)
   std::string config;           // "dev" | "release" | "editor" | "shipping"
-  std::map<std::string,std::string> features;    // free-form flags from target/CLI
-  std::vector<std::string> enabled_plugins;      // RESOLVED set, sorted (spec §8)
-  std::map<std::string,std::string> env_allow;   // explicit allowlisted env (e.g. VULKAN_SDK)
-  Hash256 hash() const;         // CanonicalHasher over all of the above
-  std::string name() const;     // "linux-dev": used in .kiln/out/<name>/
+  std::map<std::string,std::string> features;    // free-form flags from the target or CLI
+  std::vector<std::string> enabled_plugins;      // the resolved set, sorted (§8)
+  std::map<std::string,std::string> env_allow;   // allowlisted environment (e.g. VULKAN_SDK)
+  Hash256 hash() const;         // CanonicalHasher over all of it
+  std::string name() const;     // "linux-dev", as in .kiln/out/<name>/
 };
 ```
 
-Multiple ConfigTuples may be built in one invocation (`kiln build game:linux-dev
-game:linux-release`). **All targets of one invocation build in one graph** (one
-scheduler, one trace store): each target, its tool targets and its companions are
-resolved first; a target's *level* is one more than the highest level of the tool
-targets it runs (whose binaries' hashes its lowering folds in); each level's targets
-expand, lower into the shared graph and run together, so `kiln build a b` overlaps a's
-and b's work. A tool target that failed fails the build before a target running it is
-lowered. Targets doing the same work share its task (identity is content, §7.2a).
-Targets of one config name share `.kiln/out/<platform>-<config>/`; two different tasks
-declaring one output path would race, so lowering fails before anything runs with
-`targets 'A' and 'B' both write <path> with different tasks (...)`, and a second request
-for one task identity with different params is an error too. The reports (`graph.json`
-per config, `.kiln/logs/last_why.json`) cover the run's targets.
+One invocation can build several configs (`kiln build game:linux-dev
+game:linux-release`), and all the targets of one invocation build in one graph, with
+one scheduler and one trace store.
+
+Kiln first resolves each target, the tool targets it runs and its companions. A
+target's level is one more than the highest level among the tool targets it runs,
+because its lowering hashes those tools' binaries. Each level's targets are expanded and
+lowered into the shared graph and run together, so `kiln build a b` works on a and b at
+the same time. If a tool target fails, the build stops before any target that runs it
+is lowered.
+
+Targets that do the same work share the task, since a task's identity is its content
+(§7.2a). Targets with the same config name share `.kiln/out/<platform>-<config>/`. Two
+different tasks writing one output path would race, so lowering stops before anything
+runs, with `targets 'A' and 'B' both write <path> with different tasks (...)`. Asking
+for one task identity with two different sets of parameters is also an error. The
+reports (`graph.json` per config and `.kiln/logs/last_why.json`) cover every target of
+the run.
 
 ## 5. Dynamic dependencies
 
-- `TaskCtx::report_dep(path)`: thread-safe append; paths validated (exist, inside
-  workspace or an allowlisted SDK root from `env_allow`), normalized, deduped, sorted
-  before storing in trace.
-- Semantics: the digest a trace stores covers the dep set the run discovered, so the
-  build after a dep-set change (the first build included) runs nothing. The post-run
-  digest reuses every hash the pre-run digest read; a newly discovered dep is hashed
-  after the run, which is sound only if the tool read that content. So a new dep whose
-  mtime is not before the task's start (less a margin for the kernel's coarse file
-  clock: 50 ms, or 2 s for a whole-second mtime) makes the trace keep the pre-run digest
-  and the next build reruns the task: an input edited mid-run never caches a stale
-  output.
+A task reports inputs it discovers with `TaskCtx::report_dep(path)`, which is safe to
+call from any thread. Each path must exist inside the workspace or inside an SDK root
+allowed through `env_allow`. Paths are normalized, deduplicated and sorted before they
+go in the trace.
 
-Built-in rules discover dynamic deps with two helpers (§5a, §5b).
+The digest stored in a trace covers the dependencies that run discovered, so the build
+after the set changes, the first build included, runs nothing. The digest after a run
+reuses every hash read before it. A dependency found during the run is hashed after
+it, though, and that is only safe if the tool read the same content. So if a newly
+found dependency was modified after the task started (allowing for the kernel's coarse
+file clock: 50 ms, or 2 s when modification times have whole-second precision), the
+trace keeps the pre-run digest and the next build reruns the task. An input edited
+during a run can never leave a stale output cached.
+
+The built-in rules discover dependencies in two ways.
 
 ### 5a. Depfile parsing
 
-clang `-MD -MF` depfile parsing: Make syntax, handling escaped spaces and
-backslash-newlines.
+Kiln reads clang's `-MD -MF` depfiles: Make syntax, including escaped spaces and
+backslash line continuations.
 
 ### 5b. GLSL include scanner
 
-A naive `#include "..."` scanner for GLSL (recursive, cycle-guarded) used by
-`compile_shader`.
+`compile_shader` uses a simple scanner that follows `#include "..."` lines
+recursively, guarding against cycles.
 
-**Acceptance:** transitive shader include edit ⇒ exactly the right shader tasks rerun
-on next build; removing an include ⇒ dep disappears from trace after one rebuild;
-`report_dep` outside workspace/SDK roots ⇒ hard task failure with clear message.
+The tests check that an edit to an indirectly included shader file reruns exactly the
+right shaders, that a removed include leaves the trace after one rebuild, and that
+reporting a path outside the workspace or SDK roots fails the task with a clear message.
 
-## 6. Luau layer
+## 6. The Luau layer
 
 ### 6.1 VM lifecycle
 
-One fresh `lua_State` per expansion unit (per manifest/target file evaluation), created
-from a shared compiled-bytecode cache (`luau_compile` keyed by source hash). Sandboxing:
-build the global table explicitly: provide ONLY: base lib minus `print`/`loadstring`,
-`table`, `string`, `math` minus `random`/`randomseed`, `bit32`, and the Kiln API below.
-`luaL_sandbox` applied. **Memory limit 256 MiB, enforced via the custom allocator**: the
-`lua_Alloc` passed to `lua_newstate` tracks total live bytes and returns NULL when an
-allocation would exceed the cap (Luau then raises a memory error) ⇒ user-facing error
-"manifest exceeded memory budget (256 MiB)" with the manifest path. An instruction-count
-interrupt (safepoint callback, no stack operations inside it) fires at 500M safepoints
-(configurable) ⇒ error "manifest exceeded execution budget". The interrupt budget is NOT
-a substitute for the allocator cap: few instructions can allocate unbounded memory
-(`string.rep`, table growth); both limits are REQUIRED.
+Every manifest or target file is evaluated in a fresh `lua_State`, created from a shared
+cache of compiled bytecode keyed by the source's hash. The global table is built by
+hand and contains only the base library without `print` and `loadstring`, `table`,
+`string`, `math` without `random` and `randomseed`, `bit32`, and Kiln's API below.
+`luaL_sandbox` is applied.
 
-### 6.2 Manifest environment API (exact surface)
+Each evaluation gets two limits, and both are required. Memory is capped at 256 MiB by
+a custom allocator: the `lua_Alloc` given to `lua_newstate` counts live bytes and
+returns NULL when an allocation would go over, which Luau turns into a memory error.
+The user sees "manifest exceeded memory budget (256 MiB)" with the manifest's path.
+Separately, an interrupt callback (which touches no stack) counts safepoints and stops
+the evaluation at 500 million, configurable, with "manifest exceeded execution budget".
+The instruction budget can't replace the memory cap, because a few instructions can
+allocate without bound (`string.rep`, a growing table).
 
-All declaration functions use the `name { table }` curried form. Fields marked * required.
+### 6.2 The manifest API
+
+Every declaration uses the curried `name { table }` form. Fields marked `*` are
+required.
 
 ```
 plugin(name: string)(spec: {
   enabled_by_default: boolean?,        -- default true
-  supported_platforms: {string}?,      -- absent ⇒ all
+  supported_platforms: {string}?,      -- absent: all
   supported_configs: {string}?,
   public_deps: {string}?, private_deps: {string}?, optional_deps: {string}?,
-  version: string?,                    -- informational only, NOT hashed
+  version: string?,                    -- informational, not hashed
 })
 
 module(name: string)(spec: {
-  sources: FileSet*,                   -- from glob() or explicit {paths}
+  sources: FileSet*,                   -- from glob() or a list of paths
   exclude: FileSet?,                   -- removed from sources after expansion (plugin-relative)
-  public_includes: {string}?,          -- dirs, plugin-relative; default {"include"}
+  public_includes: {string}?,          -- plugin-relative directories; default {"include"}
   private_includes: {string}?,
   public_defines: {string}?, private_defines: {string}?,
-  deps: { public: {string}?, private: {string}? }?,  -- module-level refs "plugin/module" or "module"
-  platforms: {string}?, configs: {string}?,          -- filter, data not logic
-  cpp_std: string?,                    -- default from workspace
+  deps: { public: {string}?, private: {string}? }?,  -- "plugin/module" or "module"
+  platforms: {string}?, configs: {string}?,          -- filters, data rather than logic
+  cpp_std: string?,                    -- default from the workspace
 })
 
 cook(name: string)(spec: {
-  rule: string*,                       -- a rule a rule library defines (spec §6.8), or a C++ one
+  rule: string*,                       -- a rule from a rule library (§6.8) or a C++ rule
   inputs: FileSet*,
   exclude: FileSet?,                   -- removed from inputs after expansion (plugin-relative)
   params: {[string]: string}?,         -- flat, hashed
   platforms: {string}?, configs: {string}?,
 })
 
-target(name: string)(spec: {           -- only legal in build/*.target.luau
+target(name: string)(spec: {           -- only in build/*.target.luau
   platforms: {string}*, default_config: string?,
   enable_plugins: {string}?, disable_plugins: {string}?,
   features: {[string]: string}?,
-  link: {string}?,                     -- root modules to link into the binary
+  link: {string}?,                     -- root modules linked into the binary
 })
 
-command(name: string)(spec: {          -- only legal in kiln.workspace.luau
+command(name: string)(spec: {          -- only in kiln.workspace.luau
   help: string?,                       -- its line in `kiln --help`
   build: {string}?,                    -- targets built first, in the command's config
-  run: {string}*,                      -- argv; tokens below; the user's args appended
+  run: {string}*,                      -- the argv, with the tokens below; the user's args follow
   config: string?,                     -- default: the workspace's default_config
 })
 
-glob(pattern: string) -> FileSet       -- see 6.4 (not in rule libraries)
+glob(pattern: string) -> FileSet       -- see §6.4 (not available in rule libraries)
 path.join(a, b), path.parent(p), path.basename(p),
 path.norm(p), path.extension(p), path.replace_extension(p, ext),
 path.relative(p, base)                 -- pure string helpers
-rule(name: string)(spec: { ... })      -- only in a rule library, spec §6.8
-config: frozen table {platform, config, features}   -- read-only view for data filters
+rule(name: string)(spec: { ... })      -- only in a rule library (§6.8)
+config: frozen table {platform, config, features}   -- read-only, for data filters
 ```
 
-Calling `plugin`/`module`/`cook` outside a plugin manifest, `target` outside a target
-file, or `command` outside the workspace file ⇒ error with file:line.
+`plugin`, `module` and `cook` are only allowed in a plugin manifest, `target` only in a
+target file and `command` only in the workspace file. Anything else is an error with
+the file and line.
 
-**Workspace commands.** `kiln <name> [args...]` (or `kiln run [--config C] [-j N]
-[--workspace P] <name> [args...]`) runs the workspace's command `name`: it builds
-`build` (a failed build exits 1 and runs nothing), then replaces Kiln's process with
-`run` plus the user's arguments, at the workspace root, so the program's output and
-exit code are the command's. `run`'s tokens: `{workspace}` (the absolute root),
-`{platform}` (the host's), `{config}` (the config dir, `linux-dev`), `{bin:<target>}`
-(that target's binary in it; an unknown target is an error) and `{kiln}` (Kiln's own
-binary). A name must match `[a-z][a-z0-9-]*` and not be a built-in verb (§13). `kiln
---help` and `kiln run` with no name list the commands. The workspace's `test_target`
-is `kiln test`'s default target, and `smoke = { suite?, hamr? }` names `kiln smoke`'s
-hamr suite (default `hamr.cluau`) and a script whose last stdout line is the hamr
-binary (default: `hamr` on PATH). Duplicate names within a scope ⇒ error listing both sites.
-**Unknown spec fields are ERRORS**, with file:line and a did-you-mean suggestion via
-edit distance against the known field set (`unknown field 'public_deqs': did you mean
-'public_deps'?`). Silent ignoring of unknown fields is forbidden: a typo'd dependency
-that vanishes silently is the worst failure mode a manifest can have. Fields that are
-recognized but inert (currently only `sealed`) warn once per file, not error.
-Declarations append to a C++-side ordered vector; nothing executes.
+`kiln <name> [args...]`, or `kiln run [--config C] [-j N] [--workspace P] <name>
+[args...]`, runs one of the workspace's commands. Kiln builds the command's `build`
+targets first. If that fails it exits with 1 and runs nothing. Otherwise it replaces its
+own process with `run` plus the user's arguments, started at the workspace root, so
+the program's output and exit code become the command's. `run` may contain
+`{workspace}` (the absolute root), `{platform}` (the host's), `{config}` (the config
+directory, such as `linux-dev`), `{bin:<target>}` (that target's binary there; an
+unknown target is an error) and `{kiln}` (Kiln's own binary). A command name must match
+`[a-z][a-z0-9-]*` and can't be one of the built-in verbs (§13). `kiln --help`, and
+`kiln run` without a name, list the commands.
 
-**Manifest restriction:** after evaluation, walk the Luau AST (Luau's analysis API) of
-manifest files and reject `function` definitions and `while/repeat` loops (numeric `for`
-over declarations is allowed). Emit as errors with file:line. Rule libraries (spec §6.8)
-are exempt: they define their rules' functions.
+The workspace's `test_target` is what `kiln test` builds and runs when no target is
+named. `smoke = { suite?, hamr? }` gives `kiln smoke` its hamr suite (default
+`hamr.cluau`) and a script whose last line of output is the hamr binary to use
+(default: `hamr` on `PATH`).
+
+Two declarations with the same name in one scope are an error that lists both. An
+unknown field is an error too, with the file, the line and a suggestion based on edit
+distance (`unknown field 'public_deqs' (did you mean 'public_deps'?)`). Kiln never
+ignores a field it doesn't know, because a misspelled dependency that silently vanishes
+is the worst thing a manifest can do. The one exception is a field Kiln recognises but
+doesn't act on yet (currently only `sealed`), which warns once per file. Declarations
+are appended to an ordered list on the C++ side; evaluating a manifest runs nothing.
+
+After evaluation, Kiln walks each manifest's syntax tree with Luau's analysis API and
+rejects `function` definitions and `while` and `repeat` loops, each reported with its
+file and line. A numeric `for` over declarations is allowed. Rule libraries (§6.8) are
+exempt, since they define functions.
 
 ### 6.3 require()
 
-Host-implemented. Resolution: `require "build/cpp_defaults"` ⇒
-`<workspace>/build/cpp_defaults.luau` (no `..` escapes, no absolute paths, error
-otherwise). Loaded modules are evaluated in the SAME restricted env, cached per
-expansion. Every required file's `(path, content_hash)` is recorded into the expansion
-node's input set.
+Kiln implements `require` itself. `require "build/cpp_defaults"` loads
+`<workspace>/build/cpp_defaults.luau`. A path with `..` or an absolute path is an
+error. A required module runs in the same restricted environment and is cached for the
+rest of the evaluation, and each required file's path and content hash become inputs of
+the expansion.
 
 ### 6.4 glob()
 
-Executed eagerly at expansion time by the host. Syntax: `*`, `**`, `?`, `{a,b}`.
-Rooted at the manifest's directory. Patterns MAY begin with `../` segments (resolved by
-walking the glob root upward): REQUIRED as a migration ramp, so trees can move into
-plugins incrementally while builds stay green: but every resolved result MUST be
-validated to lie inside the workspace; matches outside it are an error naming the
-pattern. Sources and content live inside the plugin directory per the residency
-principle (`src/`, `include/`, `content/`: spec §0); a `../` glob is a migration state or a
-rare, justified exception, never the steady state: self-contained plugins move between
-roots as a plain `git mv`, while `../`-escaped inputs are depth-sensitive and derive
-AssetIDs from the resolved workspace path (spec §9). Returns a FileSet
-userdata carrying the SORTED matched list AND the pattern. The expansion node's digest includes the pattern plus the
-hash of the sorted result list (so file adds/removes re-expand). Symlinks not followed.
-Only the directories under the patterns' shared literal prefix are walked (`src/*.cpp`
-lists `src/`, not the plugin); the result is the same as a full walk's.
-Empty glob ⇒ warning by default, error if `strict_globs=true` in workspace file.
+Kiln runs globs when a manifest is evaluated. The syntax is `*`, `**`, `?` and `{a,b}`,
+rooted at the manifest's directory. A pattern may start with `../` segments, which move
+the root up. Kiln supports this so a source tree can move into plugins a piece at a
+time while the build keeps working, but every match must lie inside the workspace, and
+a match outside it is an error naming the pattern.
+
+Sources and content belong inside the plugin (`src/`, `include/`, `content/`, as §0
+says). A `../` glob should be a temporary state or a rare exception. A self-contained
+plugin can move between roots with a plain `git mv`, while inputs reached through
+`../` depend on the directory depth, and their asset ids come from the resolved
+workspace path (§9).
+
+`glob` returns a FileSet that carries the sorted list of matches and the pattern. The
+expansion's digest includes the pattern and the hash of the sorted list, so adding or
+removing a file re-evaluates the manifest. Symlinks are not followed. Kiln only walks
+the directories under a pattern's literal prefix (`src/*.cpp` lists `src/`, not the
+whole plugin), which gives the same result as a full walk. An empty glob is a warning,
+or an error when the workspace sets `strict_globs = true`.
 
 ### 6.5 Determinism canary
 
-Test: evaluate every fixture manifest twice in fresh VMs; assert byte-identical
-serialized declaration sets and identical expansion digests. Note this canary does NOT
-detect table-iteration-order dependence (both evaluations share the same layout/order);
-that risk is covered structurally instead: declarations are collected in call order and
-every key-iterated emission is sorted before hashing (spec §2.3): and end-to-end by the
-bootstrap convergence check (spec §7a.2; note the division of labor: this canary asks "same
-builder twice, same output?", the convergence check asks "successive builders, same
-output?"). There is no `--shuffle` iteration-seed mode; the mitigations above cover
-that risk.
+A test evaluates every fixture manifest twice, in fresh VMs, and checks that the
+serialized declarations and the expansion digests are byte-identical.
+
+This can't catch code that depends on table iteration order, because both evaluations
+lay their tables out the same way. That risk is handled by construction instead:
+declarations are collected in call order, and anything emitted by iterating over keys
+is sorted before it is hashed (§2.3). The bootstrap convergence check (§7a.2) then
+covers it end to end. The two checks answer different questions. The canary asks
+whether one builder gives the same output twice; the convergence check asks whether
+successive builders do. There is no mode that shuffles iteration order, because these
+measures already cover it.
 
 ### 6.6 build.d.luau
 
-Ship complete luau-lsp typedefs for spec §6.2 in `types/build.d.luau` + a `.luaurc` template
-for the workspace. Keep in lockstep with the C++ API (a test greps exported names).
-`kiln check` (spec §6.7) loads them for every manifest, so they are real Luau definitions
-(`declare x: T`, never `declare const`), `any`-free, and describe what the evaluator
-accepts: a FileSet nests (`{ [number]: string | FileSet }`), a string list is
-`{ string? }` (a nil entry is skipped), and `require` is Luau's own (declaring it would
-replace the built-in the checker types a resolved require through).
+`types/build.d.luau` holds complete luau-lsp type definitions for the API in §6.2, and
+the repository ships a `.luaurc` template for workspaces. The definitions follow the
+C++ API, and a test compares the exported names. `kiln check` (§6.7) loads them for
+every manifest, so they are real Luau declarations (`declare x: T`, never `declare
+const`), free of `any`, and describe exactly what the evaluator accepts. A FileSet can
+nest (`{ [number]: string | FileSet }`), a list of strings is `{ string? }` because nil
+entries are skipped, and `require` is left as Luau's own, since declaring it would
+replace the built-in the checker uses to type a resolved module.
 
 ### 6.7 cluau manifests
 
-Every manifest role may be written in cluau (C-syntax-flavoured Luau, the
-vendored `plugins/cluau` translator): `kiln.workspace.cluau`,
-`build/*.target.cluau`, `plugins/<name>/plugin.build.cluau` and required
-helpers `build/<name>.cluau`. One manifest per role per directory (both
-names is an error), and `require "build/x"` finds `x.cluau` or `x.luau`
-(both is an error). A `.cluau` file is translated in manifest mode (no
-`function` / `while` / `do { } while` / `class`) before the spec §6.2 AST lint
-and the compile; the translation keeps every line on its line, so every
-`file:line` diagnostic points at the cluau source unmapped. The
-expansion task's params carry the translator version, so a translator
-change re-expands every manifest; the determinism canary covers cluau
-fixtures. The `.luau` names stay readable. Kiln's own manifests
-are cluau. `kiln check` type-checks every manifest role against spec §6.6's
-definitions before anything evaluates it: `.cluau` in strict mode plus
-cluau's strict rules (`cluau_check`, vendored beside the translator),
-`.luau` nonstrict; `require "build/x"` resolves to the helper module so its
-type flows on; diagnostics are on the cluau lines. `kiln smoke`
-runs it.
+Any manifest can be written in cluau, the C-flavoured Luau dialect whose translator is
+vendored in `plugins/cluau`. That covers `kiln.workspace.cluau`, `build/*.target.cluau`,
+`plugins/<name>/plugin.build.cluau` and helpers under `build/<name>.cluau`. A directory
+may hold only one manifest per role, so having both names is an error, and
+`require "build/x"` finds `x.cluau` or `x.luau` (both is an error too).
+
+A `.cluau` manifest is translated in manifest mode, which forbids `function`, `while`,
+`do { } while` and `class`, before the syntax check of §6.2 and the compile. The
+translation keeps every line where it was, so every `file:line` in a diagnostic points
+at the cluau source without any mapping. The expansion's parameters include the
+translator's version, so a new translator re-evaluates every manifest, and the
+determinism canary includes cluau fixtures. Kiln's own manifests are cluau.
+
+`kiln check` type-checks every manifest against the definitions of §6.6 before
+anything is evaluated: `.cluau` files in strict mode with cluau's own strict rules
+(`cluau_check`, vendored next to the translator), `.luau` files in nonstrict mode.
+`require "build/x"` resolves to the helper, so its types carry through, and diagnostics
+point at the cluau lines. `kiln smoke` runs the check.
 
 ### 6.8 Rule libraries
 
-A rule is cluau (or Luau), not Kiln C++. A **rule library** declares rules:
+A rule is written in cluau or Luau, not in Kiln's C++. A rule library declares rules:
 
 ```
 rule(name: string)(spec: {
-  version: number*,          -- positive integer: the rule's own version (its tasks' rule_version)
-  params: {string}?,         -- the cook params it accepts: a name, or "name." + any suffix;
-                             --   absent ⇒ unchecked; a cook passing another ⇒ error naming the list
-  kind: "cook" | "aggregate"?, -- default "cook"; see Aggregate rules
-  prune_dead_outputs: boolean?, -- see Dead outputs
+  version: number*,          -- a positive integer, the rule_version of its tasks
+  params: {string}?,         -- the cook params it accepts: a name, or "name." and any suffix;
+                             --   absent: unchecked; anything else a cook passes is an error
+  kind: "cook" | "aggregate"?, -- default "cook" (see aggregate rules below)
+  prune_dead_outputs: boolean?, -- see dead outputs below
   lower: (cook, ctx) -> {Action}*,
 })
 ```
 
-- **Where libraries come from:** Kiln's standard libraries (`std/cook`, sources under
-  `plugins/kiln/std/`) are compiled into the binary and always loaded; a workspace adds
-  its own with `workspace { rules = { "build/rules/x" } }` (workspace-relative, resolved
-  like `require`: `x.cluau` or `x.luau`, both an error). A library file is translated as
-  an ordinary cluau module (functions allowed), evaluated in the manifest sandbox (no I/O,
-  no clock; `glob` and every declaration but `rule` are errors), and may `require` helpers.
-  A rule name defined twice is an error naming both sites.
-- **When lowering runs:** at the end of a plugin manifest's evaluation, for every `cook`
-  whose rule is not one of the C++-lowered rules, the libraries are loaded (once per
-  evaluation, only when such a cook exists) and `lower(cook, ctx)` is called.
-  `cook = {name, rule, inputs (after exclude), params, file}`; `ctx = {plugin,
-  plugin_dir, out_dir = ".kiln/out/<platform>-<config>/assets/<plugin>", platform,
-  config, features}`. The returned actions are recorded on the cook in the DeclSet, so
-  they are part of the expansion's output and digest: the libraries a manifest loaded
-  are expansion inputs (a workspace library as a required file, the standard ones as the
-  `rules.std` param - the hash of their sources), and editing one re-lowers what uses it.
-- **Actions** (validated; an error names the cook, the rule and the field):
-  `{primary?, kind? = "exec" | "copy", tool? | tool_path?, args?, env?, inputs?,
-  optional_inputs?, outputs*, stdout?, depfile?, dyndep?, scan?, scan_dirs?, asset?,
-  asset_id?, asset_tags?, asset_type?, provides?, module_sources?}`. `primary` defaults to `inputs[1]` and is
-  the task's identity, unique per rule; `inputs` defaults to `{primary}`; an exec action
-  names exactly one of `tool` (a name: the workspace `tools` table, else PATH, resolved at
-  lowering - not found ⇒ error naming the tool) and `tool_path` (a build output or an
-  absolute path); a copy has one output and no tool. Outputs, `depfile` and `dyndep` lie
-  under `.kiln/out/`. `scan = "quoted_include"` reports the primary's `#include "..."`
-  closure (spec §5b), searching the includer's directory and then each of `scan_dirs`;
-  `depfile` is Make syntax (spec §5a); `dyndep` is JSON `{"inputs": [...], "identity":
-  "<hex>"?, "tags": [...]?, "type": <u32>?}` (paths inside the workspace). `stdout` names an output the
-  process's standard output is written to. The token `{workspace}` in an arg becomes the
-  absolute workspace root when the action runs (the params keep the token, so digests stay
-  machine-independent). `asset` names
-  the output registered as the primary's asset, or one of the action's inputs (packed
-  verbatim). Its id is `asset_id` when given (32 or 64 lowercase hex), else the dyndep's
-  `identity` (read by the plugin's asset record at run time), else
-  BLAKE3(plugin + "/" + plugin-relative primary) (spec §9); `asset_tags` tags it, together
-  with the dyndep's `tags` (§9); its number in the pack table is `asset_type`, else the
-  dyndep's `type`, else 0 (Kiln reads no asset's bytes). The sandbox's `hash.blake3(s)` (64 lowercase hex) lets a
-  rule tell the tool the id it will be packed under.
-- **Optional inputs:** `optional_inputs` lists files that may be absent (never under
-  `.kiln/out/`). Each one's content, or a fixed absence marker, enters the digest after
-  the inputs (only for a task that has any), so creating, editing or deleting one reruns
-  the task; a missing one is not an error.
-- **Named outputs:** `provides = { name = output }` names some of the action's outputs
-  (a name is unique per plugin). An action refers to one with the token
-  `{use:<plugin>/<name>}` (`{use:<name>}`: its own plugin) in `args`, `inputs` or `env`
-  values: at target lowering the token becomes the path, the path becomes an input, and
-  the producing task a dependency. The plugin must be the action's own or one it depends
-  on (directly or transitively, optional deps when enabled); an unknown name or plugin is
-  an error naming the cook and what the plugin publishes. Expansion cannot resolve them
-  (it is independent of the enabled set, §7.1), so tokens stay in the DeclSet. More
-  generally, an action input another task of the target declares as an output makes that
-  task a dependency.
-- **Generated module sources:** `module_sources` lists outputs (generated C++) that every
-  module of the action's plugin that has sources compiles, with that module's settings
-  and PCH, into `obj/<plugin>/<module>/<v10>/<basename>.o` after its own sources. Such
-  actions are lowered before the plugin's modules, and each one's task is part of the
-  module's variant (§7.2a).
-- **Aggregate rules:** a cook of a `kind = "aggregate"` rule is not lowered at expansion
-  (its DeclSet entry carries `rule_kind = "aggregate"` and no actions). At target
-  lowering, after every plugin, Kiln runs `lower(cook, ctx)` in the same sandbox with two
-  more ctx fields: `plugins` (the enabled plugins, topological order) and
-  `outputs[plugin][name]` (every named output); its `{use:...}` tokens may name any
-  enabled plugin. It runs every build (it is per target and cheap) and is not cached.
-- **Dead outputs:** a rule with `prune_dead_outputs = true` promises its primaries are
-  files. After a build, every trace of such a rule whose primary file is gone has its
-  outputs under `.kiln/out/` deleted and the trace erased (a moved or deleted source
-  leaves no output a directory scan would find). Each build records the flag of every
-  rule it lowered in `.kiln/prune_rules.json`, so `kiln clean --dead` prunes without
-  lowering.
-- **Execution:** every action is one task of rule `<rule name>` run by the built-in
-  `exec` TaskFn; its params carry the whole action (`exec.arg.NNNN`, `exec.env.K`,
-  `tool` + `tool_hash`, ...) plus `exec.version` (bumped when exec's behaviour changes).
-  A failure reads `<rule> failed (<code>): <primary>`; an output the tool did not write
-  fails the task.
-- `kiln check` types a workspace's libraries with its manifests (strict for `.cluau`,
-  spec §6.7); `types/build.d.luau` declares `Cook`, `RuleCtx`, `Action` and `RuleSpec`.
+#### Where rules come from
 
-**Acceptance:** fixture plugin builds end-to-end from a manifest; comment edit in
-manifest re-expands but zero tasks run; `require`d helper edit re-expands; AST
-restriction errors fire; canary passes. A workspace rule library's exec action runs
-with its env, its depfile and dyndep inputs rerun it, an edit to the library re-lowers
-it, the standard libraries type-check clean, and every rule error names its cause.
+Kiln's standard library (`std/cook`, with its sources in
+`plugins/kiln/std/`) is compiled into the binary and always loaded. A workspace adds
+its own libraries with `workspace { rules = { "build/rules/x" } }`, resolved like
+`require` (`x.cluau` or `x.luau`, not both). A library is translated as an ordinary
+cluau module, so functions are allowed, and runs in the manifest sandbox: no I/O, no
+clock, and no `glob` or declarations other than `rule`. It may require helpers. A rule
+name defined twice is an error that names both places.
 
-## 7. Two-graph model
+#### When rules run
 
-### 7.1 Expansion nodes
+At the end of a plugin manifest's evaluation, Kiln loads the
+libraries (once, and only if the manifest has a cook that needs them) and calls
+`lower(cook, ctx)` for every cook whose rule isn't one of the C++ rules. `cook` holds
+`name`, `rule`, `inputs` (after `exclude`), `params` and `file`. `ctx` holds `plugin`,
+`plugin_dir`, `out_dir` (`.kiln/out/<platform>-<config>/assets/<plugin>`), `platform`,
+`config` and `features`. The actions `lower` returns are stored with the cook in the
+DeclSet, so they are part of the expansion's output and digest. The libraries a
+manifest loaded are inputs of its expansion: a workspace library as a required file,
+the standard library through the `rules.std` parameter (a hash of its sources). Editing
+a library lowers again whatever uses it.
 
-Expansion is a task with `rule="expand_plugin"` (or `expand_target`), primary_input =
-manifest path, config_hash = the ConfigTuple; its params carry the platform, config and
-features (`feature.<k>`) the one host rule evaluates it with. Inputs: manifest + required files + glob
-result hashes + **dep plugins' DeclSets** (their expansion outputs: NOT their provider
-records, and NOT anything requiring dep compilation; the include dirs and defines that
-lowering needs are all present in dep DeclSets). Output: a serialized
-**DeclSet** JSON at `.kiln/graph/<config>/<variant>/<plugin>.declset.json` (variant = the ConfigTuple hash prefix): the normalized declaration
-set (all specs resolved, globs materialized, module deps name-resolved). The action
-graph for that plugin is generated FROM the DeclSet by C++ rule lowering (deterministic;
-lowering code version is a rule_version).
+#### Actions
 
-Analysis caching therefore = ordinary trace caching of expansion tasks. No special code.
-Within one invocation the resolution pass and the expansion tasks share a memo: an
-expansion depends only on (manifest, platform, config, features), so targets with the same
-features evaluate a manifest once, and each glob is walked once per invocation (the
-build writes nothing under a plugin tree; every invocation re-globs, so file adds still
-re-expand).
+An action is a table with these fields, and a bad one is an error naming
+the cook, the rule and the field: `{primary?, kind? = "exec" | "copy", tool? |
+tool_path?, args?, env?, inputs?, optional_inputs?, outputs*, stdout?, depfile?,
+dyndep?, scan?, scan_dirs?, asset?, asset_id?, asset_tags?, asset_type?, provides?,
+module_sources?}`.
 
-Consequence (normative): expansion+lowering for the whole plugin graph depends only on
-manifests and can complete before ANY compilation runs. Compilation of a dependent
-plugin MUST be able to overlap with compilation of its dependencies: gated only by
-7.2's interface records, never by dep link tasks.
+`primary` defaults to the first input and is the task's identity, so it must be unique
+within the rule. `inputs` defaults to `{primary}`. An exec action names exactly one of
+`tool`, looked up in the workspace's `tools` table and then on `PATH` when the action is
+lowered (not finding it is an error naming the tool), or `tool_path`, a build output or
+an absolute path. A copy has one output and no tool. Outputs, the depfile and the
+dyndep file all live under `.kiln/out/`.
 
-### 7.2 Providers: split into interface and implementation records
+An action finds the inputs it discovers in one of three ways:
 
-Two small tasks per plugin, not one monolithic provider:
+- `scan = "quoted_include"` reports the primary's closure of `#include "..."` lines
+  (§5b), looking in the including file's directory and then in each of `scan_dirs`.
+- `depfile` names a Make-syntax depfile (§5a).
+- `dyndep` names a JSON file, `{"inputs": [...], "identity": "<hex>"?, "tags": [...]?,
+  "type": <u32>?}`, whose paths lie inside the workspace.
 
-**Interface record**: depends ONLY on the plugin's public headers and its public deps'
-interface records (header hashing, no compilation). Available almost immediately; this
-is what unblocks dependents' compiles.
+`stdout` names an output that receives the process's standard output. The token
+`{workspace}` in an argument becomes the absolute workspace root when the action runs;
+the parameters keep the token, so digests don't depend on where the workspace is.
+
+`asset` names the output registered as the primary's asset, or one of the action's own
+inputs to pack as it is. The asset's id is `asset_id` if given (32 or 64 lowercase hex
+characters), else the `identity` in the dyndep file (read by the plugin's asset record
+when it runs), else BLAKE3 of the plugin name, a slash and the plugin-relative primary
+(§9). Its tags are `asset_tags` plus the dyndep's `tags` (§9). Its type number in the
+pack table is `asset_type`, else the dyndep's `type`, else 0; Kiln never reads an
+asset's bytes to find out. Inside the sandbox, `hash.blake3(s)` returns 64 lowercase
+hex characters, so a rule can tell its tool the id an asset will be packed under.
+
+#### Optional inputs
+
+`optional_inputs` lists files that may not exist, never under
+`.kiln/out/`. Each one's content, or a fixed marker for its absence, goes into the
+digest after the other inputs, so creating, editing or deleting one reruns the task. A
+missing one is not an error.
+
+#### Named outputs
+
+`provides = { name = output }` gives names to some of an action's
+outputs; a name is unique within its plugin. Another action refers to one with
+`{use:<plugin>/<name>}`, or `{use:<name>}` within its own plugin, in its `args`,
+`inputs` or `env` values. When the target is lowered, the token becomes the path, the
+path becomes an input, and the producing task becomes a dependency. The plugin must be
+the action's own or one it depends on, directly or not (an optional dependency counts
+when it is enabled). An unknown name or plugin is an error naming the cook and what the
+plugin does publish. These tokens stay unresolved in the DeclSet, because expansion
+doesn't know which plugins are enabled (§7.1). More generally, an action input that
+another task of the target declares as an output makes that task a dependency.
+
+#### Generated module sources
+
+`module_sources` lists outputs (generated C++) that every
+module of the action's plugin with sources compiles, with that module's settings and
+PCH, into `obj/<plugin>/<module>/<v10>/<basename>.o` after its own sources. Kiln lowers
+these actions before the plugin's modules, and each one's task is part of the module's
+variant (§7.2a).
+
+#### Aggregate rules
+
+A cook whose rule has `kind = "aggregate"` isn't lowered during
+expansion: its DeclSet entry says `rule_kind = "aggregate"` and has no actions. When a
+target is lowered, after every plugin, Kiln calls `lower(cook, ctx)` in the same sandbox
+with two more fields in `ctx`: `plugins`, the enabled plugins in dependency order, and
+`outputs[plugin][name]`, every named output. Its `{use:...}` tokens may name any enabled
+plugin. An aggregate rule is lowered on every build (it's per target and cheap) and
+isn't cached.
+
+#### Dead outputs
+
+A rule with `prune_dead_outputs = true` promises that its primaries
+are files. After each build, Kiln deletes the outputs under `.kiln/out/` of every trace
+of such a rule whose primary is gone, and erases the trace, so a moved or deleted source
+leaves nothing behind for a directory scan to find. Each build records which rules it
+lowered with the flag in `.kiln/prune_rules.json`, so `kiln clean --dead` can prune
+without lowering anything.
+
+#### Running actions
+
+Each action is one task of the rule, run by the built-in `exec`
+task function. Its parameters hold the whole action (`exec.arg.NNNN`, `exec.env.K`,
+`tool` and `tool_hash`, and so on) plus `exec.version`, which changes when exec's
+behaviour does. A failure reads `<rule> failed (<code>): <primary>`, and an output the
+tool didn't write fails the task.
+
+`kiln check` type-checks a workspace's rule libraries along with its manifests (strict
+for `.cluau`, §6.7); `types/build.d.luau` declares `Cook`, `RuleCtx`, `Action` and
+`RuleSpec`.
+
+The tests build a fixture plugin end to end from its manifest. They check that:
+
+- a comment change in a manifest re-evaluates it but runs no tasks;
+- editing a required helper re-evaluates the manifest;
+- the syntax restrictions fire, and the canary passes;
+- a workspace rule's exec action runs with its environment;
+- its depfile and dyndep inputs rerun it, and editing the library lowers it again;
+- the standard library type-checks cleanly;
+- every rule error names its cause.
+
+## 7. Two graphs
+
+Kiln works with two graphs. The first evaluates manifests into declarations. The second
+is the action graph lowered from those declarations.
+
+### 7.1 Expansion
+
+Evaluating a plugin's manifest is a task of rule `expand_plugin` (a target file's is
+`expand_target`), whose primary input is the manifest path and whose config hash is the
+ConfigTuple. Its parameters hold the platform, the config and the features
+(`feature.<k>`) that the evaluation sees.
+
+Its inputs are the manifest, every required file, the hashes of the glob results and the
+DeclSets of the plugins it depends on. Those DeclSets are the dependencies' expansion
+outputs, not their provider records, and nothing in them needs a dependency to be
+compiled: the include directories and defines that lowering needs are all in the
+DeclSets.
+
+Its output is a JSON **DeclSet** at
+`.kiln/graph/<config>/<variant>/<plugin>.declset.json`, where the variant is a prefix of
+the ConfigTuple's hash. A DeclSet is the plugin's normalized declarations: every spec
+resolved, every glob expanded and every module dependency resolved by name. C++
+lowering code turns it into the plugin's actions deterministically, and that code's
+version is a rule version.
+
+So caching the analysis is ordinary trace caching of expansion tasks, with no special
+code. Within one invocation, the resolution pass and the expansion tasks
+share a memo. An expansion depends only on the manifest, the platform, the config and
+the features, so targets with the same features evaluate a manifest once, and each glob
+is walked once per invocation. Every invocation globs again, since a build writes
+nothing inside a plugin's tree, so new files are still noticed.
+
+As a result, expanding and lowering the whole plugin graph depends only on manifests,
+and can finish before any compilation starts. A dependent plugin's compiles must be able
+to run at the same time as its dependencies' compiles. They wait only for the interface
+records of §7.2, never for a dependency's link.
+
+### 7.2 Interface and implementation records
+
+Each plugin has two small record tasks, instead of one provider that depends on
+everything.
+
+The **interface record** depends only on the plugin's public headers and its public
+dependencies' interface records. It hashes headers and compiles nothing, so it is ready
+almost immediately, and it is what lets dependents start compiling.
 
 ```json
 { "plugin": "audio",
-  "interface_hash": "<hex>",       // hash of: sorted public headers' content hashes,
-                                    //   public_defines, public_include_dirs (paths),
-                                    //   public deps' interface_hashes (transitive)
-  "public_include_dirs": ["plugins/audio/include", ...],   // own + transitive public
+  "interface_hash": "<hex>",       // hash of the public headers' content hashes (sorted),
+                                    //   public_defines, public_include_dirs (paths) and
+                                    //   the public deps' interface_hashes (transitively)
+  "public_include_dirs": ["plugins/audio/include", ...],   // its own and transitive public dirs
   "public_defines": ["AUDIO_ENABLED=1", ...] }
 ```
 
-**Implementation record**: depends on the plugin's archives only. This gates
-dependents' LINK tasks, and only those.
+The **implementation record** depends on the plugin's archives only. Dependents' links
+wait for it, and nothing else does.
 
 ```json
 { "plugin": "audio",
@@ -749,399 +865,445 @@ dependents' LINK tasks, and only those.
   "c_libs": [ {"name": "...", "impl_artifact": "...", "impl_hash": "<hex>"} ] }
 ```
 
-**Archives are thin** (`ar rcsDT`): member paths (relative to the archive) and the
-symbol table, never the members' bytes, so one changed object does not rewrite the
-module's archive. A thin archive's bytes can stay the same when a member's content
-changes, so the archive task also writes `<archive>.members` (each member's content
-hash and path), and the archive's "content" for every hash below is that record.
-Nothing copies an archive elsewhere: its members stay in their variant folder.
+Archives are thin (`ar rcsDT`). They hold their members' paths, relative to the archive,
+and the symbol table, but not the members' bytes, so changing one object doesn't
+rewrite the module's archive. Because a thin archive's bytes can stay the same when a
+member changes, the archive task also writes `<archive>.members`, listing each member's
+path and content hash, and that file stands for the archive wherever an archive is
+hashed below. Nothing copies an archive elsewhere: its members stay in their variant
+folder.
 
-`impl_artifact` names the FIRST archive (single-archive back-compat); `impl_hash`
-is a canonical hash over ALL of the plugin's archives (sorted path + member-record
-hash each): a change to ANY module's archive must change the implementation
-record's output bytes so dependent links re-run (early cutoff keys downstream
-digests on this task's output summary). Hashing only the first archive leaves
-dependent links stale when a later archive changes.
+`impl_artifact` names the first archive, which keeps single-archive readers working.
+`impl_hash` is a canonical hash over all of the plugin's archives (each one's sorted
+path and member-record hash). A change to any module's archive must change the record's
+bytes, so that dependent links rerun, because downstream digests key on this task's
+output summary. Hashing only the first archive would leave links stale when a later
+archive changed.
 
-**Asset record**: `<plugin>.assets.json` beside the provider (rule `asset_manifest`),
-depending on the plugin's cook tasks and declaring its packed files as inputs:
+Beside the provider there is an **asset record**, `<plugin>.assets.json` (rule
+`asset_manifest`). It depends on the plugin's cook tasks and declares its packed files as
+inputs:
 
 ```json
 { "plugin": "audio",
   "asset_manifest": [ {"id": "<hex>", "path": ".kiln/out/.../atlas.ktx2", "hash": "<blob BLAKE3, empty if missing>"} ] }
 ```
 
-Entries carry the cooked blob's CONTENT hash: a content-only recook changes the
-record's output bytes, so pack_target re-runs instead of repacking a stale blob.
-`pack_target` and the daemon's asset events read the asset records, links the
-providers, so a code edit never repacks and a content edit never relinks.
+Each entry carries the cooked blob's content hash. A recook that changes only the
+content changes the record's bytes, so `pack_target` reruns instead of packing a stale
+blob. `pack_target` and the daemon's asset events read the asset records and links read
+the providers, so editing code never repacks and editing content never relinks.
 
-Dependents' compile tasks depend on the interface record tasks (the record enters their
-digest as that dependency's output summary; the include and define flags come from
-lowering); dependents' link tasks depend on the implementation record.
-This realizes relink-without-recompile mechanically through the digest structure AND
-cross-plugin compile overlap: in a chain core←audio←game, game's compiles start as soon
-as core's and audio's interface records exist, long before their links finish. A
-monolithic provider that depends on the dep's link task reintroduces plugin-chain
-serialization and is NON-COMPLIANT. Mini-wave orchestration is permitted, but waves
-MUST be gated on interface records, not implementation records.
+Dependents' compiles depend on the interface records: a record enters their digest as
+that dependency's output summary, and the include and define flags come from lowering.
+Dependents' links depend on the implementation records. That is how relinking without
+recompiling falls out of the digests, and it is also what lets plugins compile in
+parallel. In a chain core, audio, game, where each depends on the one before, game's
+compiles start as soon as core's and audio's interface records exist, long before their
+links finish. A single provider that waited for the dependency's link would serialize
+the chain again, and that isn't allowed. Kiln may run work in small waves, but a wave
+must wait on interface records, never on implementation records.
 
-**Acceptance (cross-plugin overlap):** fixture chain core←audio←game with core's
-link made artificially slow (sleeping fake tool): assert via executor event timestamps
-that at least one `game` compile STARTS before `core`'s link FINISHES; and assert an
-expansion-only pass (`kiln query "all()"` on a cold cache) executes zero compile tasks.
+A test makes core's link slow on purpose (a fake tool that sleeps) and checks, from
+the executor's event timestamps, that at least one of game's compiles starts before
+core's link finishes. Another checks that a pass that only expands (`kiln query
+"all()"` on a cold cache) runs no compiles.
 
 ### 7.2a Code variants
 
-Targets of one config name differ in features and enabled plugins, so a ConfigTuple is
-per target. The code family - `compile_c`/`compile_cpp`, `compile_pch`, `archive`, the
-interface record and the code generators (`fbs_gen`, `proto_gen`) - takes
-a **code variant** as its `config_hash` instead: a CanonicalHasher over the platform, the
-config name, the family kind, the settings its result depends on, and the stable hashes
-of the tasks it depends on (sorted):
+Targets with the same config name can differ in their features and enabled plugins, so
+each target has its own ConfigTuple. The code family of tasks uses a **code variant** as
+its config hash instead: `compile_c` and `compile_cpp`, `compile_pch`, `archive`, the
+interface record and the code generators (`fbs_gen`, `proto_gen`). A code variant is a
+CanonicalHasher over the platform, the config name, the kind of task, the settings its
+result depends on, and the sorted stable hashes of the tasks it depends on:
 
 | Kind | Settings |
 |---|---|
-| module (its compiles, PCH, generated-TU compiles, archive) | the plugin and module name, std, opt, debug, live, pch header, includes, defines, SDK roots, flags; deps: its interface deps and the actions generating its `module_sources` |
-| c_library (its compiles and archive) | the plugin and library name, c_std, cpp_std, opt, debug, live, includes, defines, flags; deps: its `proto_gen`/`fbs_gen` |
-| interface record | its params without `out` (headers, includes, defines, syslibs, link flags, the dependencies' record paths); deps: its dependencies' records, its `fbs_gen` tasks |
+| module (its compiles, PCH, generated-TU compiles and archive) | the plugin and module name, std, opt, debug, live, PCH header, includes, defines, SDK roots, flags; deps: its interface deps and the actions generating its `module_sources` |
+| c_library (its compiles and archive) | the plugin and library name, c_std, cpp_std, opt, debug, live, includes, defines, flags; deps: its `proto_gen` and `fbs_gen` |
+| interface record | its params without `out` (headers, includes, defines, syslibs, link flags, the dependencies' record paths); deps: its dependencies' records and its `fbs_gen` tasks |
 | generator | its params; no deps |
 
-`tool`, `tool_hash` and `toolchain_hash` stay out of the variant (they are params, so a new
-tool reruns the task in place). Targets building a module the same way therefore run one
-task for it and share its files; targets building it differently get different variants
-and outputs under different folders:
+`tool`, `tool_hash` and `toolchain_hash` stay out of the variant. They are parameters,
+so a new tool reruns a task in place. Targets that build a module the same way run one
+task for it and share its files. Targets that build it differently get different
+variants, and their outputs go to different folders:
 
-- objects `.kiln/out/<cfg>/obj/<plugin>/<module>/<v10>/...` (`clib-<name>/<v10>/` for a
-  c_library), PCH `.kiln/out/<cfg>/pch/<plugin>/<module>/<v10>/`, archives
-  `.kiln/out/<cfg>/lib/<plugin>/<v10>/lib<name>.a`, interface records
-  `.kiln/graph/<cfg>/code/<v10>/<plugin>.interface.json`, with `<v10>` the first 10 hex
-  of the variant. Generator outputs keep their paths.
+- objects in `.kiln/out/<cfg>/obj/<plugin>/<module>/<v10>/...` (`clib-<name>/<v10>/`
+  for a c_library)
+- PCH in `.kiln/out/<cfg>/pch/<plugin>/<module>/<v10>/`
+- archives in `.kiln/out/<cfg>/lib/<plugin>/<v10>/lib<name>.a`
+- interface records in `.kiln/graph/<cfg>/code/<v10>/<plugin>.interface.json`
 
-Every other task (cooks, providers, asset records, links, packs, checks, the
-compile_commands records) takes the same kind of variant over its rule, its params
-(without the tool binaries' hashes: a rebuilt tool reruns it in place) and its
-dependencies: identical work is one task whichever targets ask for it. Its outputs keep
-their paths (the target name or the ConfigTuple variant is in them where they are
-per target). Expansions keep the ConfigTuple (§7.1). A settings edit makes a new
-variant: its tasks have no trace ("first build").
+Here `<v10>` is the first 10 hex characters of the variant. Generator outputs keep their
+paths.
 
-**Old variants are swept.** After a build that succeeds, each built target's variant
-folders (those its tasks' outputs lie in: the shapes above, plus its
-`.kiln/graph/<cfg>/<ct10>/`) are its record, `.kiln/graph/<cfg>/targets/<target>.variants`.
-A folder the target's previous record listed and its new one does not, or that a target
-the workspace no longer has listed (its records go with it), is deleted unless another
-record of that config lists it. A failed build writes no record and deletes nothing, so
-the old variant stays until the new one has built; a folder no record ever listed is
-never touched by a build. `kiln clean --dead` also deletes, in every config with
-records, each variant folder no record lists (a target not built there since its
-records began recompiles). Traces of swept tasks stay; their outputs are missing, so a
-revert reruns them.
+Every other task (cooks, providers, asset records, links, packs, checks and the
+compile_commands records) gets the same kind of variant, over its rule, its parameters
+(without the tool binaries' hashes, so a rebuilt tool reruns it in place) and its
+dependencies. Identical work is one task, whichever targets ask for it. These tasks'
+outputs keep their paths, which already contain the target name or the ConfigTuple
+variant where they are per target. Expansions keep the ConfigTuple (§7.1). Changing a
+setting gives a new variant, whose tasks start with no trace.
 
-**Acceptance:** two targets with the same module settings run each of its compiles once
-in `kiln build a b`, and an edit compiles once; two with different defines each keep
-their objects and the next `kiln build a b` runs no compile.
+Old variants are swept. After a successful build, the variant folders each target's
+tasks wrote into (the shapes above, plus its `.kiln/graph/<cfg>/<ct10>/`) become that
+target's record, `.kiln/graph/<cfg>/targets/<target>.variants`. A folder the target's
+previous record listed and its new one doesn't is deleted, unless another record of
+that config lists it, and so is a folder listed only by a target the workspace no longer
+has (its records go with it). A failed build writes no record and deletes nothing, so
+the old variant stays until the new one has built, and a build never touches a folder
+no record has listed. `kiln clean --dead` also deletes, in every config that has
+records, every variant folder no record lists; a target not built there since records
+began will recompile. The swept tasks' traces stay, so reverting a change reruns them
+because their outputs are missing.
+
+The tests check that two targets with the same module settings run each compile once in
+`kiln build a b`, and that an edit compiles once. Two targets with different defines
+keep their own objects, and the next `kiln build a b` runs no compile.
 
 ### 7.2b Link records
 
-`workspace { link_record = { "dev" } }` names the configs (default none) whose links
-write a **link record** for a live-code patcher, and whose compiles take the
-patchable-object flags (`-falign-functions=16 -fno-omit-frame-pointer
--ffunction-sections -fdata-sections`; they are in the module variant). The record,
-`.kiln/out/<cfg>/bin/<target>.live.json`:
-`{"version": 1, "build_id", "target", "config", "exe", "tus": [{"source", "object",
-"hash"}]}` - the linked executable's ELF build-id, and per translation unit its source,
-its object and the object's content hash. The objects are kept content-addressed under
-`.kiln/out/<cfg>/live/objects/<hash>.o` (hard links), each record also under
-`live/records/<build-id>.json`, and `live/pins/<pid>.json` names what a running process
-runs beyond its own record; a record or object no kept record, running process or pin
-names is deleted. The daemon sends each connected process the TUs whose object differs
-from what it runs (`{"event":"code",...}`). A compile or link in such a config refuses a flag that
-breaks the record's contract (LTO, ICF, dead-stripping, symbol stripping).
+`workspace { link_record = { "dev" } }` lists the configs (none by default) whose links
+write a **link record** for a live-code patcher, and whose compiles add the flags that
+make objects patchable (`-falign-functions=16 -fno-omit-frame-pointer
+-ffunction-sections -fdata-sections`, which are part of the module variant).
 
-### 7.3 Plugin-level cycles, layers & lowering
+The record, `.kiln/out/<cfg>/bin/<target>.live.json`, is `{"version": 1, "build_id",
+"target", "config", "exe", "tus": [{"source", "object", "hash"}]}`: the executable's
+ELF build id, and for each translation unit its source, its object and the object's
+content hash. Objects are kept by content under `.kiln/out/<cfg>/live/objects/<hash>.o`
+(hard links), each record is also kept as `live/records/<build-id>.json`, and
+`live/pins/<pid>.json` lists what a running process uses beyond its own record. A record
+or object that no kept record, running process or pin names is deleted.
 
-Resolve plugin dep graph (from manifests' dep name lists) BEFORE expansion scheduling;
-Tarjan SCC; any SCC >1 ⇒ error:
-`plugin dependency cycle: audio -> dsp -> audio (audio/plugin.build.luau:3, dsp/plugin.build.luau:5)`.
-Module-level deps within a plugin form a sub-DAG, same treatment, error names modules.
+The daemon sends each connected process the translation units whose objects differ from
+what it runs (`{"event":"code",...}`). In these configs a compile or link refuses any
+flag that would break the record's promises: LTO, identical code folding, dead
+stripping or symbol stripping.
 
-**Layer check (same pass, only when layering is enabled: spec §0):** each plugin's layer is
-derived from the root it lives under; there is no per-plugin layer field. For every dep
-edge: `public_deps`, `private_deps`, AND `optional_deps` (an optional upward dep is
-still an upward dep): the dependency's layer index MUST be ≤ the dependent's.
-Violation ⇒ error, exit 2, this exact shape:
+### 7.3 Plugin cycles, layers and lowering
+
+Kiln resolves the plugin dependency graph from the manifests' dependency lists before it
+schedules any expansion. It finds strongly connected components with Tarjan's
+algorithm, and any component with more than one plugin is an error:
+`plugin dependency cycle: audio -> dsp -> audio (audio/plugin.build.luau:3,
+dsp/plugin.build.luau:5)`. Module dependencies inside a plugin are checked the same
+way, and that error names modules.
+
+When layering is on (§0), the same pass checks layers. A plugin's layer is the layer of
+the root it lives in; there is no per-plugin field. For every dependency, whether in
+`public_deps`, `private_deps` or `optional_deps` (an optional dependency that points up
+still points up), the dependency's layer must be the same as the dependent's or lower.
+Otherwise Kiln exits with 2 and this message:
 
 ```
-plugin 'renderer' (layer engine) depends on 'gameplay' (layer game):
-dependencies must not point upward (engine/renderer/plugin.build.luau:4)
+plugin 'renderer' (layer engine) depends on 'gameplay' (layer game). Dependencies must
+not point upward (engine/renderer/plugin.build.luau:4)
 ```
 
-The check constrains DEPENDENCIES only. Target composition is unconstrained: a target
-may enable/link plugins from any mix of layers (an editor target enabling a game-layer
-content plugin is legal and expected).
+The check only covers dependencies. A target may enable and link plugins from any mix
+of layers; an editor target that enables a game-layer content plugin is normal.
 
-**Acceptance:** fixture with plugins core←audio←game: edit core `.cpp` ⇒ dependents
-relink only; edit core public header ⇒ dependents recompile; edit audio manifest ⇒ only
-audio (and provider consumers') expansions rerun; `kiln query "rdeps(plugins/core)"`
-lists audio, game.
+The tests use a chain core, audio, game. Editing a `.cpp` in core relinks its dependents
+without recompiling them, and editing a public header in core recompiles them. Editing
+audio's manifest reruns only the expansions that read it, and `kiln query
+"rdeps(plugins/core)"` lists audio and game.
 
 ## 7a. Self-hosting
 
-Kiln's own repo is a Kiln workspace, laid out per its own residency principle
-(spec §0): the workspace manifest at repo root; `plugins/kiln/` holding the tool's sources as
-modules with public/private deps mirroring the source-dir map; `plugins/kiln_tests/`
-holding test code and fixtures; one plugin per vendored library (`plugins/luau/`:
-upstream as a submodule inside the plugin dir: `plugins/sqlite/`, `plugins/blake3/`),
-each hosting its `c_library` decl beside its sources. Single default plugin root, no
-`plugin_roots` declared: layering is overkill here and the N−1 rule stays trivially
-satisfied. Kiln eats exactly the dogfood it serves.
+Kiln's own repository is a Kiln workspace, laid out by its own rules (§0). The
+workspace manifest sits at the root. `plugins/kiln/` holds the tool's sources as
+modules, whose public and private dependencies follow the source directories, and
+`plugins/kiln_tests/` holds the tests and fixtures. Each vendored library has its own
+plugin (`plugins/luau/`, with upstream as a submodule inside it, `plugins/sqlite/`,
+`plugins/blake3/` and so on), with its `c_library` declaration next to its sources.
+There is one default plugin root and no layering, which the repository doesn't need,
+and which keeps the compatibility rule of §7a.4 easy to meet. Kiln builds itself with
+exactly the features it offers everyone else.
 
-### 7a.1 `c_library` rule
+### 7a.1 The c_library rule
 
 `c_library(name){ sources: FileSet*, includes: {string}?, public_includes: {string}?,
-defines: {string}?, c_std: string?, cpp_std: string? }`: legal in any manifest; produces
-a static archive + the two provider records of spec §7.2 (`impl_artifact` = the `.a`).
-It has no `deps` field: each library lists every include directory it needs explicitly. Header-only libraries are expressed
-as a `c_library` with empty `sources`: the archive task is skipped and the interface
-record still flows (empty `impl_artifact`). Compiles C and C++ TUs by extension.
-rule_version starts at 1. Kiln builds its own sqlite, blake3 and luau with it, and a
-project builds its vendored libraries the same way. Residency (spec §0): each vendored library lives in its own plugin
-directory with the `c_library` decl beside its sources: not in a shared root-level tree
-reached by `../` globs.
+defines: {string}?, c_std: string?, cpp_std: string? }` may appear in any manifest. It
+makes a static archive and the two records of §7.2, with the `.a` as `impl_artifact`. It
+has no `deps` field, so each library lists every include directory it needs. A
+header-only library is a `c_library` with no sources: there is no archive task, and the
+interface record still flows (with an empty `impl_artifact`). It compiles C and C++ files
+by their extension, and its rule version started at 1. Kiln builds its own sqlite,
+blake3 and luau with it, and a project builds its vendored libraries the same way. Each
+library lives in its own plugin directory with the declaration next to its sources,
+never in a shared tree at the root reached with `../` globs.
 
-### 7a.2 Build chain & bootstrap script
+### 7a.2 The bootstrap
 
-`bootstrap.sh` (repo root, POSIX sh), build artifacts under `.bootstrap/` (gitignored):
-NOT inside `.kiln/`, because the proof build swaps the `.kiln` state dir out from under
-the build. Each build in the chain is named for its purpose (log lines narrate the doing;
-directories name the artifact):
-- **external-build:** kiln built by something that isn't kiln:
-  `cmake --preset release && cmake --build` ⇒ `external-build/kiln`. The CMake build
-  is PERMANENT: it MUST NOT be deleted in favour of the self-build, and CI runs it from
-  a clean checkout on every push. A comment in the top-level
-  CMakeLists.txt says why.
-- **self-build:** kiln built by kiln: `external-build/kiln build kiln:linux-release` ⇒
-  `self-build/kiln`. This is the binary that goes on PATH.
-- **proof-build:** kiln rebuilt BY the self-build (fresh `.kiln` state dir):
-  `self-build/kiln build kiln:linux-release` ⇒ `proof-build/kiln`. Exists solely to be
-  compared; a disposable check artifact, never shipped.
-- **Convergence check:** `cmp self-build/kiln proof-build/kiln`: byte identity REQUIRED
-  (byte-identity at the fixed point of the build function, for readers coming from the
-  compiler-bootstrap literature). Deliberately NOT called a determinism check: that name
-  belongs to spec §6.5, which tests a different property. On mismatch, bootstrap exits 3 with
-  `convergence FAILED: proof-build differs from self-build` and prints a diff summary of
-  section hashes (`readelf -S` + per-section BLAKE3; sha256 where `b3sum` is not
-  installed) to localize the nondeterminism. Every stage runs on every invocation
-  (each build is incremental); no stage is skipped because its binary already exists.
+`bootstrap.sh` (POSIX sh, at the root) keeps its builds under `.bootstrap/`
+(gitignored), not inside `.kiln/`, because the proof build swaps the `.kiln` state
+directory out from under the build. Each build in the chain is named after what it
+produces; the log lines say what is happening.
 
-### 7a.3 Reproducibility requirements (apply to the `compile_cpp`/`c_library` rules globally)
+The **external build** is Kiln built by something other than Kiln: `cmake --preset
+release && cmake --build` produces `external-build/kiln`. The CMake build is permanent.
+It must not be removed in favour of the self-build, CI runs it from a clean checkout on
+every push, and a comment at the top of `CMakeLists.txt` says why.
 
-- Forbid `__DATE__`/`__TIME__`/`__TIMESTAMP__` (`-Werror=date-time`).
-- `-ffile-prefix-map=<workspace-root>=.` on all compiles (path is NOT hashed: it is
-  derived, not configuration).
-- Deterministic archives: `ar` with `D` modifier (or `llvm-ar` default), built
-  into a task-private TEMP FILE and renamed over the output. `ar r` replaces
-  members in place, so archiving directly onto a pre-existing output makes
-  member order (and stale removed members) depend on the archive's own
-  history: an input the digest does not cover; the convergence check breaks
-  on it the moment an incremental and a fresh build coexist.
-- Linker determinism: pass `--build-id=none` (or `--build-id=sha1`) EXPLICITLY on link
-  lines. Relying on the linker's default is forbidden: distros configure different
-  defaults, and the convergence check would break on the first machine with a different
-  toolchain spec file.
-- self-build/proof-build MUST use identical ConfigTuples; the bootstrap script asserts
-  the config hash matches between the two before comparing binaries.
+The **self-build** is Kiln built by Kiln: `external-build/kiln build kiln:linux-release`
+produces `self-build/kiln`, the binary that goes on `PATH`.
 
-### 7a.4 Manifest compatibility rule (N−1)
+The **proof build** is Kiln rebuilt by the self-build with a fresh `.kiln` state
+directory: `self-build/kiln build kiln:linux-release` produces `proof-build/kiln`. It
+exists only to be compared and is never shipped.
 
-Kiln's own manifests are parsed by the PREVIOUS binary during bootstrap. Therefore:
-manifests in this repo MUST remain valid under the manifest API of the previously
-released/pinned Kiln. Manifest-API changes land as two commits: (1) the Kiln that
-ACCEPTS the new syntax (manifests untouched), (2) after that binary is the bootstrap
-input, the manifests that USE it. CI enforces approximately: the escape-hatch job's
-external-build binary must successfully expand the repo's manifests at every commit.
+The **convergence check** is `cmp self-build/kiln proof-build/kiln`, and the two must be
+byte-identical. (Readers who know compiler bootstrapping will recognise the fixed point
+of the build function.) It isn't called a determinism check, because that name belongs
+to the canary of §6.5, which tests something else. On a mismatch the script exits with 3
+and `convergence FAILED: proof-build differs from self-build`, followed by a per-section
+hash comparison (`readelf -S` and BLAKE3 for each section, or sha256 without `b3sum`)
+to show where the difference is. Every stage runs every time; each build is incremental,
+and no stage is skipped because its binary already exists.
 
-**Acceptance:** clean-checkout `./bootstrap.sh` succeeds; the convergence check
-holds; deleting `.bootstrap/` state and rebuilding is fully cached at the proof build
-(zero tasks); one-line edit to `scheduler.cpp` ⇒ incremental self-build runs exactly one compile
-+ one link; `-Werror=date-time` violation fixture fails with clear diagnostic.
+### 7a.3 Reproducibility
+
+These apply to the `compile_cpp` and `c_library` rules everywhere:
+
+- `__DATE__`, `__TIME__` and `__TIMESTAMP__` are forbidden (`-Werror=date-time`).
+- Every compile gets `-ffile-prefix-map=<workspace-root>=.`. The path isn't hashed,
+  since it's derived rather than configured.
+- Archives are deterministic: `ar` with the `D` modifier (`llvm-ar` does it by default),
+  written to a temporary file private to the task and renamed over the output. `ar r`
+  replaces members in place, so archiving onto an existing output would make the member
+  order, and any stale members, depend on the archive's history, which the digest
+  doesn't cover. The convergence check breaks as soon as an incremental build and a
+  fresh one meet.
+- Links pass `--build-id=none` (or `--build-id=sha1`) explicitly. The linker's default
+  can't be trusted, because distributions configure it differently, and the convergence
+  check would fail on the first machine with a different toolchain spec file.
+- The self-build and the proof build must use identical ConfigTuples, and the bootstrap
+  script checks that their config hashes match before it compares the binaries.
+
+### 7a.4 Manifest compatibility
+
+During the bootstrap, Kiln's own manifests are read by the previous binary. So the
+manifests in this repository must stay valid for the manifest API of the previously
+released or pinned Kiln. A change to the manifest API lands in two commits: first the
+Kiln that accepts the new syntax, with the manifests untouched, then, once that binary
+is the bootstrap's starting point, the manifests that use it. CI checks this roughly:
+the external build's binary must be able to evaluate the repository's manifests at
+every commit.
+
+The tests check that `./bootstrap.sh` succeeds from a clean checkout and the
+convergence check holds. Rebuilding after deleting `.bootstrap/` must be fully cached at
+the proof build (no tasks), and a one-line edit to `scheduler.cpp` must make the
+self-build run exactly one compile and one link. A fixture that uses `__DATE__` must fail
+with a clear message.
 
 ## 8. Plugin toggling
 
-Resolution algorithm (pure function; unit-test it exhaustively):
+Which plugins are on is decided by a pure function, tested exhaustively:
 
 ```
 resolve_enabled(all_plugins, target, platform, config, cli_enable[], cli_disable[]):
-  for each plugin p, compute (state, reason) through layers, later layers override:
+  for each plugin p, compute (state, reason) through four layers; a later layer wins:
     L1 default:   enabled_by_default (default true)          reason "plugin default"
-    L2 support:   if platform ∉ supported_platforms or config ∉ supported_configs:
-                  state=disabled (FINAL: cannot be overridden; attempting to enable
-                  via L3/L4 is an ERROR naming the constraint)   reason "unsupported on <x>"
+    L2 support:   if platform is not in supported_platforms or config is not in
+                  supported_configs: state = disabled. This is final: trying to enable
+                  the plugin in L3 or L4 is an error naming the constraint.
+                                                              reason "unsupported on <x>"
     L3 target:    enable_plugins/disable_plugins               reason "target '<name>'"
     L4 cli:       --enable-plugin/--disable-plugin             reason "command line"
-  Then closure check: for every enabled p, every non-optional dep must be enabled;
-  else error with full chain:
+  Then every enabled plugin's non-optional dependencies must be enabled too;
+  otherwise the error shows the whole chain:
     "target 'game': plugin 'audio' requires 'dsp', which is disabled by target 'game'
      (build/game.target.luau:7). Enable 'dsp' or make the dependency optional."
-  optional_deps: for each, param "KILN_HAS_<UPPER>=0|1" is injected into the dependent's
-  module compile params (⇒ in digests ⇒ flipping recompiles consumers). Public headers
-  may use it via generated per-plugin config header `kiln_<plugin>_config.h` (a task).
-  Return sorted enabled list + reason map.
+  For each optional dependency, the parameter "KILN_HAS_<UPPER>=0|1" goes into the
+  dependent's module compile parameters, so it's in their digests and flipping it
+  recompiles the consumers. Public headers can use it through a generated header,
+  kiln_<plugin>_config.h (a task).
+  Return the sorted list of enabled plugins and a map of reasons.
 ```
 
-`enabled_plugins` (sorted) goes into ConfigTuple (spec §4) ⇒ correct precise invalidation.
+The sorted list of enabled plugins goes into the ConfigTuple (§4), which is what makes
+invalidation precise.
 
-CLI: `kiln plugins --target=game --platform=linux --config=dev [--json]`
-Text output: aligned table `NAME  STATE  DECIDED-BY`; when layering is enabled (spec §0) a
-LAYER column is inserted after NAME (`NAME  LAYER  STATE  DECIDED-BY`), and omitted
-entirely otherwise. JSON schema:
+`kiln plugins --target=game --platform=linux --config=dev [--json]` prints an aligned
+table, `NAME  STATE  DECIDED-BY`. With layering on (§0) a LAYER column follows NAME
+(`NAME  LAYER  STATE  DECIDED-BY`); without it, the column isn't there. The JSON form is
 `[{"name","state":"enabled|disabled","reason","decided_by_layer":1..4,
-"layer":"<name>"|null,"optional_missing":[...]}]`: `layer` is the plugin's derived
-layer name, null when layering is disabled; the resolution-layer integer (formerly
-`"layer"`) is renamed `decided_by_layer` to free the key. `--json` consumers MUST
-tolerate additive keys.
+"layer":"<name>"|null,"optional_missing":[...]}]`. `layer` is the plugin's layer name, or
+null without layering. The number of the toggling layer that decided is
+`decided_by_layer`, which used to be called `layer` until that key was needed for the
+plugin's own layer. Anything that reads the JSON must ignore keys it doesn't know.
 
-**Acceptance:** table-driven tests over the 4 layers incl. the L2-final rule; chain
-error golden text; toggling `devtools` off then on ⇒ only expansions referencing it rerun
-(assert task counts); optional dep flip recompiles exactly consumers using the define.
+The tests are table-driven over the four layers, including the rule that L2 is final.
+They check the chain error's exact text, that switching `devtools` off and on reruns only
+the expansions that mention it, and that flipping an optional dependency recompiles
+exactly the consumers that use its define.
 
 ## 9. Cook rules
 
-Each cook rule is a cluau rule (spec §6.8) or one of the C++ rules still lowered by
-Kiln. The standard set, `std/cook` (one action per input, the output at the input's
-plugin-relative path under `ctx.out_dir`):
-- `cook_shader`: `glslc` (params: stage, entry, define.<n>, tool) → `.spv`; deps via the
-  include scan.
-- `cook_texture`: `basisu` → `.ktx2` (params: srgb, mips, quality, tool).
-- `cook_copy`: a copy, same name (params unchecked).
-- `cook_font`: msdf-atlas-gen → atlas `.png` + metrics `.png.json` (two outputs; params:
-  size, charset, tool).
-Tool discovery: workspace file `tools = { glslc = "...", basisu = "..." }` or PATH (a
-`tool` param pins a path instead); resolved tool's file hash folded into digests as
-param `tool_hash` (tool upgrade ⇒ recook).
-Asset ID = BLAKE3(plugin name + "/" + plugin-relative source path), hex, unless the
-action states one or its dyndep reports one (§6.8). The rename
-story, stated plainly: an ID changes when its source moves relative to its plugin, moves
-between plugins, or its plugin is renamed: and does NOT change when the plugin's
-directory moves between roots (spec §0). Deliberate ID changes are audited by diffing the
-`.kpak.json` index before/after. Pack step
-`pack_target`: reads all enabled plugins' asset records (§7.2), writes `<target>.kpak`
-(format: header, id-sorted table, blobs: specified in `docs/kpak-format.md`) +
-`<target>.kpak.json` index. An asset's tags (`asset_tags`, §6.8) are in its asset record
-and its index entry; a target's `pack = { tags = { ... } }` keeps only the assets carrying
-one of them (the index's `tags` lists them and `omitted_by_tags` counts the rest).
+A cook rule is a cluau rule (§6.8), or one of the C++ rules Kiln still lowers itself.
+The standard set, `std/cook`, makes one action per input and writes the output at the
+input's plugin-relative path under `ctx.out_dir`:
 
-**Acceptance:** cross-plugin texture reference; edit PNG ⇒ one recook + one repack;
-tool binary swap ⇒ recook of that rule's tasks only.
+- `cook_shader` runs `glslc` (params: stage, entry, define.<n>, tool) to make a `.spv`,
+  with its dependencies from the include scanner.
+- `cook_texture` runs `basisu` to make a `.ktx2` (params: srgb, mips, quality, tool).
+- `cook_copy` copies the file under the same name (its params aren't checked).
+- `cook_font` runs msdf-atlas-gen to make an atlas `.png` and its metrics `.png.json`
+  (params: size, charset, tool).
 
-## 10. Daemon & forensics
+Tools come from the workspace's `tools = { glslc = "...", basisu = "..." }`, or from
+`PATH`, or from a `tool` parameter that pins a path. The resolved tool's file hash is
+folded into the digest as the `tool_hash` parameter, so upgrading a tool recooks.
 
-- `kiln daemon --target=... `: inotify recursive watch over EVERY configured plugin
-  root (spec §0; default `plugins/`), `build/`, the workspace file, and every top-level
-  `<dir>/content` tree; ignore `.kiln/`; 150 ms debounce; rebuild wave; renderer
-  collapses between waves to `watching… last: ✓ 3.2s (12 tasks)`.
-- Hot reload socket: Unix socket `.kiln/hotreload.sock`, newline-delimited JSON
-  `{"event":"asset","id":"<hex>","path":"..."}` and `{"event":"build","status":"ok|fail"}`.
-  Fire-and-forget; absent listener is fine.
-- `kiln why-dirty <task-display-or-path>`: explains the LAST COMPLETED build only:
-  implemented via `.kiln/logs/last_why.json`, written during the build from in-session
-  per-task why-records (input diffs use the per-input hashes stored in traces from day
-  one, spec §2.4; dep causes use the session's outputs_changed flags). why-dirty answers
-  for the most recent build; run the build first, then ask. Output, exactly this shape:
+An asset's id is BLAKE3 of the plugin name, a slash and the source's plugin-relative
+path, in hex, unless the action states one or its dyndep reports one (§6.8). So an id
+changes when its source moves within its plugin, moves to another plugin, or the plugin
+is renamed. It does not change when the plugin's directory moves to another root (§0).
+To audit a deliberate id change, diff the `.kpak.json` index before and after.
+
+`pack_target` reads the asset records (§7.2) of every enabled plugin and writes
+`<target>.kpak` (a header, a table sorted by id and the blobs, described in
+`docs/kpak-format.md`) and its index, `<target>.kpak.json`. An asset's tags
+(`asset_tags`, §6.8) are in its asset record and its index entry. A target's
+`pack = { tags = { ... } }` keeps only the assets that carry one of those tags; the
+index's `tags` lists them and `omitted_by_tags` counts what was left out.
+
+The tests check a texture referenced from another plugin, that editing a PNG causes one
+recook and one repack, and that swapping a tool's binary recooks only that rule's tasks.
+
+## 10. The daemon and forensics
+
+`kiln daemon <target>` watches, recursively with inotify, every configured plugin root
+(§0; by default `plugins/`), `build/`, the workspace file and every top-level
+`<dir>/content` tree, ignoring `.kiln/`. After 150 ms without a change it runs a
+rebuild, and between rebuilds the renderer shrinks to `watching… last: ✓ 3.2s (12
+tasks)`.
+
+The daemon also serves a Unix socket at `.kiln/hotreload.sock` and sends one JSON object
+per line: `{"event":"asset","id":"<hex>","path":"..."}` and
+`{"event":"build","status":"ok|fail"}`. It doesn't wait for anyone, and it's fine if
+nothing is listening.
+
+`kiln why-dirty <task-display-or-path>` explains the most recent completed build, and
+only that one. During a build, each task records why it ran, using the per-input hashes
+in its trace for input changes (§2.4) and the session's `outputs_changed` flags for
+dependency changes, and the build writes these to `.kiln/logs/last_why.json`. So run
+the build first, then ask. The output looks exactly like this:
 
 ```
 plugins/game/link:game@linux-dev  REBUILT because:
-  dep plugins/audio/provider changed (interface_hash)
-    because plugins/audio/include/mixer.h content changed (was 3f9a…, now 71bc…)
+  dep plugins/audio/provider changed
+    because plugins/audio/include/mixer.h content changed (was 3f9a1c2e…, now 71bc04d9…)
 ```
 
-- `kiln query`: the verbs are `deps(expr)`, `rdeps(expr)`, `all()`, filter by prefix
-  string. Operates on the serialized DeclSets + lowered graph; `--json` supported.
-  `--config <platform-config>` picks the graph; without it, the config whose
-  `graph.json` the last build wrote.
+`kiln query` understands `deps(expr)`, `rdeps(expr)`, `all()` and a prefix filter. It
+reads the serialized DeclSets and the lowered graph, and supports `--json`.
+`--config <platform-config>` picks the graph; without it, Kiln uses the config whose
+`graph.json` the last build wrote.
 
-**Acceptance:** save PNG under watch ⇒ socket event within 1s; why-dirty golden
-outputs for the three canonical causes (input changed, dep interface changed, params changed).
+The tests check that saving a PNG under watch sends a socket event within a second, and
+compare why-dirty's output for the three main causes: an input changed, a dependency's
+interface changed, and the parameters changed.
 
 ## 11. compile_commands.json
 
-Each target's compile tasks (their params as lowered, variant paths included) go to
-its own record, `.kiln/compile_commands/<config>/targets/<target>.json`, written by one
-task per target: standard fields (`directory` = workspace root, `file`, `arguments`
-array: not `command`). After the run the driver merges the records of the workspace's
-targets into `.kiln/compile_commands/<config>/compile_commands.json`, only when one of
-them changed since the last merge (a stamp of their hashes); a source several targets
-compile keeps the entry of the target with the most entries (ties by name). So building
-different target sets in turn leaves the file as it is. The merge is not a task: a
-task's digest covers its dependencies, which would differ with each invocation's
-target set. `kiln setup-clion` symlinks the file of the chosen config (default: the one
-built last) to the workspace root and prints CLion setup steps. Diagnostic output of all
-rules MUST be clang-style `path:line:col: error: msg` (map tool formats where needed).
+Each target's compile tasks, with their parameters as lowered and variant paths
+included, go into the target's own record,
+`.kiln/compile_commands/<config>/targets/<target>.json`, written by one task per target.
+The records use the standard fields: `directory` (the workspace root), `file` and an
+`arguments` array rather than `command`.
 
-## 12. CLion plugin (separate repo `kiln-clion/`)
+After a run, Kiln merges the records of the workspace's targets into
+`.kiln/compile_commands/<config>/compile_commands.json`, but only when one of them
+changed since the last merge (it keeps a stamp of their hashes). When several targets
+compile the same source, the entry of the target with the most entries wins, with ties
+broken by name. Building different sets of targets in turn therefore leaves the file
+alone. The merge isn't a task, because a task's digest covers its dependencies, and
+those would differ with every invocation's set of targets.
 
-Kotlin, IntelliJ Platform Gradle plugin, `sinceBuild` CLion 2024.2. Strictly a client of:
-`kiln plugins --json`, `kiln build`, `kiln query --json`, the serialized DeclSets, and
-`why-dirty`. Features: (1) ToolWindow: target/config combo + build/clean buttons +
-console with `path:line:col` filter; (2) plugin checkbox tree writing
-`build/kiln.local.luau` overrides (an L3.5 layer between target and CLI, not part of
-spec §8's resolution) then re-running the spec §11 generation; (3) LSP client for
-luau-lsp on `*.luau` build files; (4) why-dirty context action. NO project-model or
-indexing code: CLion's compilation-database support owns that.
+`kiln setup-clion` symlinks the chosen config's file (by default, the one built last)
+into the workspace root and prints the steps to set up CLion. Every rule's diagnostics
+must use clang's `path:line:col: error: msg` format, translating a tool's own format
+where needed.
 
-## 13. CLI contract (the complete list)
+## 12. CLion plugin
+
+The CLion plugin lives in its own repository, `kiln-clion/`. It's written in Kotlin with
+the IntelliJ Platform Gradle plugin and supports CLion 2024.2 and later. It is only a
+client of `kiln plugins --json`, `kiln build`, `kiln query --json`, the serialized
+DeclSets and `why-dirty`. It has a tool window with a target and config picker, build
+and clean buttons and a console that links `path:line:col`. It has a tree of plugin
+checkboxes that writes overrides to `build/kiln.local.luau`, a layer between the target
+and the command line that isn't part of §8's resolution, and then regenerates
+compile_commands (§11). It runs luau-lsp on `*.luau` build files, and it offers why-dirty
+as a context action. It has no project model or indexing of its own; CLion's
+compilation-database support does that.
+
+## 13. Commands
+
+This is the complete list:
 
 ```
 kiln build [<target>[:<config>]...] [-j N] [--platform=] [--config=] [--feature k=v]
            [--enable-plugin=p]* [--disable-plugin=p]* [--progress=fancy|plain|none]
-           [--fail-fast] [--explain]      # --explain: print digest-miss reason per task
+           [--fail-fast] [--explain]      # --explain prints why each task ran
 kiln plugins --target=T [--platform=][--config=][--json]
 kiln query "<expr>" [--json]
 kiln why-dirty <task-or-path>
 kiln daemon [build args]
 kiln setup-clion [--config=]
-kiln clean [--traces]                     # deletes .kiln/out (+ traces with flag)
-kiln clean --dead                         # deletes dead cooks and unrecorded variant folders
-kiln test [<target>] [-j N] [--platform=] [--config=]   # build + run; default: workspace test_target
+kiln clean [--traces]                     # deletes .kiln/out (and the traces with the flag)
+kiln clean --dead                         # deletes dead cooks and variant folders no record lists
+kiln test [<target>] [-j N] [--platform=] [--config=]   # build and run; default: the test_target
 kiln smoke [--nightly] [-j N] [-- <hamr run args>]       # the workspace's hamr suite
 kiln check [--defs=]                      # type-check the manifests
 kiln run [--config=C] [-j N] [<name> [args...]]          # a workspace command (§6.2); no name lists them
-kiln <name> [args...]                     # the same, for a name that is no built-in verb
-Exit codes: 0 ok, 1 task failures, 2 usage/config errors, 3 internal error.
+kiln <name> [args...]                     # the same, for any name that isn't a built-in verb
 ```
 
-## 14. Testing & quality bar
+Kiln exits with 0 on success, 1 when a task failed, 2 for a usage or configuration
+error and 3 for an internal error.
 
-- hamr's C++ test library (`hamr/test.h`), run by hamr; unit tests colocated per module + integration tests driving the real binary
-  against `tests/fixtures/*` workspaces (tiny: 2-3 plugins, 1 shader, 1 texture, stub
-  tools: a fake `glslc` shell script that concatenates inputs, so tests don't need SDKs).
-- Every acceptance item in spec sections 2-10 is a named test. CI (GitHub Actions, Linux): dev preset
-  (sanitizers) + release, both run full suite.
-- Golden-output tests compare normalized text (strip timings): helper provided.
-- Boundary lint: a test asserts that nothing Kiln ships (its plugins, docs, types and
-  README) references a consuming project: no `#include` resolving outside Kiln's own
-  plugins and system paths, and none of the project-identifying strings in a small
-  denylist kept in the test (a project's name, its plugin root paths, and the names of
-  its tools, rules and commands that once lived in Kiln). The match ignores case. A
-  grep-level check is deliberate: the point is that the boundary can't erode without CI
-  failing, not that the detection is clever.
-- Performance guardrail test: 1000-task no-op build < 300 ms (excluding process start).
+## 14. Testing
 
-## 15. Non-goals
+The tests use hamr's C++ library (`hamr/test.h`) and run under hamr. There are unit
+tests next to each module and integration tests that drive the real binary against small
+fixture workspaces: two or three plugins, one shader, one texture, and stub tools (a fake
+`glslc` that concatenates its inputs), so the tests need no SDK. Each behaviour this
+outline says is tested has a named test. CI runs on GitHub Actions on Linux, with the
+`dev` preset (sanitizers) and with `release`, both running the full suite. Golden-output
+tests compare text with the timings stripped, using a shared helper.
 
-Kiln deliberately does not do these: a remote or CAS cache; a suspending scheduler; sandboxed execution enforcement (strace verify);
-Windows watcher; distributed builds; a native rule ABI (rules loaded into Kiln as shared
-objects: rules are cluau, spec §6.8); critical-path scheduling; visibility
-(`sealed` parses but only warns); kpak encryption/patching.
+The boundary lint checks that nothing Kiln ships (its plugins, docs, types and README)
+refers to a project that uses it. No `#include` may resolve outside Kiln's own plugins
+and the system paths, and none of the strings on a short denylist kept in the test may
+appear: a project's name, its plugin root paths, and the names of its tools, rules and
+commands that once lived in Kiln. The match ignores case. A grep is good enough: what
+matters is that the boundary can't erode without CI failing.
+
+A performance test requires a no-op build of 1000 tasks to finish in under 300 ms, not
+counting process start.
+
+## 15. What Kiln doesn't do
+
+Kiln has no remote or content-addressed cache, no suspending scheduler and no enforced
+sandbox for what tasks may read (such as checking with strace). It has no Windows file
+watcher, no distributed builds and no native rule ABI (rules loaded into Kiln as shared
+objects); rules are cluau (§6.8). It doesn't schedule by critical path. Visibility rules
+aren't enforced (`sealed` parses but only warns), and packs have no encryption or
+patching.
 
 ## 16. Documentation
 
-Kiln's documentation lives in its repository, at the same commit as the tool:
-- `README.md`: what Kiln is, building it, and getting started.
-- `docs/spec-outline.md`: this specification.
-- `docs/decisions.md`: recorded choices and deviations from this specification.
-- `docs/kpak-format.md`: the `.kpak` container and its index (spec §9).
+Kiln's documentation lives in its repository, at the same commit as the code:
 
-The CLI's `--help` output (`kiln --help`, `kiln <verb> --help`) is the reference for
-flags; spec §13 lists the verbs.
+- `README.md` explains what Kiln is, how to build it and how to get started.
+- `docs/spec-outline.md`, this file, describes how Kiln behaves.
+- `docs/decisions.md` records the choices behind it.
+- `docs/kpak-format.md` describes the `.kpak` container and its index (§9).
+
+For flags, the CLI's own help (`kiln --help`, `kiln <verb> --help`) is the reference;
+§13 lists the verbs.

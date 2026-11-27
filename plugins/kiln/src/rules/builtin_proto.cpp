@@ -56,7 +56,7 @@ TaskResult run_proto_gen(TaskCtx& ctx) {
         if (tail.size() > 300)
             tail = "…" + tail.substr(tail.size() - 300);
         r.error = "proto_gen failed (" + std::to_string(rc) + ")" +
-                  (tail.empty() ? " — is the `protoc` tool built? Run `kiln build protoc` first."
+                  (tail.empty() ? ". Is the `protoc` tool built? Run `kiln build protoc` first."
                                 : ":\n" + tail);
         return r;
     }

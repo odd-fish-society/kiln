@@ -1,63 +1,55 @@
 # Kiln
 
-Kiln is an incremental build system for game projects. It builds your C++ code and
-your cooked assets (shaders, textures, fonts) in one dependency graph, and it decides
-what to rebuild from content hashes. It keeps a record of what it did and why, so it
-never does the same work twice, and it can always tell you why something rebuilt.
+Kiln builds C++ code and game assets in one dependency graph. It decides what to
+rebuild by hashing content rather than comparing timestamps, it remembers why it did
+each piece of work, and it can tell you why something rebuilt.
 
-What that gets you:
+Touching a file rebuilds nothing. Changing a comment recompiles that one file, and if
+the object comes out the same, nothing downstream runs either. Shaders, textures and
+fonts are cooked by ordinary tasks in the same graph, so they get the same caching,
+parallelism and error reporting as your compiles.
 
-- **Rebuilds you can trust.** Kiln compares hashes of each task's inputs, parameters
-  and tools, never timestamps. Touching a file rebuilds nothing. Changing a comment
-  rebuilds that one file, and the work stops as soon as an output comes out the same.
-- **Manifests in Luau.** You describe the project in a sandboxed, typed Luau dialect
-  (or cluau, its brace-style sibling), with autocomplete in your editor. It reads like
-  a config file, but you can still loop and share helpers.
-- **Plugins.** Code is split into self-contained plugins with public and private
-  dependencies, and you can switch each one on or off per target, platform or config.
-  Editing a `.cpp` in a dependency relinks your target; it doesn't recompile it.
-- **Layers that are enforced.** Plugins live in layered roots (for example external,
-  engine, tools, game). A dependency may only point down, and Kiln reports a violation
-  before anything builds.
-- **Assets are ordinary tasks.** Texture, shader and font cooks get the same caching,
-  parallelism and diagnostics as compiles.
-- **Your own rules.** A cook rule is a small cluau library that turns a declaration
-  into actions. You add one to your workspace without touching Kiln.
-- **Answers.** `kiln why-dirty` walks you through the chain of changes behind any
-  rebuild.
+You describe a project in Luau manifests (or cluau, a brace-style dialect of Luau). They
+run in a sandbox, they're type-checked, and your editor can autocomplete them. Code is
+organised into plugins, each with public and private dependencies, and each can be
+switched on or off per target, platform or config. Plugins can live in layered roots,
+such as external, engine, tools and game, and Kiln refuses a dependency that points to a
+higher layer before it builds anything. Cook rules are small cluau libraries, so you can
+add your own without changing Kiln.
 
 ## Install
 
-A release is a single Linux x86-64 binary with the standard rules built in:
+Releases are a single binary for Linux x86-64, with the standard rules built in:
 
 ```sh
 curl -fsSL https://github.com/odd-fish-society/kiln/releases/download/v0.1.0/kiln-v0.1.0-linux-x86_64.tar.gz | tar -xz
 ./kiln-v0.1.0-linux-x86_64/bin/kiln --version
 ```
 
-To build it from source:
+To build from source:
 
 ```sh
 git clone --recursive https://github.com/odd-fish-society/kiln.git
 cd kiln && ./bootstrap.sh
 ```
 
-`bootstrap.sh` builds Kiln with CMake, then has that Kiln build itself. The result is
-`.bootstrap/self-build/kiln`; put it on your `PATH`. The script then builds Kiln a third
-time and checks that the binary comes out byte-for-byte the same.
+The bootstrap builds Kiln with CMake, then uses that binary to build Kiln again, and
+leaves the result in `.bootstrap/self-build/kiln` for you to put on your `PATH`. It then
+builds Kiln a third time and checks that the binary hasn't changed by a single byte.
 
-If your project builds Kiln from source, add it as a submodule (`kiln/`) and run the
-CMake build from your own scripts. Your workspace can name the oldest Kiln it works
-with (`workspace { kiln_version = ">=0.1" }`). An older Kiln then stops and tells you
-which version you need.
+You'll need Linux, GCC 15 or Clang 19 or newer (Kiln uses C++20 and `#embed`), CMake and
+Ninja. Cooking assets also needs whatever tools your workspace names, such as `glslc`
+or `basisu`. Luau, cluau and hamr come in as nested submodules, which is why the clone
+needs `--recursive`.
 
-You need Linux, GCC 15+ or Clang 19+ (for C++20 and `#embed`), CMake and Ninja. To
-cook assets you also need whatever tools your workspace file names (`glslc`,
-`basisu`, ...). Kiln's own copies of Luau, cluau and hamr come in as nested submodules.
+A project that builds Kiln from source usually adds it as a `kiln/` submodule and runs
+the CMake build from its own scripts. The workspace can state the oldest Kiln it works
+with, `workspace { kiln_version = ">=0.1" }`, and an older Kiln will stop and say which
+version it needs.
 
-## Quick start
+## A first workspace
 
-A minimal workspace looks like this:
+The smallest useful workspace has three files and some sources:
 
 ```
 mygame/
@@ -98,7 +90,7 @@ target "game" {
 }
 ```
 
-Build it:
+Then build:
 
 ```sh
 kiln build game                    # default config, into .kiln/out/linux-dev/
@@ -106,14 +98,14 @@ kiln build game:linux-release
 kiln build game -j 8 --explain     # --explain prints why each task ran
 ```
 
-Run the build a second time and it does nothing at all. That's the point.
+Run the same build again and Kiln does no work.
 
-### When the project grows: layered plugin roots
+### Layered plugin roots
 
-By default all plugins live in one `plugins/` directory. Once your code splits into
-tiers, declare several roots instead. Each root names a layer, the order you list them
-in is the layer order, and a plugin may only depend on plugins in its own layer or a
-lower one:
+Everything lives in one `plugins/` directory by default. When a codebase grows into
+tiers, you can declare several roots instead. Each root is a layer, the order you list
+them in is the layer order, and a plugin may depend only on plugins in its own layer or
+a lower one:
 
 ```lua
 workspace {
@@ -139,30 +131,30 @@ mygame/
   game/gameplay/  game_data/
 ```
 
-A plugin's layer is simply the root it sits in, so there's no layer field to declare or
-get wrong. If an `engine` plugin depends on a `game` plugin, the error names both
-plugins, both layers and the manifest line to fix. Dependencies name plugins, never
-paths, so moving a plugin to another root is just a `git mv`.
+A plugin's layer is the root it sits in, so there's no field to get wrong. If an engine
+plugin depends on a game plugin, the error names both plugins, their layers and the line
+to fix. Dependencies refer to plugins by name, never by path, so moving a plugin to
+another root is a `git mv` and nothing else.
 
-## Everyday commands
+## Day-to-day commands
 
 ```sh
 kiln build <target>[:<config>]...   # build one or more targets
-kiln daemon game                    # watch files, rebuild on save, serve hot reload
-kiln plugins --target=game          # the plugin table: NAME  [LAYER]  STATE  DECIDED-BY
+kiln daemon game                    # rebuild on save and serve hot-reload events
+kiln plugins --target=game          # which plugins are on, and what decided it
 kiln query "rdeps(engine/core)"     # what depends on core?
 kiln why-dirty game/gameplay/link:game@linux-dev
 kiln setup-clion                    # link compile_commands.json for CLion
-kiln clean                          # delete the outputs (--traces also forgets past builds)
+kiln clean                          # delete the outputs (--traces forgets past builds too)
 kiln clean --dead                   # delete only cooks whose sources are gone and unused variants
-kiln test                           # build and run the workspace's test_target
+kiln test                           # build and run the workspace's test target
 kiln smoke                          # run the workspace's hamr suite
 kiln <command> [args...]            # a command your workspace declares (see kiln --help)
 ```
 
-Your workspace can add its own commands in `kiln.workspace.luau`. Kiln builds the
-targets a command lists, then runs its program from the workspace root, with your
-arguments added at the end:
+A workspace can add its own commands in `kiln.workspace.luau`. Kiln builds the targets
+the command lists, then runs its program from the workspace root with your arguments
+added at the end:
 
 ```lua
 command "audit" {
@@ -172,23 +164,24 @@ command "audit" {
 }
 ```
 
-Now `kiln audit --strict` builds `auditor` and runs it as `auditor --platform linux
---strict`. You can use `{workspace}`, `{platform}`, `{config}`, `{bin:<target>}` and
-`{kiln}` in `run`.
+With that, `kiln audit --strict` builds `auditor` and runs it as `auditor --platform
+linux --strict`. The `run` list understands `{workspace}`, `{platform}`, `{config}`,
+`{bin:<target>}` and `{kiln}`.
 
-In a terminal, progress is a bar pinned to the bottom with a `[done/total]` counter.
-When the output is piped or running in CI you get plain lines instead. You can force
-either with `--progress=plain|fancy|none`. `NO_COLOR` is respected, and under TeamCity
-Kiln emits TeamCity service messages on its own.
+In a terminal Kiln shows a progress bar pinned to the bottom of the screen. When its
+output goes to a pipe or a CI log, it prints one line per task instead. You can choose
+with `--progress=plain`, `fancy` or `none`. Kiln respects `NO_COLOR`, and it emits
+TeamCity service messages when it runs under TeamCity.
 
 ## Writing manifests
 
-Manifests are Luau, run in a sandbox. You can loop and build declarations
-programmatically, but there's no file access, no clock and no randomness, which is what
-lets Kiln cache the evaluation like any other build step. There are four kinds of
+Manifests are Luau running in a sandbox. You can loop and build declarations in code,
+but a manifest can't read files, check the clock or make random numbers. That's what
+lets Kiln cache a manifest's evaluation like any other step. There are four kinds of
 declaration.
 
-**`plugin`**, one per `plugin.build.luau`, is the unit you depend on and switch on or off:
+A `plugin` is the unit you depend on and switch on or off. Each `plugin.build.luau`
+declares one:
 
 ```lua
 plugin "audio" {
@@ -201,7 +194,7 @@ plugin "audio" {
 }
 ```
 
-**`module`** is compiled code inside a plugin:
+A `module` is compiled code inside a plugin:
 
 ```lua
 module "mixer" {
@@ -213,7 +206,7 @@ module "mixer" {
 }
 ```
 
-**`cook`** turns assets into their built form:
+A `cook` turns assets into their built form:
 
 ```lua
 cook "ui_atlas" {
@@ -223,7 +216,7 @@ cook "ui_atlas" {
 }
 ```
 
-**`target`**, in `build/*.target.luau`, is what you actually build:
+A `target` lives in `build/*.target.luau` and is what you actually build:
 
 ```lua
 target "game" {
@@ -235,25 +228,22 @@ target "game" {
 }
 ```
 
-A few habits keep a workspace healthy:
-
-- Reach other plugins only through `deps`, never by path. A path dependency gives you a
-  build that's wrong in ways that are hard to track down.
-- Keep a plugin's sources and content inside it (`src/`, `include/`, `content/`). Even a
-  vendored library gets its own plugin. A `../` glob is fine while you migrate, not as
-  a place to stay.
-- `glob` results are sorted and hashed, so Kiln notices a new file on its own.
-- Put shared helpers in `build/*.luau` and pull them in with `require "build/helpers"`.
+Refer to other plugins through `deps` and never by path; a path into another plugin
+gives you a build that is subtly wrong. Keep a plugin's sources and content inside it,
+in `src/`, `include/` and `content/`, and give even a vendored library its own plugin.
+A `../` glob can help while you migrate a tree, but don't keep it. Glob results are
+sorted and hashed, so a new file is picked up without any work from you. Shared helpers
+go in `build/*.luau`, and you pull them in with `require "build/helpers"`.
 
 For editor support, copy the provided `.luaurc` and point luau-lsp at
-`types/build.d.luau`. You'll get autocomplete and type errors for every field above.
+`types/build.d.luau`. You'll get completion and type errors for every field above.
 
 ## Writing rules
 
-A `cook` names a **rule**, and rules are written in cluau, not in Kiln's C++. Kiln
-ships the standard cooks (`cook_shader`, `cook_texture`, `cook_font` and `cook_copy`,
-in `plugins/kiln/std/cook.cluau`, built into the binary). Your workspace adds its own
-rule libraries:
+A `cook` names a rule, and rules are written in cluau rather than in Kiln's C++. Kiln
+ships `cook_shader`, `cook_texture`, `cook_font` and `cook_copy` in
+`plugins/kiln/std/cook.cluau`, built into the binary, and your workspace can add rule
+libraries of its own:
 
 ```
 workspace "game" { rules = { "build/rules/gen" } }
@@ -274,76 +264,70 @@ local function lower(cook: Cook, ctx: RuleCtx): { Action } {
 rule "gen_text" { version = 1, params = { "mode" }, lower = lower }
 ```
 
-`lower` runs while the manifest is evaluated, in the same sandbox, and returns a list
-of actions. An action is a process to run: its `tool` (from the workspace's `tools`
-table or your `PATH`, or a `tool_path`), its arguments and environment, and its inputs
-and outputs. It can also say how to find the inputs it discovers as it runs: a depfile,
-a dyndep JSON file, or Kiln's built-in `#include` scan.
+Kiln calls `lower` while it evaluates the manifest, in the same sandbox, and gets back a
+list of actions. An action is a process to run. It names a `tool` from the workspace's
+`tools` table or your `PATH` (or a `tool_path`), its arguments and environment, and its
+inputs and outputs. If the tool discovers more inputs as it runs, the action can point
+Kiln at a depfile, at a dyndep JSON file, or at its built-in `#include` scanner.
 
-Kiln runs each action as an ordinary task: hashed, cached, run in parallel and
-explained by `why-dirty`. When you edit the rule library, Kiln lowers again whatever
+Each action becomes an ordinary task, hashed, cached and run in parallel, and
+`why-dirty` can explain it. When you edit a rule library, Kiln lowers again whatever
 uses it. A cook that passes a parameter the rule doesn't list is an error, and
-`kiln check` type-checks your rule libraries along with your manifests.
+`kiln check` type-checks your rules along with your manifests.
 
-An action can also:
+Actions can do a few more things. `optional_inputs` lists files that may not exist yet,
+such as a sidecar, and creating, editing or deleting one reruns the action. `provides =
+{ name = out }` names an output, and an action in a plugin that depends on this one can
+then write `{use:lib/name}` in its arguments or inputs to get the path and the
+dependency. An action can describe the asset it produces with `asset_id` (or an
+`"identity"` reported in its dyndep file) and `asset_tags`, which a target's `pack = {
+tags = {...} }` filters on. Pointing `asset` at one of the action's inputs packs that
+file unchanged. `module_sources` compiles generated C++ into the plugin's modules,
+`stdout` captures the process's output into a file, `scan_dirs` widens the include
+scan, and `{workspace}` in an argument becomes the workspace's absolute path when the
+action runs. Inside a rule, `hash.blake3(s)` computes an id.
 
-- list `optional_inputs`, files that may not exist yet (a sidecar, say). Creating,
-  editing or deleting one reruns the action.
-- name an output with `provides = { name = out }`. An action in a plugin that depends
-  on this one can write `{use:lib/name}` in its arguments or inputs, and gets the path
-  plus the dependency.
-- describe the asset it makes: `asset_id` (or an `"identity"` reported in the dyndep
-  file) gives its id, and `asset_tags` gives the tags a target's
-  `pack = { tags = {...} }` filters on. Point `asset` at an input to pack that file as
-  it is.
-- compile generated C++ into the plugin's modules (`module_sources`), capture the
-  process's output into a file (`stdout`), widen the `#include` scan (`scan_dirs`), or
-  use `{workspace}` in an argument to get the workspace's absolute path when it runs.
-  Inside the rule, `hash.blake3(s)` computes an id.
+A rule with `kind = "aggregate"` is lowered once per target, after every plugin, and its
+`ctx` also has `plugins` and `outputs` (every named output). A rule with
+`prune_dead_outputs = true` deletes an action's outputs once its source is gone.
 
-A rule as a whole can be `kind = "aggregate"`, which lowers its cooks once per target,
-after every plugin, with `ctx.plugins` and `ctx.outputs` (every named output) to work
-from. A rule with `prune_dead_outputs = true` deletes an action's outputs once its
-source is gone.
+## Public and private dependencies
 
-## Public and private, in practice
-
-This is the distinction that keeps builds fast:
-
-- Edit a **`.cpp`** in `core`: `core` recompiles, and the plugins that use it only relink.
-- Edit a **public header** in `core`: the plugins that use it recompile. That's what
-  putting the header in `public_includes` means.
-- Public dependencies pass through. If `audio` publicly depends on `core`, plugins
-  that use `audio` see `core`'s headers too. Private dependencies don't leak.
+This distinction is what keeps builds fast. When you edit a `.cpp` in `core`, `core`
+recompiles and the plugins that use it only relink. When you edit a public header in
+`core`, the plugins that use it recompile, because that's what putting a header in
+`public_includes` means. Public dependencies pass through: if `audio` publicly depends
+on `core`, plugins that use `audio` see `core`'s headers too. Private dependencies stay
+private.
 
 ## Switching plugins on and off
 
-Four settings decide whether a plugin is on, and a later one wins over an earlier one:
-the plugin's own default, its platform and config support, the target file, and the
-command line (`--enable-plugin=x --disable-plugin=y`). There's one exception: you can't
-force on a plugin that doesn't support the current platform or config. Trying is an
-error that names the constraint.
+Four settings decide whether a plugin is on, and each one overrides the ones before it:
+the plugin's default, the platforms and configs it supports, the target file, and the
+command line (`--enable-plugin=x --disable-plugin=y`). You can't force on a plugin that
+doesn't support the current platform or config, though. Trying is an error that says
+which constraint stops you.
 
-`kiln plugins --target=game` shows each plugin's final state and which setting decided
-it (and, in a layered workspace, its layer). If an enabled plugin needs a disabled one,
-the error shows the whole chain and where to fix it. An optional dependency shows up
-as a `KILN_HAS_<NAME>` define.
+`kiln plugins --target=game` shows whether each plugin is on and which setting decided
+it, and in a layered workspace its layer too. If an enabled plugin needs a disabled one,
+the error shows the whole chain and where to fix it. An optional dependency appears in
+code as a `KILN_HAS_<NAME>` define.
 
-Switching a plugin rebuilds only the work that could see it, never everything.
+Switching a plugin on or off rebuilds only the work that could see it.
 
-Note that this "on or off" decision and the layers above are different things. The
-switches decide *whether* a plugin is built; the layers decide *what it may depend on*.
-A target can freely mix plugins from any layer. An editor target that enables a
-game-layer content plugin is perfectly normal.
+These switches are a different thing from the layers described earlier. Switches decide
+whether a plugin is built; layers decide what it may depend on. A target can mix
+plugins from any layer, so an editor target that enables a game-layer content plugin is
+perfectly normal.
 
-## Watch mode and hot reload
+## Watching and hot reload
 
 ```sh
 kiln daemon game
 ```
 
-The daemon rebuilds whenever you save, after a 150 ms pause to let a burst of saves
-settle. It also listens on a Unix socket at `.kiln/hotreload.sock` and sends one JSON
+The daemon rebuilds when you save a file, waiting 150 ms for a burst of saves to settle
+first. It also listens on a Unix socket at `.kiln/hotreload.sock` and writes one JSON
 object per line, which your engine can subscribe to:
 
 ```json
@@ -351,9 +335,9 @@ object per line, which your engine can subscribe to:
 {"event":"build","status":"ok"}
 ```
 
-Save a PNG and you'll see it in the running game about a second later.
+Save a PNG and it shows up in the running game about a second later.
 
-## When something rebuilds and you don't know why
+## Why did that rebuild?
 
 ```sh
 $ kiln why-dirty game/gameplay/link:game@linux-dev
@@ -362,46 +346,46 @@ game/gameplay/link:game@linux-dev  REBUILT because:
     because engine/audio/include/mixer.h content changed (was 3f9a1c2e…, now 71bc04d9…)
 ```
 
-`kiln build --explain` prints the reason for each task as it runs, and
-`kiln query "deps(...)"` and `kiln query "rdeps(...)"` show what depends on what.
+`kiln build --explain` prints the reason for each task as the build runs, and
+`kiln query "deps(...)"` or `"rdeps(...)"` shows what depends on what.
 
-## Where things live
+## Where Kiln keeps things
 
-Everything Kiln keeps is under `.kiln/`, which you should gitignore:
+Everything Kiln writes goes under `.kiln/`, which you should add to `.gitignore`. Build
+products are in `out/<platform>-<config>/`. Kiln's memory of past builds is in
+`traces.sqlite` and `hashcache.sqlite`; you can delete them at any time, and the worst
+that happens is a full rebuild. `compile_commands/` is for IDEs, and `graph/` holds the
+project model as stable JSON that you're welcome to script against.
 
-- `out/<platform>-<config>/` holds what you built.
-- `traces.sqlite` and `hashcache.sqlite` are Kiln's records of past builds. You can
-  delete them; the worst that happens is a full rebuild.
-- `compile_commands/` is for IDEs.
-- `graph/` holds the project model as stable JSON, which you're welcome to script against.
+## Things that might surprise you
 
-## Good to know
+Tasks only ever write under `.kiln/out/`, never into your source tree. If you delete an
+output by hand, the next build recreates that one output. If the state ever gets
+corrupted, delete `.kiln/`; you only lose warm caches.
 
-- Tasks only ever write under `.kiln/out/`, never into your source tree.
-- If you delete an output by hand, the next build puts back exactly that output. If the
-  state ever gets corrupted, delete `.kiln/` entirely; you only lose warm caches.
-- Kiln discovers header dependencies itself. Don't list them in manifests.
-- The targets in one `kiln build` share one graph and build side by side. When two
-  targets need the same work they share the task, so an edit compiles once no matter how
-  many targets link it. Targets that build a module differently (a feature adds a
-  define, say) each keep their own objects. Cooked assets have fixed paths, though, so
-  two targets cooking the same asset differently is an error that names both. Build
-  them in separate runs, or make them agree.
-- Archives are thin: they point at their objects under `.kiln/out/<config>/obj/`. Copy
-  the binary, never an `.a`.
-- An unknown field in a manifest is an error, so a typo can't quietly drop a dependency.
-- The only way to change a plugin's layer is to move it to another root. A dependency
-  must never point to a higher layer.
-- Don't fight the sandbox. If a manifest seems to need to run a program or read a
-  file, what you actually want is a `cook` or a rule.
-- Exit codes: 0 means success, 1 means a task failed, 2 means a configuration or usage
-  error, and 3 means a bug in Kiln.
+Kiln discovers header dependencies itself, so don't list headers in manifests.
 
-## Documentation
+All the targets in one `kiln build` share one graph and build side by side. Two targets
+that need the same work share the task, so an edit compiles once however many targets
+link it. Targets that build a module differently, because a feature adds a define for
+instance, keep separate objects. Cooked assets have fixed paths, though, so two targets
+that cook the same asset differently are an error naming both. Build them in separate
+runs or make them agree.
 
-- `docs/spec-outline.md` describes exactly how Kiln behaves. When the
-  documents disagree, the spec is right.
-- `docs/decisions.md` records the design decisions and the reasons behind them.
-- `docs/kpak-format.md` describes the KPAK2 pack format.
-- `CHANGELOG.md` lists what each release changed, and `CONTRIBUTING.md` explains the
-  branches and how a release is made.
+Archives are thin: they point at objects under `.kiln/out/<config>/obj/` instead of
+containing them. Copy the binary, never an `.a`.
+
+An unknown field in a manifest is an error, so a typo can't quietly drop a dependency.
+A plugin's layer changes only when you move it to another root, and a dependency may
+never point to a higher layer. And if a manifest seems to need to run a program or read
+a file, what it really needs is a cook or a rule.
+
+Kiln exits with 0 on success, 1 when a task fails, 2 for a configuration or usage
+error, and 3 when Kiln itself has a bug.
+
+## Further reading
+
+`docs/spec-outline.md` describes how Kiln behaves in detail, and where the documents
+disagree, it wins. `docs/decisions.md` explains why Kiln works the way it does, and
+`docs/kpak-format.md` describes the pack format. `CHANGELOG.md` lists what each release
+changed, and `CONTRIBUTING.md` covers branches and how a release is made.

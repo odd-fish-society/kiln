@@ -44,7 +44,7 @@ Result<json> load_graph(const fs::path& root, const std::string& config) {
     fs::path graph_dir = root / ".kiln/graph";
     std::error_code ec;
     if (!fs::is_directory(graph_dir, ec))
-        return Result<json>::fail("no built graph found — run `kiln build` first");
+        return Result<json>::fail("no built graph found (run `kiln build` first)");
     std::string chosen = config.empty() ? last_built_config(root) : config;
     if (chosen.empty())
         return Result<json>::fail("no graphs found under " + graph_dir.generic_string());
@@ -172,7 +172,7 @@ Result<int> cmd_why_dirty(const fs::path& root_in, const std::string& arg) {
     }
     auto content = util::read_file(root / ".kiln/logs/last_why.json");
     if (!content.ok())
-        return Result<int>::fail("no build log — run `kiln build` first");
+        return Result<int>::fail("no build log (run `kiln build` first)");
     json doc;
     try {
         doc = json::parse(*content);
@@ -275,7 +275,7 @@ Result<int> cmd_setup_clion(const fs::path& root_in, const std::string& config) 
     std::string cfg = config.empty() ? last_built_config(root) : config;
     if (cfg.empty())
         return Result<int>::fail(
-            "no compile_commands generated — run `kiln build` first");
+            "no compile_commands generated (run `kiln build` first)");
     fs::path src = root / ".kiln/compile_commands" / cfg / "compile_commands.json";
     if (!fs::is_regular_file(src))
         return Result<int>::fail("missing " + src.generic_string());

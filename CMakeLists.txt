@@ -1,4 +1,4 @@
-# Kiln — a content-hashed build pipeline with Luau/cluau manifests
+# Kiln: a content-hashed build pipeline with Luau/cluau manifests
 #
 # NOTE (do not delete): this CMake build is the PERMANENT external-build bootstrap
 # ("escape hatch") for Kiln's self-hosting chain. Kiln builds itself via
@@ -6,7 +6,7 @@
 # external-build/kiln building the workspace manifests, proof-build =
 # self-build/kiln building them again. The self-build/proof-build binaries
 # must be byte-identical (convergence check).
-# CI must keep this job green forever — see docs/decisions.md (K5a).
+# CI must keep this job green forever. See "Self-hosting" in docs/decisions.md.
 
 cmake_minimum_required(VERSION 3.20)
 project(kiln LANGUAGES C CXX)

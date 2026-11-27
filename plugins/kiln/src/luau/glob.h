@@ -22,7 +22,7 @@ struct GlobResult {
 };
 
 // Expands `pattern` against files under `root`. Empty match is not an error
-// here — the caller decides strictness.
+// here. The caller decides strictness.
 Result<GlobResult> glob(const fs::path& root, std::string pattern);
 
 // Glob results kept for one kiln run, keyed by (root, pattern): every target

@@ -14,7 +14,7 @@ struct RuleInfo {
     TaskFn fn; // null for host-only pseudo-rules registered elsewhere
     bool always_run = false; // skip the trace cache-hit path (check tasks)
     // Dependents key on this task's INPUT digest instead of its output bytes
-    // (rules whose outputs are not byte-reproducible — gch is the canonical
+    // (rules whose outputs are not byte-reproducible: gch is the canonical
     // case). Documented per-rule deviation from output-summary
     // semantics.
     bool outputs_opaque = false;

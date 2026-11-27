@@ -133,7 +133,7 @@ Result<DepRef> parse_dep_ref(const std::string& raw, const LowerCtx& ctx,
     if (it == ctx.declsets.end())
         return Result<DepRef>::fail(site + ": module of plugin '" + from_plugin +
                                     "' references unknown/disabled plugin '" + raw +
-                                    "' — enable it or fix the dep");
+                                    "' (enable it or fix the dep)");
     if (!module.empty()) {
         bool found = false;
         for (auto& m : it->second.modules)
@@ -574,7 +574,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         for (auto& dep : declset.plugin->public_deps) {
             auto dep_it = ctx.effective.find(dep);
             if (dep_it == ctx.effective.end())
-                continue; // disabled/optional public dep — not a hard edge here
+                continue; // disabled/optional public dep, not a hard edge here
             for (auto& inc : dep_it->second.includes)
                 eff.includes.push_back(inc);
             for (auto& def : dep_it->second.defines)
@@ -835,7 +835,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
                 pch_params["pch_timestamp"] = "0";
             // Identity note: two modules may share one pch header (engine +
             // engine_editor both use tepch.h) but need DIFFERENT gch artifacts
-            // (different defines). The identity must be module-qualified —
+            // (different defines). The identity must be module-qualified:
             // primary_input is a synthetic module-scoped path, the real header
             // stays in declared_inputs.
             std::string pch_identity = pdir + "/" + m.name + "/pch:" + m.pch;
@@ -1078,7 +1078,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
     // ONE TASK PER INPUT: every cook rule's TaskFn is bytes+params → bytes for
     // a single primary input (the tool invocation takes one source, and the
     // output path derives from that source). A multi-input declaration (one
-    // glob matching N files) must therefore lower to N tasks — a single task
+    // glob matching N files) must therefore lower to N tasks. A single task
     // per declaration would silently cook only the first input.
     for (auto& c : declset.cooks) {
         if (!passes_filter(c.platforms, c.configs, ctx.ct))
@@ -1215,7 +1215,7 @@ Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
         archives = sorted_uniq(std::move(archives));
 
         // Syslibs: workspace-global + target-declared + every enabled plugin's
-        // effective (public) link requirements — KILN-3 propagation.
+        // effective (public) link requirements (KILN-3 propagation).
         std::vector<std::string> syslibs = ctx.ws->config.system_libs;
         for (auto& sl : target.syslibs)
             syslibs.push_back(sl);
@@ -1224,7 +1224,7 @@ Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
                 syslibs.push_back(sl);
 
         // Link flags: target-declared + every enabled plugin's effective
-        // (public) link-flag tokens — the same KILN-3 propagation shape as
+        // (public) link-flag tokens, the same KILN-3 propagation shape as
         // syslibs (a module carrying a link requirement, e.g. a sanitizer
         // runtime, must not force every dependent target to know).
         std::vector<std::string> link_flags = target.link_flags;

@@ -8,7 +8,7 @@
 
 namespace kiln::luau {
 
-// Result of glob() — pattern + sorted matched files.
+// Result of glob(): pattern + sorted matched files.
 struct FileSet {
     std::string pattern;
     std::vector<std::string> files; // workspace-relative, sorted

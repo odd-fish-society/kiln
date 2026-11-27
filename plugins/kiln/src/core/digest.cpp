@@ -65,7 +65,7 @@ Result<Hash256> compute_action_digest(
         if (!hv.ok()) {
             // A stale RECORDED dynamic dep may have been moved or deleted
             // since the previous run (verifying-traces model): tolerate
-            // it — the vanished input changes the digest by its absence,
+            // it: the vanished input changes the digest by its absence,
             // and this run re-discovers the current dep set. A missing
             // DECLARED input is a real error (the tolerance is scoped to
             // dynamic-only paths).

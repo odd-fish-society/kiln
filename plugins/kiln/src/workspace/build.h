@@ -29,7 +29,7 @@ struct BuildOptions {
     bool explain = false;
     console::ProgressMode progress = console::ProgressMode::Fancy;
     // Observability hook: receives a copy of every scheduler event (thread-safe
-    // use required). Used by the K5b cross-plugin overlap acceptance test.
+    // use required). Used by the cross-plugin overlap test.
     std::function<void(const Event&)> event_probe;
 };
 

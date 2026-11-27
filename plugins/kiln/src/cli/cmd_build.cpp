@@ -68,7 +68,7 @@ Result<int> cmd_plugins(const fs::path& root, const std::string& target,
         return Result<int>::success(0);
     }
     // Aligned table: NAME STATE DECIDED-BY; LAYER after NAME when layering is
-    // enabled (spec §8) — omitted entirely otherwise.
+    // enabled (spec §8), omitted entirely otherwise.
     size_t width = 8;
     for (auto& s : result->states)
         width = std::max(width, s.name.size());

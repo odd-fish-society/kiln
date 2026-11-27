@@ -335,7 +335,7 @@ TEST_CASE("K5.8 undeclared cross-plugin reference is a hard error") {
              "module \"main\" { sources = glob(\"src/*.cpp\") }\n";
     }
     // game/src/main.cpp includes audio's public header without declaring a
-    // dep on audio — the include dir is not on the path, so compile fails.
+    // dep on audio. The include dir is not on the path, so compile fails.
     {
         std::ofstream f(tmp.path / "plugins/game/src/main.cpp");
         f << "#include \"audio.h\"\nint main() { return audio_value(); }\n";

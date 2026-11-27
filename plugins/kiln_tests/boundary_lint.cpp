@@ -76,7 +76,7 @@ std::optional<std::string> check_file(const fs::path& file) {
         }
         // Quoted includes that escape kiln/ (absolute or resolving outside
         // the repo root). Vendored trees legitimately use internal relative
-        // includes ("../include/x.h") — those resolve INSIDE kiln/ and are
+        // includes ("../include/x.h"). Those resolve INSIDE kiln/ and are
         // fine; only escapes past the repo root are boundary erosion.
         size_t pos = 0;
         while ((pos = line.find("#include \"", pos)) != std::string::npos) {

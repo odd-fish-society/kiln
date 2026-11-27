@@ -16,7 +16,7 @@ offset 9     u32 table_offset                      (bytes from file start; fixed
 offset 13    u8[32] build_hash                     (raw BLAKE3 of the table bytes)
 offset 45    table[table_count]:                   (36 bytes each)
                  bytes[16]  asset id (the raw 128-bit id: High u64 LE,
-                            Low u64 LE - its canonical hex form is
+                            Low u64 LE; its canonical hex form is
                             hex(High)+hex(Low))
                  u32        asset type (the number its cook reported: the
                             action's `asset_type`, else its dyndep's "type";

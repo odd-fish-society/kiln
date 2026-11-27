@@ -32,7 +32,7 @@ namespace {
 std::atomic<bool> g_stop{false};
 void sigint_handler(int) { g_stop.store(true); }
 
-// Recursive inotify watcher (spec K8): watches every configured plugin root
+// Recursive inotify watcher (spec §10): watches every configured plugin root
 // (spec §0; default plugins/) + build/ + the workspace file + every
 // top-level <project>/content tree the cook globs consume (the cooked sources
 // live in content trees, not plugin roots); ignores .kiln; adds watches for
@@ -65,7 +65,7 @@ struct Watcher {
                 KILN_TRY(add_tree(root / pr.path));
         if (fs::is_directory(root / "build", ec))
             KILN_TRY(add_tree(root / "build"));
-        // Any top-level <dir>/content tree (engine/game/editor content) —
+        // Any top-level <dir>/content tree (engine/game/editor content),
         // generic on purpose: the boundary lint forbids naming the engine.
         for (fs::directory_iterator it(root, ec), end; it != end; it.increment(ec)) {
             if (ec) {
@@ -173,7 +173,7 @@ struct Client {
     std::string last_key; // the last patch's content, so an unchanged diff is not resent
 };
 
-// Hot-reload socket (spec K8): newline-delimited JSON. The build and asset
+// Hot-reload socket (spec §10): newline-delimited JSON. The build and asset
 // events are broadcast; the code events go to one process each.
 struct HotReload {
     int listen_fd = -1;

@@ -33,7 +33,7 @@ std::string normalize_flags(std::string s) {
 
 // check_pkg_config (KILN-4): enforces that the checked-in flags constants for
 // a pkg-config dependency still match what the system provides. Runs every
-// build (always_run) — a cached check is a check that never fires.
+// build (always_run), since a cached check is a check that never fires.
 TaskResult run_check_pkg_config(TaskCtx& ctx) {
     TaskResult r;
     std::string pkg = param(*ctx.decl, "pkg");

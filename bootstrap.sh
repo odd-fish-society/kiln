@@ -1,8 +1,8 @@
 #!/bin/sh
 # Kiln self-host bootstrap (spec §7a.2).
 #
-#   external-build: CMake+Ninja build (PERMANENT escape hatch — never delete)
-#   self-build: external-build/kiln builds the workspace manifests — THE
+#   external-build: CMake+Ninja build (PERMANENT escape hatch, never delete)
+#   self-build: external-build/kiln builds the workspace manifests, THE
 #       deliverable; this binary goes on PATH
 #   proof-build: self-build/kiln builds them again (fresh .kiln state dir);
 #       a disposable check artifact, never shipped

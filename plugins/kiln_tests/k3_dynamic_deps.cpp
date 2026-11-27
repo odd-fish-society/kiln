@@ -79,7 +79,7 @@ TEST_CASE("K3.4 a moved/deleted recorded dynamic dep does not fail the digest") 
     // Verifying-traces model: the previous trace's dynamic deps are re-hashed
     // to compute this run's digest. A dep that was MOVED or DELETED since
     // (the classic file-rename case) must invalidate the task, not crash the
-    // digest — the run re-discovers the current dep set.
+    // digest. The run re-discovers the current dep set.
     TempDir tmp;
     write_tree(tmp.path, {
         {"kiln.workspace.luau", "workspace \"k3d\" { strict_globs = true }\n"},

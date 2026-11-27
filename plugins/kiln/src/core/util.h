@@ -16,7 +16,7 @@ namespace kiln::util {
 //   - forward slashes
 //   - collapse redundant separators and "./" components
 //   - strip trailing slash (except root)
-// UTF-8 NFC normalization: sources are assumed NFC (see docs/decisions.md).
+// UTF-8 NFC normalization: sources are assumed to be NFC already.
 std::string norm(std::string_view p);
 
 // Workspace-relative, normalized, and strictly inside root (no ".." escapes).

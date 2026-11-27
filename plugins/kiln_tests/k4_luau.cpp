@@ -343,7 +343,7 @@ TEST_CASE("K4.12 glob results feed the expansion digest (file adds re-expand)") 
 
     // A file ADD changes the glob result ⇒ the serialized DeclSet differs
     // ⇒ the expansion digest differs (regression: globs were not recorded,
-    // so file adds/removes never re-expanded — spec §6.4).
+    // so file adds/removes never re-expanded, see spec §6.4).
     write_tree(w.root, {{"plugins/p/src/b.cpp", ""}});
     auto r2 = luau::evaluate_file(w.root / "plugins/p/plugin.build.luau", o);
     REQUIRE(r2.ok());
@@ -384,7 +384,7 @@ cook "beep" {
     std::vector<std::string> inputs{"plugins/p/content/beep.wav", "plugins/p/content/dev_preview.wav"};
     CHECK(d.cooks[0].inputs == inputs);
     CHECK(d.cooks[0].exclude == std::vector<std::string>{"plugins/p/content/dev_preview.wav"});
-    // Exclusions are applied at lowering, not eval — verify the helper.
+    // Exclusions are applied at lowering, not eval, so verify the helper.
     apply_exclusions(d);
     CHECK(d.modules[0].sources == std::vector<std::string>{"plugins/p/src/a.cpp"});
     CHECK(d.cooks[0].inputs == std::vector<std::string>{"plugins/p/content/beep.wav"});

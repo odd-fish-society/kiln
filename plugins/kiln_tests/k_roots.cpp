@@ -4,7 +4,7 @@
 // - derived layers + downward-only dependency check.
 // - `kiln plugins` LAYER column + JSON keys.
 //
-// Fixture roots are named base/app (layers "base"/"app") — the boundary lint
+// Fixture roots are named base/app (layers "base"/"app") because the boundary lint
 // forbids the consuming engine's real root-path strings under kiln/tests.
 #include "hamr/test.h"
 
@@ -27,7 +27,7 @@ std::vector<std::string> build_args() {
     return {"build", "--progress=plain", "--workspace", "."};
 }
 
-// Flat fixture: no plugin_roots declared — the back-compat single root.
+// Flat fixture: no plugin_roots declared, the back-compat single root.
 std::map<std::string, std::string> flat_fixture() {
     return {
         {"kiln.workspace.luau",
@@ -100,8 +100,8 @@ const char* kNestedTableGolden =
     "gameplay  app    enabled    target 'game' (layer 3)\n";
 
 const char* kUpwardGolden =
-    "plugin 'renderer' (layer base) depends on 'gameplay' (layer app) — "
-    "dependencies must not point upward (base/plugins/renderer/"
+    "plugin 'renderer' (layer base) depends on 'gameplay' (layer app). "
+    "Dependencies must not point upward (base/plugins/renderer/"
     "plugin.build.luau:2)";
 
 // A renderer manifest whose plugin declaration sits on a known line (2), so
@@ -274,7 +274,7 @@ TEST_CASE("R1.6 daemon rebuilds on a save under the second root") {
     }
     CHECK(out.find("watching") != std::string::npos);
 
-    // Save a file under the SECOND root (app/plugins) — the daemon must
+    // Save a file under the SECOND root (app/plugins). The daemon must
     // rebuild (the pre-R1 watcher only watched plugins/).
     size_t before = out.size();
     std::ofstream f(tmp.path / "app/plugins/app/src/main.cpp", std::ios::app);
@@ -340,7 +340,7 @@ TEST_CASE("R2.3 equal-layer and downward deps pass") {
 TEST_CASE("R2.4 target composition is unconstrained across layers") {
     TempDir tmp;
     // An editor-style target (hosting code in the base layer) enables a
-    // game-layer content plugin — legal and expected.
+    // game-layer content plugin, which is legal and expected.
     auto files = nested_fixture();
     files["build/game.target.luau"] =
         "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
@@ -363,9 +363,9 @@ TEST_CASE("R2.4 target composition is unconstrained across layers") {
 }
 
 TEST_CASE("R2.5 layering-disabled workspace runs zero layer validation") {
-    // A flat workspace has no layers, so there is no "upward" — any dep edge
+    // A flat workspace has no layers, so there is no "upward": any dep edge
     // builds. If the layer check ran, this pair (a name that would be an
-    // upward edge under layers) could not be distinguished — the point is the
+    // upward edge under layers) could not be distinguished. The point is the
     // build succeeds with the check compiled out of the resolution path.
     TempDir tmp;
     auto files = flat_fixture();
@@ -382,7 +382,7 @@ TEST_CASE("R2.5 layering-disabled workspace runs zero layer validation") {
 }
 
 TEST_CASE("R2.6 MULTIPLE unlayered roots run zero layer validation (cross-root dep)") {
-    // Per spec §0, when NO root declares a layer, layering is disabled — even for
+    // Per spec §0, when NO root declares a layer, layering is disabled, even for
     // several unlayered roots. A plugin in root 0 depending on a plugin in
     // root 1 must NOT produce a spurious upward-dep error (all plugins are
     // layerless; root indices are not layers).

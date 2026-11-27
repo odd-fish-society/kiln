@@ -30,7 +30,7 @@ std::vector<std::string> build_link_argv(const TaskDecl& decl,
 
 // Parses `depfile_rel` (workspace-relative) and reports discovered deps via
 // ctx.report_dep, filtered to workspace/SDK-root paths. Entries matching
-// `exclude` (the task's OWN outputs — e.g. the pch copy/gch that header
+// `exclude` (the task's OWN outputs, e.g. the pch copy/gch that header
 // compiles list as prerequisites) are skipped: a task must never become a
 // dynamic dep of itself. Shared by the compile and pch rules.
 void report_depfile_deps(TaskCtx& ctx, const fs::path& workspace_root,

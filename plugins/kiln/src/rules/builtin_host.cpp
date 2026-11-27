@@ -135,7 +135,7 @@ TaskResult run_interface(TaskCtx& ctx) {
 
 // provider rule: the IMPLEMENTATION record (spec §7.2). Depends only on the
 // plugin's archives. Contains NO interface content, NO assets (the
-// asset_manifest rule's record) and NO dep-provider references — dependents' compiles gate
+// asset_manifest rule's record) and NO dep-provider references. Dependents' compiles gate
 // on the interface record (run_interface above), their links on this record.
 TaskResult run_provider(TaskCtx& ctx) {
     TaskResult r;
@@ -300,7 +300,7 @@ TaskResult run_asset_manifest(TaskCtx& ctx) {
     return r;
 }
 
-// pack_target rule: writes <target>.kpak + <target>.kpak.json (K7).
+// pack_target rule: writes <target>.kpak + <target>.kpak.json (spec §9).
 TaskResult run_pack(TaskCtx& ctx) {
     TaskResult r;
     auto fail = [&](std::string e) {
@@ -429,7 +429,7 @@ TaskResult run_pack(TaskCtx& ctx) {
         std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(hashInput.data()), hashInput.size()));
 
     // Atomic outputs (same discipline as the archive rule): write both files
-    // to the task-private dir and rename over the outputs — a reader (the
+    // to the task-private dir and rename over the outputs. A reader (the
     // running engine's hot-reload path) must never observe a half-written
     // .kpak/.kpak.json pair mid-repack. The blobs stream from their files
     // (a client pack is most of a gigabyte).
@@ -525,8 +525,8 @@ void register_host() {
     // moved to the asset_manifest rule's record.
     register_rule("provider", 3, run_provider);
     register_rule("asset_manifest", 2, run_asset_manifest);
-    // v2: fixed two kpak layout bugs (32-byte entry ids; 9+n*48 header math)
-    // — see decisions.md "Pack & hot-reload pass".
+    // v2: fixed two kpak layout bugs (32-byte entry ids; 9+n*48 header math).
+    // See decisions.md "Pack & hot-reload pass".
     // v4: build hash covers the content hashes too; v5: reads the asset
     // records (`assets.*`), not the providers.
     register_rule("pack_target", 6, run_pack);

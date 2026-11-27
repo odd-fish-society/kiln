@@ -37,7 +37,7 @@ Result<TargetSpec> parse_target_spec(const std::string& s) {
         auto dash = pc.find('-');
         if (dash == std::string::npos)
             return Result<TargetSpec>::fail(
-                "bad target spec '" + s + "' — expected <target>[:<platform>-<config>]");
+                "bad target spec '" + s + "' (expected <target>[:<platform>-<config>])");
         spec.platform = pc.substr(0, dash);
         spec.config = pc.substr(dash + 1);
     }
@@ -634,7 +634,7 @@ Result<BuildOutcome> run_build(const BuildOptions& opts, console::Renderer& rend
             for (auto& [name, t] : ws->targets)
                 avail += (avail.empty() ? "" : ", ") + name;
             return Result<BuildOutcome>::fail(
-                "multiple targets available — specify one: " + avail);
+                "multiple targets available (specify one: " + avail + ")");
         }
     } else {
         for (auto& s : opts.target_specs) {

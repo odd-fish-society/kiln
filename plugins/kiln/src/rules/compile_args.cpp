@@ -46,7 +46,7 @@ void append_flags(const TaskDecl& decl, std::vector<std::string>& argv) {
 
 // Flags shared by compile, pch, and compile_commands argv construction.
 // Everything here is either configuration (hashed via params) or derived
-// (workspace root — never hashed).
+// (workspace root, never hashed).
 std::vector<std::string> common_compile_flags(const TaskDecl& decl,
                                               const fs::path& workspace_root) {
     std::vector<std::string> argv;

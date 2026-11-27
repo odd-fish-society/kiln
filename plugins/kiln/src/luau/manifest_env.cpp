@@ -165,7 +165,7 @@ void validate_fields(lua_State* L, int table_idx, EvalState* st,
         }
         std::string site = call_site(L, st);
         if (best <= 2) {
-            luaL_error(L, "%s: unknown field '%s' — did you mean '%s'?", site.c_str(),
+            luaL_error(L, "%s: unknown field '%s' (did you mean '%s'?)", site.c_str(),
                        k.c_str(), suggestion.c_str());
         }
         luaL_error(L, "%s: unknown field '%s'", site.c_str(), k.c_str());
@@ -270,7 +270,7 @@ bool read_fileset(lua_State* L, int idx, EvalState* st, const char* field,
     }
     if (lua_istable(L, idx)) {
         // Entries may be strings, glob results (FileSet userdata), or nested
-        // tables — mixed composition like
+        // tables: mixed composition like
         //   sources = { glob("src/*.cpp"), "extra.cpp", is_linux and {...} or {...} }.
         std::function<void(int, int)> flatten = [&](int tbl, int depth) {
             if (depth > 8)
@@ -338,7 +338,7 @@ int glob_impl(lua_State* L) {
             luaL_error(L, "glob '%s' matched no files (strict_globs)", pattern);
     }
     // Record EVERY glob into the DeclSet: pattern + sorted result feed the
-    // expansion digest (spec §6.4 — file adds/removes must re-expand).
+    // expansion digest (spec §6.4: file adds/removes must re-expand).
     {
         FileSet record;
         record.pattern = ud.fs.pattern;
@@ -519,7 +519,7 @@ int spec_module(lua_State* L) {
         luaL_typeerrorL(L, -1, "sources");
     lua_pop(L, 1);
 
-    // exclude: FileSet (optional) — paths removed from `sources`.
+    // exclude: FileSet (optional), paths removed from `sources`.
     lua_getfield(L, 2, "exclude");
     if (!lua_isnil(L, -1)) {
         if (!read_fileset(L, -1, st, "exclude", m.exclude))
@@ -701,7 +701,7 @@ int spec_cook(lua_State* L) {
     if (!read_fileset(L, -1, st, "inputs", c.inputs))
         luaL_typeerrorL(L, -1, "inputs");
     lua_pop(L, 1);
-    // exclude: FileSet (optional) — paths removed from `inputs`.
+    // exclude: FileSet (optional), paths removed from `inputs`.
     lua_getfield(L, 2, "exclude");
     if (!lua_isnil(L, -1)) {
         if (!read_fileset(L, -1, st, "exclude", c.exclude))

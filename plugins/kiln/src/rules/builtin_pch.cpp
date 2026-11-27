@@ -16,7 +16,7 @@ std::string param(const TaskDecl& decl, const std::string& key, std::string def 
 } // namespace
 
 // compile_pch (KILN-2): builds a precompiled header WITHOUT writing to the
-// source tree — the pch header is COPIED into the task's output dir and the
+// source tree: the pch header is COPIED into the task's output dir and the
 // `.gch` is compiled next to the copy, so the compiler's adjacent-gch pickup
 // (GCC's, and Clang's `-include` lookup) happens entirely inside `.kiln/out/`.
 // Params must mirror the module's compile flags exactly
@@ -77,7 +77,7 @@ void register_pch() {
     // outputs_opaque: gch bytes are NOT reproducible across builds for GCC (a
     // PCH is a compiler-state dump; Clang's is, without its timestamps).
     // Dependents key on this
-    // task's INPUT digest instead — see decisions.md (migration pass).
+    // task's INPUT digest instead (see decisions.md, migration pass).
     register_rule("compile_pch", 1, run_compile_pch, /*always_run=*/false,
                   /*outputs_opaque=*/true);
 }

@@ -99,7 +99,7 @@ int main(int argc, char** argv) {
         return rc;
 
     CLI::App app{
-        "Kiln — content-hashed, incrementally-correct build pipeline.\n"
+        "Kiln: content-hashed, incrementally-correct build pipeline.\n"
         "Workspace: any directory containing kiln.workspace.luau.",
         "kiln"};
     app.require_subcommand(1);

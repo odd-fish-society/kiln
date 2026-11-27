@@ -58,7 +58,7 @@ TaskResult run_fbs_gen(TaskCtx& ctx) {
         if (tail.size() > 300)
             tail = "…" + tail.substr(tail.size() - 300);
         r.error = "fbs_gen failed (" + std::to_string(rc) + ")" +
-                  (tail.empty() ? " — is the `flatc` tool built? Run `kiln build flatc` first."
+                  (tail.empty() ? ". Is the `flatc` tool built? Run `kiln build flatc` first."
                                 : ":\n" + tail);
         return r;
     }

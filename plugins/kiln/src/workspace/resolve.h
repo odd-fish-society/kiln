@@ -25,7 +25,7 @@ struct ResolvedPlugins {
 };
 
 // Pure four-layer resolution (spec §8). Layer 2 (platform/config support) is
-// FINAL — attempting to enable via layers 3/4 is an error.
+// FINAL. Attempting to enable via layers 3/4 is an error.
 Result<ResolvedPlugins> resolve_enabled(
     const std::map<std::string, luau::PluginDecl>& plugins,
     const std::optional<luau::TargetDecl>& target, const std::string& platform,
@@ -39,10 +39,10 @@ Result<void> check_plugin_cycles(
     const std::vector<std::string>& enabled);
 
 // Layer check (spec §7.3), run in the same resolution pass as SCC: when
-// layering is enabled, every dependency edge — public, private, AND optional
-// (an optional upward dep is still an upward dep) — must point to an
+// layering is enabled, every dependency edge (public, private, AND optional,
+// since an optional upward dep is still an upward dep) must point to an
 // equal-or-lower layer. When `layered` is false (no root declares a layer)
-// the check is inert — this holds even for MULTIPLE unlayered roots, whose
+// the check is inert. This holds even for MULTIPLE unlayered roots, whose
 // plugins are all layerless. Edges to unknown plugin names are skipped (the
 // closure check errors on those).
 Result<void> check_layer_edges(

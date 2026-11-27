@@ -56,7 +56,7 @@ Result<void> TraceStore::open() {
     if (exec(as_db(db_), "PRAGMA journal_mode=WAL;") != SQLITE_OK ||
         exec(as_db(db_), "PRAGMA synchronous=NORMAL;") != SQLITE_OK ||
         exec(as_db(db_), "SELECT COUNT(*) FROM meta;") != SQLITE_OK) {
-        // Corrupt file: traces are a cache, never precious — drop and retry.
+        // Corrupt file: traces are a cache, never precious, so drop and retry.
         sqlite3_close(as_db(db_));
         db_ = nullptr;
         fs::remove(db_path_, ec);
