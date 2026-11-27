@@ -4,6 +4,18 @@ Each release is an annotated tag (`v0.x.0`, or `v0.x.y` for a release of
 fixes only) whose message is the entry below. Versions before 1.0 may change
 the manifest API; every entry says whether existing manifests need to change.
 
+## 0.2.1
+
+Licensing and documentation only. Manifests and behaviour are unchanged.
+
+- Kiln is now under the Odd Fish Society License, the licence it shares with its
+  sibling libraries. A product that includes Kiln or is built with it credits it, and a
+  product that uses several of the libraries can credit them all in one line.
+- `CONTRIBUTING.md` explains how to report a problem, propose a change and build and
+  test Kiln, and how contributions are licensed.
+- The README's install command fetches the current release.
+- CI runs with read-only permissions, as pull requests from forks now run it.
+
 ## 0.2.0
 
 Manifests are cluau only. This changes the manifest API: every Luau manifest has to
