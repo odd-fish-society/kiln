@@ -404,3 +404,12 @@ error, and 3 when Kiln itself has a bug.
 disagree, it wins. `docs/decisions.md` explains why Kiln works the way it does, and
 `docs/kpak-format.md` describes the pack format. `CHANGELOG.md` lists what each release
 changed, and `CONTRIBUTING.md` covers branches and how a release is made.
+
+## License
+
+Kiln is released under the Odd Fish Society License ([`LICENSE`](LICENSE)), which is MIT
+with one added condition. A product that includes Kiln, or is built with it, credits it
+in its credits, about box or documentation, as "Uses Kiln - Copyright (c) 2026 Felipe
+Lara". A product that uses several Odd Fish Society libraries can credit them together,
+on one line or several, such as "Uses Kiln, cluau and Wisp - Copyright (c) 2026 Felipe
+Lara". No logo or splash screen is required.

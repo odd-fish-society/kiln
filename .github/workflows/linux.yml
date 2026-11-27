@@ -16,6 +16,10 @@ on:
     branches: [dev]
   workflow_dispatch:
 
+# Read-only: pull requests from forks run this too.
+permissions:
+  contents: read
+
 concurrency:
   group: linux-${{ github.ref }}
   cancel-in-progress: true

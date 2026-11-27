@@ -1,6 +1,10 @@
-Kiln License
+Odd Fish Society License
 
 Copyright (c) 2026 Felipe Lara
+
+This license is shared by the libraries Felipe Lara releases under it (the "Odd Fish
+Society libraries"), among them Kiln, cluau, hamr, loom, Wisp, Hearth and tmath. In
+this copy, "the Software" means Kiln and its documentation.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -12,16 +16,31 @@ furnished to do so, subject to the following conditions:
 1. Notice. The above copyright notice and this permission notice shall be
    included in all copies or substantial portions of the Software.
 
-2. Attribution. Every Covered Product shall credit Kiln in the product's
-   credits (a credits screen or menu, end credits, or an about box; where the
-   product has no credits, in its documentation or in a notice file
+2. Attribution. Every Covered Product shall credit the Software in the
+   product's credits (a credits screen or menu, end credits, or an about box;
+   where the product has no credits, in its documentation or in a notice file
    distributed with it), with the line
-   "Uses Kiln - Copyright (c) 2026 Felipe Lara" or a substantially similar one.
-   No logo, splash screen, or display before or during use of the product is
-   required.
+   "Uses Kiln - Copyright (c) 2026 Felipe Lara" or a substantially similar
+   one. No logo, splash screen, or display before or during use of the product
+   is required.
 
-"Covered Product" means any product that includes the Software or a
-substantial portion of it (compiled in, linked, or distributed with it).
+3. One credit for several libraries. A Covered Product that owes a credit to
+   more than one Odd Fish Society library may give a single credit that names
+   each of them and gives the copyright notice once, on one line or on
+   consecutive lines, for example
+   "Uses Kiln, cluau and Wisp - Copyright (c) 2026 Felipe Lara". That credit
+   satisfies condition 2 of every library it names.
+
+"Covered Product" means any product that:
+
+(i)  includes the Software or a substantial portion of it (compiled in,
+     linked, or distributed with it); or
+
+(ii) was built, translated, compiled, checked or tested by the Software, in
+     whole or in part, including when the Software runs as part of a build or
+     test process that produces the product, and including a product whose
+     source code, scripts or build files are written in a language the
+     Software implements.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
