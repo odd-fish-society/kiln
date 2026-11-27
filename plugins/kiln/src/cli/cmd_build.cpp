@@ -27,7 +27,7 @@ Result<int> cmd_build(const BuildOptions& opts, console::Renderer& renderer) {
         outcome->stats.cached, outcome->stats.failed, outcome->stats.skipped, elapsed);
 
     if (outcome->pruned_outputs > 0)
-        std::printf("kiln: removed %zu stale cooked output%s (their sources are gone)\n",
+        std::printf("kiln: removed %zu dead output%s (their sources are gone)\n",
                     outcome->pruned_outputs, outcome->pruned_outputs == 1 ? "" : "s");
 
     if (outcome->swept_variants > 0)

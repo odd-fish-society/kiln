@@ -36,6 +36,14 @@ struct LowerCtx {
     // A reload-capable config's compile outputs: object → source (the link
     // record's TU list).
     std::map<std::string, std::string> live_objects;
+    // Every task output of the target -> its task: an action input another
+    // task writes makes that task a dependency.
+    std::map<std::string, TaskId> output_tasks;
+    // Named outputs (an action's `provides`, the reflect outputs): plugin ->
+    // name -> path, read through {use:<plugin>/<name>} tokens.
+    std::map<std::string, std::map<std::string, std::string>> named_outputs;
+    // Each cook rule lowered, and whether it prunes dead outputs.
+    std::map<std::string, bool> prune_rules;
 
     struct PluginTasks {
         std::vector<TaskId> compiles;      // module compiles (all modules)
@@ -120,6 +128,10 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
 // task (its `defs` param names the plugins whose .d.luau it loads), which a
 // plugin with no dependency on that plugin cannot see while it is lowered.
 Result<void> lower_script_checks(Scheduler& sched, LowerCtx& ctx);
+// The target's aggregate-rule cooks (`rule { kind = "aggregate" }`), after
+// every plugin: each sees every enabled plugin (`order`, topological) and
+// their named outputs.
+Result<void> lower_aggregates(Scheduler& sched, LowerCtx& ctx, const std::vector<std::string>& order);
 
 // Applies each module/cook's `exclude` list: removes the named paths from
 // the materialized sources/inputs (paths are workspace-relative; a listed

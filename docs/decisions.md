@@ -725,3 +725,30 @@ as above (SHOULD choices logged, MUST deviations fixed: none remain):
   and the new binary gives the same 16 files under `.kiln/out`, the pack and
   its index included; the no-op and the nested-include rebuild behave the
   same.
+
+## Rule features for project rules
+
+- What crosses plugins is resolved at target lowering, not in a rule's
+  `lower`: an expansion depends only on (manifest, platform, config,
+  features), never on the enabled set, so it cannot read another plugin's
+  results. Named outputs (`provides`) are referred to by `{use:}` tokens
+  that lowering resolves into a path, an input and a dependency; aggregate
+  rules (`kind = "aggregate"`) are lowered per target after every plugin
+  and see all of them. Tokens were preferred over giving `lower` the
+  dependencies' DeclSets, which would make an expansion depend on optional
+  dependencies being enabled.
+- Optional inputs enter the digest as their own list, written only for a
+  task that has any, so no other task's digest moved. `cook_tinyasset`'s
+  sidecar became one (it was a content hash computed at lowering into a
+  param): the cook reruns once (rule v2), with identical outputs.
+- An asset's id may come from the tool (the dyndep's `identity`), resolved
+  by the asset record at run time; an `asset` may name an input, so a
+  committed file is packed verbatim through a small action that reports its
+  id. Tags filter packs (`pack.tags`) where `pack_types` reads a header
+  only one engine's containers have.
+- `prune_dead_outputs` replaces the name-scoped cook prune; the flags of the
+  rules a build lowered are kept in `.kiln/prune_rules.json` so `kiln clean
+  --dead` knows them without lowering.
+- Link records are a workspace option (`link_record`), no longer "the dev
+  config": the patchable-object flags and the record are a live-code
+  patcher's needs, which a workspace opts into per config.

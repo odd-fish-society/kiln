@@ -43,6 +43,18 @@ json actions_json(const std::vector<ActionDecl>& actions) {
                      {"dyndep", a.dyndep},
                      {"scan", a.scan},
                      {"asset", a.asset}});
+    // Written only when set, so a DeclSet without them keeps its bytes.
+    for (size_t i = 0; i < actions.size(); ++i) {
+        const ActionDecl& a = actions[i];
+        if (!a.optional_inputs.empty())
+            j[i]["optional_inputs"] = strvec(a.optional_inputs);
+        if (!a.provides.empty())
+            j[i]["provides"] = strmap(a.provides);
+        if (!a.asset_id.empty())
+            j[i]["asset_id"] = a.asset_id;
+        if (!a.asset_tags.empty())
+            j[i]["asset_tags"] = strvec(a.asset_tags);
+    }
     return j;
 }
 std::vector<ActionDecl> actions_from_json(const json& j) {
@@ -65,6 +77,12 @@ std::vector<ActionDecl> actions_from_json(const json& j) {
         a.dyndep = v.value("dyndep", "");
         a.scan = v.value("scan", "");
         a.asset = v.value("asset", "");
+        a.optional_inputs = to_strvec(v.value("optional_inputs", json::array()));
+        const json& provides = v.value("provides", json::object());
+        for (auto it = provides.begin(); it != provides.end(); ++it)
+            a.provides[it.key()] = it.value().get<std::string>();
+        a.asset_id = v.value("asset_id", "");
+        a.asset_tags = to_strvec(v.value("asset_tags", json::array()));
         out.push_back(std::move(a));
     }
     return out;
@@ -130,6 +148,10 @@ std::string decl_set_to_json(const DeclSet& decls) {
                          {"actions", actions_json(c.actions)},
                          {"file", c.file},
                          {"line", c.line}});
+        if (!c.rule_kind.empty())
+            cooks.back()["rule_kind"] = c.rule_kind;
+        if (c.prune_dead_outputs)
+            cooks.back()["prune_dead_outputs"] = true;
     }
     j["cooks"] = cooks;
     auto clibs = json::array();
@@ -174,6 +196,8 @@ std::string decl_set_to_json(const DeclSet& decls) {
                        {"pack_types", strvec(t.pack_types)},
                        {"file", t.file},
                        {"line", t.line}};
+        if (!t.pack_tags.empty())
+            j["target"]["pack_tags"] = strvec(t.pack_tags);
     }
     if (decls.workspace) {
         auto& w = *decls.workspace;
@@ -191,6 +215,7 @@ std::string decl_set_to_json(const DeclSet& decls) {
                           {"jobs", w.jobs},
                           {"tools", tools},
                           {"rules", strvec(w.rules)},
+                          {"link_record", strvec(w.link_record)},
                           {"strict_globs", w.strict_globs},
                           {"cpp_std", w.cpp_std},
                           {"c_std", w.c_std},
@@ -266,6 +291,8 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
             c.platforms = to_strvec(v.value("platforms", json::array()));
             c.configs = to_strvec(v.value("configs", json::array()));
             c.rule_version = v.value("rule_version", 0u);
+            c.rule_kind = v.value("rule_kind", "");
+            c.prune_dead_outputs = v.value("prune_dead_outputs", false);
             c.actions = actions_from_json(v.value("actions", json::array()));
             c.file = v.value("file", "");
             c.line = v.value("line", 0);
@@ -311,6 +338,7 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
             t.link_flags = to_strvec(v.value("link_flags", json::array()));
             t.companions = to_strvec(v.value("companions", json::array()));
             t.pack_types = to_strvec(v.value("pack_types", json::array()));
+            t.pack_tags = to_strvec(v.value("pack_tags", json::array()));
             t.file = v.value("file", "");
             t.line = v.value("line", 0);
             out.target = std::move(t);
@@ -327,6 +355,7 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
             for (auto tit = tools.begin(); tit != tools.end(); ++tit)
                 w.tools[tit.key()] = tit.value().get<std::string>();
             w.rules = to_strvec(v.value("rules", json::array()));
+            w.link_record = to_strvec(v.value("link_record", json::array()));
             w.strict_globs = v.value("strict_globs", false);
             w.cpp_std = v.value("cpp_std", "c++20");
             w.c_std = v.value("c_std", "c11");

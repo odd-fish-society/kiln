@@ -267,6 +267,8 @@ Executor::Result Executor::run_task(const TaskDecl& decl,
     std::set<std::string> all_inputs;
     for (auto& p : decl.declared_inputs)
         all_inputs.insert(p);
+    for (auto& p : decl.optional_inputs) // an absent one is not recorded
+        all_inputs.insert(p);
     for (auto& p : collected_deps)
         all_inputs.insert(p);
     for (auto& p : all_inputs) {

@@ -107,7 +107,9 @@ std::string hex_of(const unsigned char* p, size_t n) {
 
 } // namespace
 
-bool is_live_config(const ConfigTuple& ct) { return ct.config == "dev"; }
+bool is_live_config(const WorkspaceConfig& ws, const ConfigTuple& ct) {
+    return std::find(ws.link_record.begin(), ws.link_record.end(), ct.config) != ws.link_record.end();
+}
 
 const std::vector<std::string>& live_compile_flags() {
     // One section per function and per variable: a relocation against a

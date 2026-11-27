@@ -590,6 +590,8 @@ rule(name: string)(spec: {
   version: number*,          -- positive integer: the rule's own version (its tasks' rule_version)
   params: {string}?,         -- the cook params it accepts: a name, or "name." + any suffix;
                              --   absent ⇒ unchecked; a cook passing another ⇒ error naming the list
+  kind: "cook" | "aggregate"?, -- default "cook"; see Aggregate rules
+  prune_dead_outputs: boolean?, -- see Dead outputs
   lower: (cook, ctx) -> {Action}*,
 })
 ```
@@ -612,15 +614,46 @@ rule(name: string)(spec: {
   `rules.std` param - the hash of their sources), and editing one re-lowers what uses it.
 - **Actions** (validated; an error names the cook, the rule and the field):
   `{primary?, kind? = "exec" | "copy", tool? | tool_path?, args?, env?, inputs?,
-  outputs*, depfile?, dyndep?, scan?, asset?}`. `primary` defaults to `inputs[1]` and is
+  optional_inputs?, outputs*, depfile?, dyndep?, scan?, asset?, asset_id?, asset_tags?,
+  provides?}`. `primary` defaults to `inputs[1]` and is
   the task's identity, unique per rule; `inputs` defaults to `{primary}`; an exec action
   names exactly one of `tool` (a name: the workspace `tools` table, else PATH, resolved at
   lowering - not found ⇒ error naming the tool) and `tool_path` (a build output or an
   absolute path); a copy has one output and no tool. Outputs, `depfile` and `dyndep` lie
   under `.kiln/out/`. `scan = "quoted_include"` reports the primary's `#include "..."`
   closure (spec §5b); `depfile` is Make syntax (spec §5a); `dyndep` is JSON
-  `{"inputs": [...]}` (paths inside the workspace). `asset` names the output registered
-  as the primary's asset (id = BLAKE3(plugin + "/" + plugin-relative primary), spec §9).
+  `{"inputs": [...], "identity": "<hex>"?}` (paths inside the workspace). `asset` names
+  the output registered as the primary's asset, or one of the action's inputs (packed
+  verbatim). Its id is `asset_id` when given (32 or 64 lowercase hex), else the dyndep's
+  `identity` (read by the plugin's asset record at run time), else
+  BLAKE3(plugin + "/" + plugin-relative primary) (spec §9); `asset_tags` tags it (§9).
+- **Optional inputs:** `optional_inputs` lists files that may be absent (never under
+  `.kiln/out/`). Each one's content, or a fixed absence marker, enters the digest after
+  the inputs (only for a task that has any), so creating, editing or deleting one reruns
+  the task; a missing one is not an error.
+- **Named outputs:** `provides = { name = output }` names some of the action's outputs
+  (a name is unique per plugin). An action refers to one with the token
+  `{use:<plugin>/<name>}` (`{use:<name>}`: its own plugin) in `args`, `inputs` or `env`
+  values: at target lowering the token becomes the path, the path becomes an input, and
+  the producing task a dependency. The plugin must be the action's own or one it depends
+  on (directly or transitively, optional deps when enabled); an unknown name or plugin is
+  an error naming the cook and what the plugin publishes. Expansion cannot resolve them
+  (it is independent of the enabled set, §7.1), so tokens stay in the DeclSet. The C++
+  `reflect_gen` task publishes `reflect.dluau` and `reflect.docs`. More generally, an
+  action input another task of the target declares as an output makes that task a
+  dependency.
+- **Aggregate rules:** a cook of a `kind = "aggregate"` rule is not lowered at expansion
+  (its DeclSet entry carries `rule_kind = "aggregate"` and no actions). At target
+  lowering, after every plugin, Kiln runs `lower(cook, ctx)` in the same sandbox with two
+  more ctx fields: `plugins` (the enabled plugins, topological order) and
+  `outputs[plugin][name]` (every named output); its `{use:...}` tokens may name any
+  enabled plugin. It runs every build (it is per target and cheap) and is not cached.
+- **Dead outputs:** a rule with `prune_dead_outputs = true` promises its primaries are
+  files. After a build, every trace of such a rule whose primary file is gone has its
+  outputs under `.kiln/out/` deleted and the trace erased (a moved or deleted source
+  leaves no output a directory scan would find). Each build records the flag of every
+  rule it lowered in `.kiln/prune_rules.json`, so `kiln clean --dead` prunes without
+  lowering; the built-in `cook_tinyasset` always prunes.
 - **Execution:** every action is one task of rule `<rule name>` run by the built-in
   `exec` TaskFn; its params carry the whole action (`exec.arg.NNNN`, `exec.env.K`,
   `tool` + `tool_hash`, ...) plus `exec.version` (bumped when exec's behaviour changes).
@@ -782,6 +815,23 @@ revert reruns them.
 **Acceptance:** two targets with the same module settings run each of its compiles once
 in `kiln build a b`, and an edit compiles once; two with different defines each keep
 their objects and the next `kiln build a b` runs no compile.
+
+### 7.2b Link records
+
+`workspace { link_record = { "dev" } }` names the configs (default none) whose links
+write a **link record** for a live-code patcher, and whose compiles take the
+patchable-object flags (`-falign-functions=16 -fno-omit-frame-pointer
+-ffunction-sections -fdata-sections`; they are in the module variant). The record,
+`.kiln/out/<cfg>/bin/<target>.live.json`:
+`{"version": 1, "build_id", "target", "config", "exe", "tus": [{"source", "object",
+"hash"}]}` - the linked executable's ELF build-id, and per translation unit its source,
+its object and the object's content hash. The objects are kept content-addressed under
+`.kiln/out/<cfg>/live/objects/<hash>.o` (hard links), each record also under
+`live/records/<build-id>.json`, and `live/pins/<pid>.json` names what a running process
+runs beyond its own record; a record or object no kept record, running process or pin
+names is deleted. The daemon sends each connected process the TUs whose object differs
+from what it runs (`{"event":"code",...}`). A compile or link in such a config refuses a flag that
+breaks the record's contract (LTO, ICF, dead-stripping, symbol stripping).
 
 ### 7.3 Plugin-level cycles, layers & lowering
 
@@ -945,14 +995,18 @@ plugin-relative path under `ctx.out_dir`):
 Tool discovery: workspace file `tools = { glslc = "...", basisu = "..." }` or PATH (a
 `tool` param pins a path instead); resolved tool's file hash folded into digests as
 param `tool_hash` (tool upgrade ⇒ recook).
-Asset ID = BLAKE3(plugin name + "/" + plugin-relative source path), hex. The rename
+Asset ID = BLAKE3(plugin name + "/" + plugin-relative source path), hex, unless the
+action states one or its dyndep reports one (§6.8). The rename
 story, stated plainly: an ID changes when its source moves relative to its plugin, moves
 between plugins, or its plugin is renamed: and does NOT change when the plugin's
 directory moves between roots (spec §0). Deliberate ID changes are audited by diffing the
 `.kpak.json` index before/after. Pack step
 `pack_target`: reads all enabled plugins' asset records (§7.2), writes `<target>.kpak`
 (format: header, id-sorted table, blobs: specified in `docs/kpak-format.md`) +
-`<target>.kpak.json` index.
+`<target>.kpak.json` index. An asset's tags (`asset_tags`, §6.8) are in its asset record
+and its index entry; a target's `pack = { tags = { ... } }` keeps only the assets carrying
+one of them (the index's `omitted_by_tags` counts the rest). `pack_types` (the cooked
+header's type) is the older filter; a target gives one or the other.
 
 **Acceptance:** cross-plugin texture reference; edit PNG ⇒ one recook + one repack;
 tool binary swap ⇒ recook of that rule's tasks only.

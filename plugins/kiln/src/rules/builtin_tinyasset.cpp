@@ -162,7 +162,9 @@ TaskResult run_cook_tinyasset(TaskCtx& ctx) {
 
 } // namespace
 
-void register_tinyasset() { register_rule("cook_tinyasset", 1, run_cook_tinyasset); }
+// v2: the .meta sidecar is an optional input (was the meta_hash/meta_absent
+// params), so a sidecar's creation is seen without lowering reading it.
+void register_tinyasset() { register_rule("cook_tinyasset", 2, run_cook_tinyasset); }
 
 } // namespace builtin
 } // namespace kiln::rules

@@ -79,6 +79,21 @@ Result<Hash256> compute_action_digest(
     }
     h.end_list();
 
+    // Only when there are any: a task without them keeps the digest it had.
+    if (!decl.optional_inputs.empty()) {
+        std::set<std::string> optional(decl.optional_inputs.begin(), decl.optional_inputs.end());
+        h.begin_list("optional_inputs");
+        for (auto& p : optional) {
+            h.item(p);
+            auto hv = hash_of(p);
+            if (hv.ok())
+                h.item(*hv);
+            else
+                h.item(std::string("absent"));
+        }
+        h.end_list();
+    }
+
     auto deps = dep_output_summaries;
     std::sort(deps.begin(), deps.end(), [](const auto& a, const auto& b) {
         return a.first.stable_hash() < b.first.stable_hash();

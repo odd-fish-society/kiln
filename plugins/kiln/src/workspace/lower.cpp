@@ -12,6 +12,7 @@
 #include "core/toolchain.h"
 #include "core/util.h"
 #include "nlohmann/json.hpp"
+#include "luau/manifest_env.h"
 #include "rules/registry.h"
 
 namespace kiln {
@@ -201,7 +202,7 @@ TaskDecl make_task(LowerCtx& ctx, const std::string& rule, const std::string& pr
         const std::string& tool = params.at("tool");
         params["toolchain_hash"] = ctx.toolchain->fingerprint(tool, ctx.ws->root, rule != "archive");
     }
-    if (live::is_live_config(ctx.ct) &&
+    if (live::is_live_config(ctx.ws->config, ctx.ct) &&
         (rule == "compile_c" || rule == "compile_cpp" || rule == "compile_pch")) {
         params["live"] = "1";
         if (rule != "compile_pch" && params.count("out"))
@@ -229,6 +230,8 @@ TaskDecl make_task(LowerCtx& ctx, const std::string& rule, const std::string& pr
     d.params = std::move(params);
     d.declared_inputs = std::move(inputs);
     d.dep_tasks = std::move(deps);
+    for (auto& o : outputs)
+        ctx.output_tasks.emplace(o, d.id);
     d.declared_outputs = std::move(outputs);
     d.pool = std::move(pool);
     d.rule_version = rules::rule_version(rule);
@@ -356,6 +359,221 @@ std::string archive_path(const ConfigTuple& ct, const std::string& plugin,
                          const std::string& name, const Hash256& variant) {
     return ".kiln/out/" + ct.name() + "/lib/" + plugin + "/" + variant_dir(variant) + "/lib" +
            name + ".a";
+}
+
+// Whether `plugin` depends on `dep` in this target (directly or through its
+// dependencies; an optional dependency counts when it is enabled).
+bool depends_on(const LowerCtx& ctx, const std::string& plugin, const std::string& dep) {
+    std::set<std::string> seen;
+    std::vector<std::string> stack = {plugin};
+    while (!stack.empty()) {
+        std::string p = stack.back();
+        stack.pop_back();
+        auto it = ctx.declsets.find(p);
+        if (it == ctx.declsets.end() || !it->second.plugin)
+            continue;
+        const auto& decl = *it->second.plugin;
+        for (const auto* list : {&decl.public_deps, &decl.private_deps, &decl.optional_deps})
+            for (auto& d : *list) {
+                if (!ctx.declsets.count(d) || !seen.insert(d).second)
+                    continue;
+                if (d == dep)
+                    return true;
+                stack.push_back(d);
+            }
+    }
+    return false;
+}
+
+// Replaces each {use:<plugin>/<name>} ({use:<name>}: `plugin`'s own) in `s`
+// with the named output's path, appending it to `used`. `any_plugin` lets an
+// aggregate rule name every enabled plugin; otherwise the plugin must be the
+// action's own or one it depends on.
+Result<std::string> resolve_uses(const LowerCtx& ctx, const std::string& plugin, const std::string& s,
+                                 bool any_plugin, std::vector<std::string>& used,
+                                 const std::string& where) {
+    static const std::string kOpen = "{use:";
+    std::string out;
+    size_t at = 0;
+    while (true) {
+        size_t open = s.find(kOpen, at);
+        if (open == std::string::npos) {
+            out += s.substr(at);
+            break;
+        }
+        size_t close = s.find('}', open);
+        if (close == std::string::npos)
+            return Result<std::string>::fail(where + ": unterminated '{use:' in '" + s + "'");
+        out += s.substr(at, open - at);
+        std::string ref = s.substr(open + kOpen.size(), close - open - kOpen.size());
+        std::string from = plugin, name = ref;
+        if (size_t slash = ref.find('/'); slash != std::string::npos) {
+            from = ref.substr(0, slash);
+            name = ref.substr(slash + 1);
+        }
+        if (!ctx.declsets.count(from))
+            return Result<std::string>::fail(where + ": {use:" + ref + "}: plugin '" + from +
+                                             "' is not enabled in this target");
+        if (!any_plugin && from != plugin && !depends_on(ctx, plugin, from))
+            return Result<std::string>::fail(where + ": {use:" + ref + "}: '" + plugin +
+                                             "' does not depend on '" + from + "'");
+        auto pit = ctx.named_outputs.find(from);
+        auto nit = pit == ctx.named_outputs.end() ? std::map<std::string, std::string>::const_iterator{}
+                                                  : pit->second.find(name);
+        if (pit == ctx.named_outputs.end() || nit == pit->second.end()) {
+            std::string known;
+            if (pit != ctx.named_outputs.end())
+                for (auto& [n, _] : pit->second)
+                    known += (known.empty() ? "" : ", ") + n;
+            return Result<std::string>::fail(where + ": {use:" + ref + "}: plugin '" + from +
+                                             "' publishes no output '" + name + "' (it publishes: " +
+                                             (known.empty() ? "none" : known) + ")");
+        }
+        out += nit->second;
+        used.push_back(nit->second);
+        at = close + 1;
+    }
+    return Result<std::string>::success(std::move(out));
+}
+
+// The asset-record entry of an action's asset: "id=path", the id stated,
+// else the dyndep's identity (resolved by the asset record, falling back to
+// the path-derived id), plus "\t<tag>,<tag>" when tagged.
+std::string action_asset_entry(const luau::ActionDecl& a, const std::string& path_id) {
+    std::string id = !a.asset_id.empty() ? a.asset_id
+                   : !a.dyndep.empty()   ? "dyndep:" + path_id + ":" + a.dyndep
+                                         : path_id;
+    std::string entry = id + "=" + a.asset;
+    if (!a.asset_tags.empty()) {
+        std::string tags;
+        for (auto& t : sorted_uniq(a.asset_tags))
+            tags += (tags.empty() ? "" : ",") + t;
+        entry += "\t" + tags;
+    }
+    return entry;
+}
+
+// Lowers one cluau rule action into its task (the tools resolve here: the
+// PATH and the tools table are not the sandbox's to read).
+Result<void> lower_action(Scheduler& sched, LowerCtx& ctx, const std::string& plugin, const luau::CookDecl& c,
+                          const luau::ActionDecl& a, bool any_plugin) {
+    auto& pt = ctx.tasks[plugin];
+    const std::string pdir = plugin_dir_of(ctx, plugin);
+    const std::string where = c.file + ": cook '" + c.name + "' (rule '" + c.rule + "')";
+    std::vector<std::string> used;
+    auto resolve = [&](const std::string& s) { return resolve_uses(ctx, plugin, s, any_plugin, used, where); };
+
+    std::map<std::string, std::string> params;
+    params["exec.version"] = std::to_string(rules::kExecVersion);
+    params["exec.kind"] = a.kind;
+    if (a.kind == "exec") {
+        std::string tool = a.tool_path;
+        if (tool.empty()) {
+            auto tit = ctx.ws->config.tools.find(a.tool);
+            tool = tit != ctx.ws->config.tools.end() ? tit->second : util::find_in_path(a.tool);
+            if (tool.empty())
+                return Result<void>::fail("cook rule '" + c.rule + "' in " + c.file + " requires tool '" + a.tool +
+                                          "' (not found in PATH; set it in the workspace `tools` table)");
+        }
+        params["tool"] = tool;
+        set_tool_hash(ctx, params, tool);
+        std::vector<std::string> args;
+        for (auto& arg : a.args) {
+            auto r = resolve(arg);
+            if (!r.ok())
+                return Result<void>::fail(r.error);
+            args.push_back(std::move(*r));
+        }
+        set_indexed(params, "exec.arg", args);
+        for (auto& [k, v] : a.env) {
+            auto r = resolve(v);
+            if (!r.ok())
+                return Result<void>::fail(r.error);
+            params["exec.env." + k] = std::move(*r);
+        }
+    }
+    if (!a.depfile.empty())
+        params["exec.depfile"] = a.depfile;
+    if (!a.dyndep.empty())
+        params["exec.dyndep"] = a.dyndep;
+    if (!a.scan.empty())
+        params["exec.scan"] = a.scan;
+
+    std::vector<std::string> inputs;
+    for (auto& i : a.inputs) {
+        auto r = resolve(i);
+        if (!r.ok())
+            return Result<void>::fail(r.error);
+        inputs.push_back(std::move(*r));
+    }
+    inputs.insert(inputs.end(), used.begin(), used.end());
+    inputs = sorted_uniq(std::move(inputs));
+    std::vector<TaskId> deps;
+    for (auto& i : inputs)
+        if (auto it = ctx.output_tasks.find(i); it != ctx.output_tasks.end())
+            deps.push_back(it->second);
+    TaskDecl d = make_task(ctx, c.rule, a.primary, params, inputs, deps, a.outputs);
+    d.optional_inputs = sorted_uniq(a.optional_inputs);
+    auto id = d.id;
+    KILN_TRY(void_result(sched.add(std::move(d))));
+    pt.cooks.push_back(id);
+    for (auto& o : a.outputs)
+        pt.cook_outputs.push_back(o);
+    for (auto& [name, path] : a.provides) {
+        auto [it, inserted] = ctx.named_outputs[plugin].emplace(name, path);
+        if (!inserted && it->second != path)
+            return Result<void>::fail(where + ": output name '" + name + "' is already published by plugin '" +
+                                      plugin + "' (as " + it->second + ")");
+    }
+    if (!a.asset.empty()) {
+        std::string rel_in = util::norm(a.primary);
+        if (util::starts_with(rel_in, pdir + "/"))
+            rel_in = rel_in.substr(pdir.size() + 1);
+        pt.cook_assets.push_back(action_asset_entry(a, Hash256::of_string(plugin + "/" + rel_in).hex()));
+        // The asset record reads the identity the tool wrote, and packs an
+        // input asset verbatim: both are its inputs.
+        if (a.asset_id.empty() && !a.dyndep.empty())
+            pt.packed_inputs.push_back(a.dyndep);
+        if (std::find(a.outputs.begin(), a.outputs.end(), a.asset) == a.outputs.end())
+            pt.packed_inputs.push_back(a.asset);
+    }
+    return Result<void>::success();
+}
+
+Result<void> lower_aggregates(Scheduler& sched, LowerCtx& ctx, const std::vector<std::string>& order) {
+    luau::AggregateView view;
+    view.plugins = order;
+    view.outputs = ctx.named_outputs;
+    for (const std::string& plugin : order) {
+        auto it = ctx.declsets.find(plugin);
+        if (it == ctx.declsets.end())
+            continue;
+        for (auto& c : it->second.cooks) {
+            if (c.rule_kind != "aggregate" || !passes_filter(c.platforms, c.configs, ctx.ct))
+                continue;
+            view.plugin = plugin;
+            view.plugin_dir = plugin_dir_of(ctx, plugin);
+            luau::ManifestEnvOptions opts;
+            opts.workspace_root = ctx.ws->root;
+            opts.manifest_dir = ctx.ws->root / view.plugin_dir;
+            opts.platform = ctx.ct.platform;
+            opts.config = ctx.ct.config;
+            opts.features = ctx.ct.features;
+            opts.strict_globs = ctx.ws->config.strict_globs;
+            opts.cpp_std = ctx.ws->config.cpp_std;
+            opts.c_std = ctx.ws->config.c_std;
+            opts.rule_libraries = ctx.ws->config.rules;
+            opts.lowers_in_cpp = lowers_in_cpp;
+            auto actions = luau::lower_aggregate(c, view, opts);
+            if (!actions.ok())
+                return Result<void>::fail(actions.error);
+            rules::register_cluau_rule(c.rule, c.rule_version);
+            ctx.prune_rules[c.rule] = c.prune_dead_outputs;
+            for (auto& a : *actions)
+                KILN_TRY(lower_action(sched, ctx, plugin, c, a, true));
+        }
+    }
+    return Result<void>::success();
 }
 
 Result<void> lower_script_checks(Scheduler& sched, LowerCtx& ctx) {
@@ -620,6 +838,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
         pt.reflect_gen = id;
         pt.reflect_dluau = gen_dluau;
         pt.reflect_docs = gen_docs;
+        ctx.named_outputs[plugin]["reflect.dluau"] = gen_dluau;
+        ctx.named_outputs[plugin]["reflect.docs"] = gen_docs;
     }
 
     // ---- module compiles ----------------------------------------------------
@@ -713,7 +933,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             settings["std"] = m.cpp_std.empty() ? ctx.ws->config.cpp_std : m.cpp_std;
             settings["opt"] = opt_for(ctx.ct);
             settings["debug"] = debug_for(ctx.ct);
-            settings["live"] = live::is_live_config(ctx.ct) ? "1" : "0";
+            settings["live"] = live::is_live_config(ctx.ws->config, ctx.ct) ? "1" : "0";
             settings["pch_header"] = m.pch;
             set_indexed(settings, "include", sorted_uniq(includes));
             set_indexed(settings, "define", sorted_uniq(defines));
@@ -955,7 +1175,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             settings["cpp_std"] = c.cpp_std.empty() ? ctx.ws->config.cpp_std : c.cpp_std;
             settings["opt"] = opt_for(ctx.ct);
             settings["debug"] = debug_for(ctx.ct);
-            settings["live"] = live::is_live_config(ctx.ct) ? "1" : "0";
+            settings["live"] = live::is_live_config(ctx.ws->config, ctx.ct) ? "1" : "0";
             set_indexed(settings, "include", clib_incs);
             set_indexed(settings, "define", sorted_uniq(c.defines));
             set_indexed(settings, "flag", c.flags);
@@ -1116,53 +1336,17 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             continue;
         }
         if (!lowers_in_cpp(c.rule)) {
-            // A cluau rule: its actions were lowered at expansion; only the
-            // tools resolve here (the PATH and the tools table are not the
-            // sandbox's to read).
+            // A cluau rule: its actions were lowered at expansion (an
+            // aggregate rule's after every plugin, lower_aggregates).
+            if (c.rule_kind == "aggregate")
+                continue;
             if (c.rule_version == 0)
                 return Result<void>::fail(c.file + ": cook '" + c.name + "': rule '" + c.rule +
                                           "' was not lowered at expansion (an older DeclSet?)");
             rules::register_cluau_rule(c.rule, c.rule_version);
-            for (auto& a : c.actions) {
-                std::map<std::string, std::string> params;
-                params["exec.version"] = std::to_string(rules::kExecVersion);
-                params["exec.kind"] = a.kind;
-                if (a.kind == "exec") {
-                    std::string tool = a.tool_path;
-                    if (tool.empty()) {
-                        auto tit = ctx.ws->config.tools.find(a.tool);
-                        tool = tit != ctx.ws->config.tools.end() ? tit->second : util::find_in_path(a.tool);
-                        if (tool.empty())
-                            return Result<void>::fail("cook rule '" + c.rule + "' in " + c.file +
-                                                      " requires tool '" + a.tool +
-                                                      "' (not found in PATH; set it in the workspace "
-                                                      "`tools` table)");
-                    }
-                    params["tool"] = tool;
-                    set_tool_hash(ctx, params, tool);
-                    set_indexed(params, "exec.arg", a.args);
-                    for (auto& [k, v] : a.env)
-                        params["exec.env." + k] = v;
-                }
-                if (!a.depfile.empty())
-                    params["exec.depfile"] = a.depfile;
-                if (!a.dyndep.empty())
-                    params["exec.dyndep"] = a.dyndep;
-                if (!a.scan.empty())
-                    params["exec.scan"] = a.scan;
-                TaskDecl d = make_task(ctx, c.rule, a.primary, params, sorted_uniq(a.inputs), {}, a.outputs);
-                auto id = d.id;
-                KILN_TRY(void_result(sched.add(std::move(d))));
-                pt.cooks.push_back(id);
-                for (auto& o : a.outputs)
-                    pt.cook_outputs.push_back(o);
-                if (!a.asset.empty()) {
-                    std::string rel_in = util::norm(a.primary);
-                    if (util::starts_with(rel_in, pdir + "/"))
-                        rel_in = rel_in.substr(pdir.size() + 1);
-                    pt.cook_assets.push_back(Hash256::of_string(plugin + "/" + rel_in).hex() + "=" + a.asset);
-                }
-            }
+            ctx.prune_rules[c.rule] = c.prune_dead_outputs;
+            for (auto& a : c.actions)
+                KILN_TRY(lower_action(sched, ctx, plugin, c, a, false));
             continue;
         }
         for (auto& primary : c.inputs) {
@@ -1193,23 +1377,9 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
                 std::string id = Hash256::of_string(plugin + "/" + rel_in).hex();
                 params["asset_id"] = id.substr(0, 32);
             }
-            // The.meta sidecar is folded into params (there is no
-            // optional-declared-input machinery): a sidecar's content hash
-            // participates in the digest, and its ABSENCE is a sentinel -
-            // so editing a sidecar recooks, and creating one later also
-            // recooks. When present, the tool reads it and its id wins over
-            // --asset-id.
-            std::string sidecarPath = (ctx.ws->root / (primary + ".meta")).generic_string();
-            std::error_code sidecarEc;
-            if (fs::is_regular_file(sidecarPath, sidecarEc)) {
-                auto metaHash = Hash256::of_file(sidecarPath);
-                if (metaHash.ok())
-                    params["meta_hash"] = metaHash->hex();
-                else
-                    params["meta_absent"] = "1";
-            } else {
-                params["meta_absent"] = "1";
-            }
+            // The .meta sidecar is an optional input (below): editing it
+            // recooks, and so does creating one later. When present, the
+            // tool reads it and its id wins over --asset-id.
             // Cook-time lint findings (NDJSON append; O_APPEND-safe under
             // concurrent cook tasks).
             params["lint_out"] = ".kiln/out/" + cfg_name(ctx.ct) + "/lint/" + plugin + ".json";
@@ -1225,6 +1395,8 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
 
         TaskDecl d = make_task(ctx, c.rule, primary, params,
                                std::vector<std::string>{primary}, {}, outputs);
+        if (tinyasset)
+            d.optional_inputs = {primary + ".meta"};
         auto id = d.id;
         KILN_TRY(void_result(sched.add(std::move(d))));
         pt.cooks.push_back(id);
@@ -1362,7 +1534,7 @@ Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
         set_indexed(params, "syslib", sorted_uniq(std::move(syslibs)));
         set_indexed(params, "flag", sorted_uniq(std::move(link_flags)));
         std::vector<std::string> link_outputs = {params["out"]};
-        if (live::is_live_config(ctx.ct)) {
+        if (live::is_live_config(ctx.ws->config, ctx.ct)) {
             // Every TU this config compiled (a superset of what the archives
             // contribute: the record matches TUs to the image by symbol).
             params["live"] = "1";
@@ -1394,6 +1566,7 @@ Result<void> lower_target_tasks(Scheduler& sched, LowerCtx& ctx,
         }
         set_indexed(params, "assets", records);
         set_indexed(params, "pack_type", target.pack_types);
+        set_indexed(params, "pack_tag", target.pack_tags);
         TaskDecl d = make_task(ctx, "pack_target", ctx.target_files.at(target.name), params,
                                {}, deps, {params["out"], params["out_index"]});
         KILN_TRY(void_result(sched.add(std::move(d))));

@@ -37,6 +37,9 @@ const char* task_state_name(TaskState s);
 struct TaskDecl {
     TaskId id;
     std::vector<std::string> declared_inputs; // files (workspace-relative)
+    // Files that may be absent: each one's content, or its absence, enters
+    // the digest, so an edit or a creation reruns the task.
+    std::vector<std::string> optional_inputs;
     std::vector<TaskId> dep_tasks;            // explicit task deps (edges)
     std::vector<std::string> declared_outputs; // under .kiln/out/
     std::string pool;                          // "" = default pool

@@ -506,6 +506,7 @@ Result<void> lower_target(const Workspace& ws, Scheduler& sched, PlannedTarget& 
             return Result<void>::fail(std::move(lr.error));
     }
     KILN_TRY(lower_script_checks(sched, lctx));
+    KILN_TRY(lower_aggregates(sched, lctx, t.r.order));
     KILN_TRY(lower_target_tasks(sched, lctx, t.r.target));
     return Result<void>::success();
 }
@@ -542,28 +543,69 @@ Result<void> check_output_owners(const Scheduler& sched, const std::vector<Plann
 
 } // namespace
 
-PruneStats prune_dead_cooks(const fs::path& root, TraceStore& traces) {
-    static const std::string kRule = "cook_tinyasset";
+namespace {
+
+// The rules that prune dead outputs: the built-in cook_tinyasset, plus each
+// rule the record marks (a rule a run lowered keeps the flag that run saw).
+std::set<std::string> prune_rules(const fs::path& root,
+                                  const std::map<std::string, bool>& lowered = {}) {
+    const fs::path file = root / ".kiln/prune_rules.json";
+    nlohmann::json j = nlohmann::json::object();
+    if (auto text = util::read_file(file); text.ok()) {
+        try {
+            j = nlohmann::json::parse(*text);
+        } catch (const std::exception&) {
+            j = nlohmann::json::object();
+        }
+    }
+    if (!lowered.empty()) {
+        bool changed = false;
+        for (auto& [rule, flag] : lowered)
+            if (!j.contains(rule) || j[rule] != flag) {
+                j[rule] = flag;
+                changed = true;
+            }
+        if (changed)
+            (void)util::write_file(file, j.dump(2));
+    }
+    std::set<std::string> out = {"cook_tinyasset"};
+    for (auto it = j.begin(); it != j.end(); ++it)
+        if (it.value().is_boolean() && it.value().get<bool>())
+            out.insert(it.key());
+    return out;
+}
+
+PruneStats prune_rules_dead(const fs::path& root, TraceStore& traces, const std::set<std::string>& rules) {
     PruneStats stats;
     const fs::path out_dir = (root / ".kiln/out").lexically_normal();
-    for (const Trace& trace : traces.traces_of_rule(kRule)) {
-        const std::string primary =
-            trace.task_display.substr(0, trace.task_display.size() - kRule.size() - 1);
-        std::error_code ec;
-        if (primary.empty() || fs::path(primary).is_absolute() || fs::exists(root / primary, ec) || ec)
-            continue;
-        for (const OutputRecord& output : trace.outputs) {
-            const fs::path path = (root / output.path).lexically_normal();
-            const fs::path rel = path.lexically_relative(out_dir);
-            if (rel.empty() || *rel.begin() == "..")
+    for (const std::string& rule : rules) {
+        for (const Trace& trace : traces.traces_of_rule(rule)) {
+            if (trace.task_display.size() <= rule.size() + 1)
                 continue;
-            if (fs::remove(path, ec))
-                stats.files++;
+            const std::string primary =
+                trace.task_display.substr(0, trace.task_display.size() - rule.size() - 1);
+            std::error_code ec;
+            if (primary.empty() || fs::path(primary).is_absolute() || fs::exists(root / primary, ec) || ec)
+                continue;
+            for (const OutputRecord& output : trace.outputs) {
+                const fs::path path = (root / output.path).lexically_normal();
+                const fs::path rel = path.lexically_relative(out_dir);
+                if (rel.empty() || *rel.begin() == "..")
+                    continue;
+                if (fs::remove(path, ec))
+                    stats.files++;
+            }
+            traces.erase(trace.task_hash);
+            stats.traces++;
         }
-        traces.erase(trace.task_hash);
-        stats.traces++;
     }
     return stats;
+}
+
+} // namespace
+
+PruneStats prune_dead_outputs(const fs::path& root, TraceStore& traces) {
+    return prune_rules_dead(root, traces, prune_rules(root));
 }
 
 Result<BuildOutcome> run_build(const BuildOptions& opts, console::Renderer& renderer) {
@@ -720,7 +762,10 @@ Result<BuildOutcome> run_build(const BuildOptions& opts, console::Renderer& rend
         write_graph_json(ws->root, names, config, sched, tasks, config_declsets[config]);
     write_why_json(ws->root, names, sched);
 
-    outcome.pruned_outputs = prune_dead_cooks(ws->root, traces).files;
+    std::map<std::string, bool> lowered_rules;
+    for (auto& t : plan)
+        lowered_rules.insert(t.lctx.prune_rules.begin(), t.lctx.prune_rules.end());
+    outcome.pruned_outputs = prune_rules_dead(ws->root, traces, prune_rules(ws->root, lowered_rules)).files;
 
     // The variant folders each target's tasks wrote; a failed run keeps the
     // old records (the old variant stays until the new one has built).

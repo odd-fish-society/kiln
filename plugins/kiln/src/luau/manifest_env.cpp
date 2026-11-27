@@ -72,6 +72,8 @@ struct EvalState {
     bool rules_loaded = false;
     std::string pending_rule;                    // between `rule "x"` and its spec
     std::map<std::string, std::string> rule_sites; // name -> "file:line"
+    // Set when lowering an aggregate rule's cook at target lowering.
+    const AggregateView* aggregate = nullptr;
 };
 
 EvalState* state_from(lua_State* L) {
@@ -728,7 +730,7 @@ int spec_target(lua_State* L) {
     luaL_checktype(L, 2, LUA_TTABLE);
     validate_fields(L, 2, st,
                     {"platforms", "default_config", "enable_plugins", "disable_plugins",
-                     "features", "link", "syslibs", "link_flags", "companions", "pack_types"},
+                     "features", "link", "syslibs", "link_flags", "companions", "pack_types", "pack"},
                     {});
     if (!st->decls.target)
         luaL_error(L, "internal: target spec without declaration");
@@ -750,6 +752,19 @@ int spec_target(lua_State* L) {
         if (type.empty() || type.find_first_not_of("0123456789") != std::string::npos || type.size() > 9)
             luaL_error(L, "target '%s': pack_types entry '%s' is not an asset type number", t.name.c_str(),
                        type.c_str());
+    lua_getfield(L, 2, "pack");
+    if (!lua_isnil(L, -1)) {
+        if (!lua_istable(L, -1))
+            luaL_error(L, "target '%s': 'pack' must be a table ({ tags = {...} })", t.name.c_str());
+        validate_fields(L, lua_gettop(L), st, {"tags"}, {});
+        t.pack_tags = get_strvec_field(L, lua_gettop(L), "tags");
+        if (t.pack_tags.empty())
+            luaL_error(L, "target '%s': pack.tags is empty (leave 'pack' out to pack every asset)",
+                       t.name.c_str());
+        if (!t.pack_types.empty())
+            luaL_error(L, "target '%s': give pack_types or pack.tags, not both", t.name.c_str());
+    }
+    lua_pop(L, 1);
     return 0;
 }
 
@@ -773,7 +788,7 @@ int spec_workspace(lua_State* L) {
     validate_fields(L, 2, st,
                     {"name", "pools", "jobs", "tools", "strict_globs", "cpp_std",
                      "c_std", "env_allow", "default_config", "system_libs",
-                     "plugin_roots", "rules"},
+                     "plugin_roots", "rules", "link_record"},
                     {});
     if (!st->decls.workspace)
         luaL_error(L, "internal: workspace spec without declaration");
@@ -797,6 +812,7 @@ int spec_workspace(lua_State* L) {
     w.env_allow = get_strvec_field(L, 2, "env_allow");
     w.system_libs = get_strvec_field(L, 2, "system_libs");
     w.rules = get_strvec_field(L, 2, "rules");
+    w.link_record = get_strvec_field(L, 2, "link_record");
 
     lua_getfield(L, 2, "pools");
     if (lua_istable(L, -1)) {
@@ -873,7 +889,7 @@ int decl_rule(lua_State* L) {
 int spec_rule(lua_State* L) {
     EvalState* st = state_from(L);
     luaL_checktype(L, 2, LUA_TTABLE);
-    validate_fields(L, 2, st, {"version", "params", "lower"}, {});
+    validate_fields(L, 2, st, {"version", "params", "lower", "kind", "prune_dead_outputs"}, {});
     if (st->pending_rule.empty())
         luaL_error(L, "internal: rule spec without declaration");
     std::string name = std::move(st->pending_rule);
@@ -891,9 +907,23 @@ int spec_rule(lua_State* L) {
         luaL_error(L, "%s: rule '%s': 'lower' must be a function", site.c_str(), name.c_str());
     lua_pop(L, 1);
     std::vector<std::string> params = get_strvec_field(L, 2, "params");
+    lua_getfield(L, 2, "kind");
+    std::string kind = lua_isnil(L, -1) ? "cook" : (lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "");
+    lua_pop(L, 1);
+    if (kind != "cook" && kind != "aggregate")
+        luaL_error(L, "%s: rule '%s': 'kind' must be \"cook\" or \"aggregate\"", site.c_str(), name.c_str());
+    lua_getfield(L, 2, "prune_dead_outputs");
+    if (!lua_isnil(L, -1) && !lua_isboolean(L, -1))
+        luaL_error(L, "%s: rule '%s': 'prune_dead_outputs' must be a boolean", site.c_str(), name.c_str());
+    bool prune = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
 
     lua_getfield(L, LUA_REGISTRYINDEX, "kiln_rules");
-    lua_createtable(L, 0, 5);
+    lua_createtable(L, 0, 7);
+    lua_pushstring(L, kind.c_str());
+    lua_setfield(L, -2, "kind");
+    lua_pushboolean(L, prune);
+    lua_setfield(L, -2, "prune_dead_outputs");
     lua_pushnumber(L, version);
     lua_setfield(L, -2, "version");
     lua_getfield(L, 2, "lower");
@@ -1007,7 +1037,7 @@ ActionDecl read_action(lua_State* L, int idx, const CookDecl& c) {
                    c.rule.c_str());
     validate_fields(L, idx, state_from(L),
                     {"primary", "kind", "tool", "tool_path", "args", "env", "inputs", "outputs", "depfile",
-                     "dyndep", "scan", "asset"},
+                     "dyndep", "scan", "asset", "optional_inputs", "provides", "asset_id", "asset_tags"},
                     {});
     ActionDecl a;
     a.primary = util::norm(action_string(L, idx, "primary", c));
@@ -1024,10 +1054,20 @@ ActionDecl read_action(lua_State* L, int idx, const CookDecl& c) {
     a.dyndep = action_string(L, idx, "dyndep", c);
     a.scan = action_string(L, idx, "scan", c);
     a.asset = action_string(L, idx, "asset", c);
+    a.optional_inputs = action_list(L, idx, "optional_inputs", c);
+    a.provides = get_flat_map_field(L, idx, "provides");
+    a.asset_id = action_string(L, idx, "asset_id", c);
+    a.asset_tags = action_list(L, idx, "asset_tags", c);
 
     const std::string where = cook_where(c) + ": rule '" + c.rule + "'";
     for (auto& i : a.inputs)
         i = util::norm(i);
+    for (auto& i : a.optional_inputs) {
+        i = util::norm(i);
+        if (under_out(i))
+            luaL_error(L, "%s: optional input '%s' is under .kiln/out/ (a build output is never optional)",
+                       where.c_str(), i.c_str());
+    }
     if (a.primary.empty()) {
         if (a.inputs.empty())
             luaL_error(L, "%s: an action needs a 'primary' (or 'inputs')", where.c_str());
@@ -1058,8 +1098,30 @@ ActionDecl read_action(lua_State* L, int idx, const CookDecl& c) {
         luaL_error(L, "%s: unknown scan '%s' (known: quoted_include)", where.c_str(), a.scan.c_str());
     if (!a.asset.empty()) {
         a.asset = util::norm(a.asset);
-        if (std::find(a.outputs.begin(), a.outputs.end(), a.asset) == a.outputs.end())
-            luaL_error(L, "%s: asset '%s' is not one of the action's outputs", where.c_str(), a.asset.c_str());
+        // An input is an asset packed verbatim (its id from asset_id or the dyndep).
+        if (std::find(a.outputs.begin(), a.outputs.end(), a.asset) == a.outputs.end() &&
+            std::find(a.inputs.begin(), a.inputs.end(), a.asset) == a.inputs.end())
+            luaL_error(L, "%s: asset '%s' is not one of the action's outputs or inputs", where.c_str(),
+                       a.asset.c_str());
+    }
+    if ((!a.asset_id.empty() || !a.asset_tags.empty()) && a.asset.empty())
+        luaL_error(L, "%s: asset_id and asset_tags need an 'asset'", where.c_str());
+    if (!a.asset_id.empty()) {
+        bool hex = a.asset_id.size() == 32 || a.asset_id.size() == 64;
+        for (char ch : a.asset_id)
+            hex = hex && ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'));
+        if (!hex)
+            luaL_error(L, "%s: asset_id '%s' is not 32 or 64 lowercase hex digits", where.c_str(),
+                       a.asset_id.c_str());
+    }
+    for (auto& [name, path] : a.provides) {
+        path = util::norm(path);
+        if (name.empty() || name.find('/') != std::string::npos || name.find('}') != std::string::npos)
+            luaL_error(L, "%s: provides name '%s' must be non-empty without '/' or '}'", where.c_str(),
+                       name.c_str());
+        if (std::find(a.outputs.begin(), a.outputs.end(), path) == a.outputs.end())
+            luaL_error(L, "%s: provides '%s' names '%s', not one of the action's outputs", where.c_str(),
+                       name.c_str(), path.c_str());
     }
     return a;
 }
@@ -1130,6 +1192,19 @@ int lower_cooks_impl(lua_State* L) {
         lua_getfield(L, spec, "version");
         c.rule_version = static_cast<uint32_t>(lua_tonumber(L, -1));
         lua_pop(L, 1);
+        lua_getfield(L, spec, "prune_dead_outputs");
+        c.prune_dead_outputs = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+        lua_getfield(L, spec, "kind");
+        const bool aggregate = std::string(lua_tostring(L, -1)) == "aggregate";
+        lua_pop(L, 1);
+        if (aggregate && !st->aggregate) {
+            // Lowered per target after every plugin (it reads them all).
+            c.rule_kind = "aggregate";
+            c.actions.clear();
+            lua_settop(L, spec - 2);
+            continue;
+        }
 
         std::vector<std::string> inputs = c.inputs;
         if (!c.exclude.empty()) {
@@ -1170,6 +1245,16 @@ int lower_cooks_impl(lua_State* L) {
         lua_setfield(L, -2, "config");
         push_strmap(L, st->opts.features);
         lua_setfield(L, -2, "features");
+        if (st->aggregate) {
+            push_strvec(L, st->aggregate->plugins);
+            lua_setfield(L, -2, "plugins");
+            lua_createtable(L, 0, static_cast<int>(st->aggregate->outputs.size()));
+            for (auto& [p, names] : st->aggregate->outputs) {
+                push_strmap(L, names);
+                lua_setfield(L, -2, p.c_str());
+            }
+            lua_setfield(L, -2, "outputs");
+        }
 
         st->kind_stack.push_back(FileKind::RuleLibrary);
         int rc = lua_pcall(L, 2, 1, 0);
@@ -1377,6 +1462,46 @@ Result<EvalOutput> evaluate_file(const fs::path& file, const ManifestEnvOptions&
     out.decls.required_files.assign(st.required_files.begin(), st.required_files.end());
     out.warnings = std::move(st.warnings);
     return Result<EvalOutput>::success(std::move(out));
+}
+
+Result<std::vector<ActionDecl>> lower_aggregate(const CookDecl& cook, const AggregateView& view,
+                                                const ManifestEnvOptions& opts) {
+    VM::Options vm_opts;
+    vm_opts.interrupt_budget = opts.interrupt_budget;
+    vm_opts.memory_cap = opts.memory_cap;
+    auto vm_res = VM::create(vm_opts);
+    if (!vm_res.ok())
+        return Result<std::vector<ActionDecl>>::fail(vm_res.error);
+    auto& vm = *vm_res;
+
+    EvalState st;
+    st.opts = opts;
+    st.primary_file = cook.file;
+    st.manifest_dir_rel = view.plugin_dir;
+    st.aggregate = &view;
+    PluginDecl plugin;
+    plugin.name = view.plugin;
+    st.decls.plugin = plugin;
+    st.decls.cooks.push_back(cook);
+
+    lua_State* L = vm->state();
+    lua_pushlightuserdata(L, &st);
+    lua_setfield(L, LUA_REGISTRYINDEX, "kiln_eval");
+    lua_newtable(L);
+    lua_setfield(L, LUA_REGISTRYINDEX, "kiln_req_cache");
+    install_api(L, &st);
+    st.kind_stack.push_back(FileKind::PluginManifest);
+    int top = lua_gettop(L);
+    lua_pushcfunction(L, lower_cooks_impl, "lower_cooks");
+    if (lua_pcall(L, 0, 0, 0) != 0) {
+        std::string err = lua_tostring(L, -1) ? lua_tostring(L, -1) : "unknown error";
+        lua_settop(L, top);
+        if (vm->memory_cap_exceeded())
+            err = cook.file + ": rule lowering exceeded the memory budget (" +
+                  std::to_string(vm->memory_cap() / (1024 * 1024)) + " MiB)";
+        return Result<std::vector<ActionDecl>>::fail(err);
+    }
+    return Result<std::vector<ActionDecl>>::success(std::move(st.decls.cooks.front().actions));
 }
 
 // ---- API installation -------------------------------------------------------

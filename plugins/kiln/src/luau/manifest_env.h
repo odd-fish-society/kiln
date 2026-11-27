@@ -41,6 +41,20 @@ struct EvalOutput {
     std::vector<std::string> warnings; // inert-field warnings (once per file)
 };
 
+// What an aggregate rule's lower sees beyond a cook rule's ctx.
+struct AggregateView {
+    std::string plugin;      // the plugin that declared the cook
+    std::string plugin_dir;  // its directory, workspace-relative
+    std::vector<std::string> plugins; // the target's enabled plugins, topological order
+    std::map<std::string, std::map<std::string, std::string>> outputs; // plugin -> name -> path
+};
+
+// Lowers one cook of an aggregate rule (`rule { kind = "aggregate" }`) in
+// the same sandbox as a manifest's cooks, with ctx.plugins and ctx.outputs.
+// `opts` are the declaring plugin's manifest options.
+Result<std::vector<ActionDecl>> lower_aggregate(const CookDecl& cook, const AggregateView& view,
+                                                const ManifestEnvOptions& opts);
+
 // Evaluates a workspace/target/plugin manifest file in the restricted env.
 // Manifest files are AST-linted (no functions/while/repeat).
 Result<EvalOutput> evaluate_file(const fs::path& file, const ManifestEnvOptions& opts);

@@ -318,7 +318,7 @@ TEST_CASE("cook_tinyasset: a .tasset source is packed under its document's own i
     CHECK(provider.find(Hash256::of_string("content/content/noid.tasset").hex()) != std::string::npos);
 }
 
-TEST_CASE("prune_dead_cooks deletes the cooked outputs of a vanished source, and nothing else") {
+TEST_CASE("prune_dead_outputs deletes the cooked outputs of a vanished source, and nothing else") {
     RuleHarness h;
     write_tree(h.root, {{"content/kept.png", "png"},
                         {".kiln/out/linux-dev/assets/demo/content/kept.png.ctasset", "kept"},
@@ -336,7 +336,7 @@ TEST_CASE("prune_dead_cooks deletes the cooked outputs of a vanished source, and
     put("content/gone.png/cook_tinyasset", ".kiln/out/linux-dev/assets/demo/content/gone.png.ctasset");
     put("content/escape.png/cook_tinyasset", "outside.txt"); // never deletes outside .kiln/out
     put("plugins/demo/archive/archive", ".kiln/out/linux-dev/lib/archive.a"); // a synthetic primary
-    PruneStats stats = prune_dead_cooks(h.root, h.traces);
+    PruneStats stats = prune_dead_outputs(h.root, h.traces);
     CHECK(stats.traces == 2);
     CHECK(stats.files == 1);
     CHECK(fs::exists(h.root / ".kiln/out/linux-dev/assets/demo/content/kept.png.ctasset"));

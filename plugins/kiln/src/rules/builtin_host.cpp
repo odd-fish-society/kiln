@@ -220,17 +220,54 @@ TaskResult run_asset_manifest(TaskCtx& ctx) {
     // change this record's output bytes, or pack_target would stay cached
     // and repack a stale blob.
     json assets = json::array();
+    // An entry is "id=path", plus "\t<tag>,<tag>" when tagged; the id
+    // "dyndep:<fallback>:<file>" is the identity the cook's tool wrote into
+    // its dyndep file (the fallback when it wrote none).
     for (auto& entry : prefix_params(*ctx.decl, "asset.")) {
         auto eq = entry.find('=');
         if (eq == std::string::npos)
             continue;
         std::string id = entry.substr(0, eq);
         std::string path = entry.substr(eq + 1);
+        std::vector<std::string> tags;
+        if (auto tab = path.find('\t'); tab != std::string::npos) {
+            std::string list = path.substr(tab + 1);
+            path = path.substr(0, tab);
+            for (size_t at = 0; at <= list.size();) {
+                size_t comma = list.find(',', at);
+                if (comma == std::string::npos)
+                    comma = list.size();
+                if (comma > at)
+                    tags.push_back(list.substr(at, comma - at));
+                at = comma + 1;
+            }
+        }
+        if (util::starts_with(id, "dyndep:")) {
+            const size_t colon = id.find(':', 7);
+            const std::string fallback = id.substr(7, colon - 7);
+            const std::string file = id.substr(colon + 1);
+            auto j = read_json_file(ctx.workspace_root / file);
+            if (!j.ok())
+                return fail("asset_manifest: " + j.error);
+            id = fallback;
+            if (auto it = j->find("identity"); it != j->end()) {
+                std::string reported = it->is_string() ? it->get<std::string>() : "";
+                bool hex = reported.size() == 32 || reported.size() == 64;
+                for (char c : reported)
+                    hex = hex && ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
+                if (!hex)
+                    return fail("asset_manifest: " + file + ": 'identity' must be 32 or 64 lowercase hex digits");
+                id = reported;
+            }
+        }
         std::string hash;
         auto hv = ctx.hash_file(path);
         if (hv.ok())
             hash = hv->hex();
-        assets.push_back({{"id", id}, {"path", path}, {"hash", hash}});
+        json a = {{"id", id}, {"path", path}, {"hash", hash}};
+        if (!tags.empty())
+            a["tags"] = tags;
+        assets.push_back(std::move(a));
     }
     out["asset_manifest"] = assets;
 
@@ -251,6 +288,7 @@ TaskResult run_pack(TaskCtx& ctx) {
 
     struct Asset {
         std::string id, path, hash;
+        std::vector<std::string> tags;
         bool operator<(const Asset& o) const { return id < o.id; }
     };
     std::vector<Asset> assets;
@@ -260,7 +298,7 @@ TaskResult run_pack(TaskCtx& ctx) {
             return fail(j.error);
         for (auto& a : j->value("asset_manifest", json::array()))
             assets.push_back({a.at("id").get<std::string>(), a.at("path").get<std::string>(),
-                              a.value("hash", "")});
+                              a.value("hash", ""), a.value("tags", std::vector<std::string>{})});
     }
     std::sort(assets.begin(), assets.end());
     // One id names one blob in a target's pack (a copied committed asset
@@ -326,6 +364,11 @@ TaskResult run_pack(TaskCtx& ctx) {
     std::set<uint32_t> keep_types;
     for (auto& t : prefix_params(*ctx.decl, "pack_type."))
         keep_types.insert(static_cast<uint32_t>(std::stoul(t)));
+    // A target's `pack.tags` keeps only assets carrying one of them.
+    std::set<std::string> keep_tags;
+    for (auto& t : prefix_params(*ctx.decl, "pack_tag."))
+        keep_tags.insert(t);
+    size_t dropped_by_tags = 0;
     struct Packed {
         const Asset* asset;
         uint32_t type;
@@ -341,6 +384,11 @@ TaskResult run_pack(TaskCtx& ctx) {
         const uint32_t type = blob_type(a.path);
         if (!keep_types.empty() && !keep_types.count(type)) {
             dropped[type]++;
+            continue;
+        }
+        if (!keep_tags.empty() &&
+            std::none_of(a.tags.begin(), a.tags.end(), [&](const std::string& t) { return keep_tags.count(t) != 0; })) {
+            dropped_by_tags++;
             continue;
         }
         packed.push_back({&a, type, size});
@@ -363,6 +411,8 @@ TaskResult run_pack(TaskCtx& ctx) {
         write_u64(table, p.size);
         index["assets"].push_back(
             {{"id", p.asset->id}, {"path", p.asset->path}, {"offset", offset}, {"size", p.size}});
+        if (!p.asset->tags.empty())
+            index["assets"].back()["tags"] = p.asset->tags;
         offset += p.size;
     }
     if (!keep_types.empty()) {
@@ -371,6 +421,8 @@ TaskResult run_pack(TaskCtx& ctx) {
             omitted[std::to_string(type)] = count;
         index["omitted_types"] = omitted;
     }
+    if (!keep_tags.empty())
+        index["omitted_by_tags"] = dropped_by_tags;
 
     // build_hash = BLAKE3 of the serialized table bytes + each blob's
     // content hash (the table alone carries ids/types/offsets/sizes, so a

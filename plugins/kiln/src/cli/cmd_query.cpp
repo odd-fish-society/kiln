@@ -303,8 +303,8 @@ Result<int> cmd_clean(const fs::path& root_in, bool traces, bool dead) {
         TraceStore store(root / ".kiln/traces.sqlite");
         if (auto opened = store.open(); !opened.ok())
             return Result<int>::fail(opened.error);
-        PruneStats stats = prune_dead_cooks(root, store);
-        std::printf("removed %zu stale cooked output%s (%zu dead trace%s)\n", stats.files,
+        PruneStats stats = prune_dead_outputs(root, store);
+        std::printf("removed %zu dead output%s (%zu dead trace%s)\n", stats.files,
                     stats.files == 1 ? "" : "s", stats.traces, stats.traces == 1 ? "" : "s");
         auto ws = load_workspace(root);
         if (!ws.ok())

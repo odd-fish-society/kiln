@@ -26,7 +26,7 @@ namespace {
 
 std::map<std::string, std::string> live_fixture() {
     return {
-        {"kiln.workspace.luau", "workspace \"k11\" { strict_globs = true }\n"},
+        {"kiln.workspace.luau", "workspace \"k11\" { strict_globs = true, link_record = { \"dev\" } }\n"},
         {"build/game.target.luau",
          "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n "
          " link = { \"app/main\" },\n}\n"},

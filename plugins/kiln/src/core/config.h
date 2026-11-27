@@ -41,6 +41,7 @@ struct WorkspaceConfig {
     std::vector<std::string> system_libs;     // linked into target binaries
     std::vector<PluginRoot> plugin_roots;     // default: {{ "plugins", "" }}
     std::vector<std::string> rules;           // rule libraries ("build/rules/x"); std/ is implicit
+    std::vector<std::string> link_record;     // configs whose links write a link record (live code)
 };
 
 } // namespace kiln

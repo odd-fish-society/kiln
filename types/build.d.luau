@@ -88,6 +88,9 @@ export type TargetSpec = {
     -- The asset type numbers (the cooked header's type field) the target's
     -- pack keeps; unset packs every asset.
     pack_types: { number? }?,
+    -- The pack keeps only assets carrying one of these tags (an action's
+    -- asset_tags); not with pack_types.
+    pack: { tags: { string? } }?,
 }
 
 export type PluginRootSpec = {
@@ -110,6 +113,10 @@ export type WorkspaceSpec = {
     -- Rule libraries (workspace-relative, like require: build/rules/x is
     -- build/rules/x.cluau or .luau); Kiln's std/ libraries are always loaded.
     rules: { string? }?,
+    -- Configs whose links write the link record (<exe>.live.json: each
+    -- TU's source and object hash) and whose compiles take the patchable-
+    -- object flags; default none.
+    link_record: { string? }?,
 }
 
 export type ConfigView = {
@@ -138,6 +145,10 @@ export type RuleCtx = {
     platform: string,
     config: string,
     features: { [string]: string },
+    -- An aggregate rule's ctx only: the enabled plugins in topological order,
+    -- and every named output (`provides`) by plugin and name.
+    plugins: { string }?,
+    outputs: { [string]: { [string]: string } }?,
 }
 
 -- One task: a process (`exec`, the default) or a copy of `primary` to the
@@ -153,9 +164,19 @@ export type Action = {
     inputs: { string }?, -- default: { primary }
     outputs: { string },
     depfile: string?, -- Make syntax, written by the tool
-    dyndep: string?, -- JSON { "inputs": [...] }, written by the tool
+    dyndep: string?, -- JSON { "inputs": [...], "identity": "<32 hex>"? }, written by the tool
     scan: string?, -- "quoted_include": #include "..." lines of primary
-    asset: string?, -- the output registered as primary's asset
+    asset: string?, -- the output (or an input, packed verbatim) registered as primary's asset
+    asset_id: string?, -- its id (32 lowercase hex); default: the dyndep's identity, else path-derived
+    asset_tags: { string }?, -- its tags (a target's pack.tags keeps assets with one of them)
+    -- Files that may be absent: their content, or their absence, enters the
+    -- digest (creating one reruns the task). Never under .kiln/out/.
+    optional_inputs: { string }?,
+    -- Names for outputs, unique per plugin. Another action writes
+    -- "{use:<plugin>/<name>}" (or "{use:<name>}" in its own plugin) in its
+    -- args, inputs, optional_inputs or env values: the path, an input and a
+    -- dependency on this action.
+    provides: { [string]: string }?,
 }
 
 export type RuleSpec = {
@@ -163,6 +184,12 @@ export type RuleSpec = {
     -- The params a cook may pass: a name, or a name followed by "." and any
     -- suffix. Absent: unchecked.
     params: { string }?,
+    -- "cook" (default): lowered per plugin at expansion. "aggregate": lowered
+    -- once per target after every plugin, with ctx.plugins and ctx.outputs.
+    kind: string?,
+    -- After a build, a task whose primary input file is gone has its outputs
+    -- deleted (a moved or deleted source leaves no stale output behind).
+    prune_dead_outputs: boolean?,
     lower: (cook: Cook, ctx: RuleCtx) -> { Action },
 }
 

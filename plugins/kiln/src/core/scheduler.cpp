@@ -49,7 +49,8 @@ Result<size_t> Scheduler::add(TaskDecl decl) {
         // exactly what the first did (targets of a run share the graph).
         const TaskDecl& have = graph_.nodes()[*existing].decl;
         if (have.params != decl.params || have.declared_outputs != decl.declared_outputs ||
-            have.declared_inputs != decl.declared_inputs) {
+            have.declared_inputs != decl.declared_inputs ||
+            have.optional_inputs != decl.optional_inputs) {
             std::string what = "its outputs or inputs";
             for (auto& [k, v] : decl.params) {
                 auto it = have.params.find(k);

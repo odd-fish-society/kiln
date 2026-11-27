@@ -69,7 +69,14 @@ struct ActionDecl {
     std::string depfile;              // a Make-syntax depfile the tool writes (an output path)
     std::string dyndep;               // a JSON file the tool writes: {"inputs": [...]}
     std::string scan;                 // a built-in input scanner: "quoted_include"
-    std::string asset;                // the output registered as the primary's asset
+    std::string asset;                // the output (or input) registered as the primary's asset
+    // Files that may be absent (their content or absence enters the digest).
+    std::vector<std::string> optional_inputs;
+    // Names for some outputs (unique per plugin), which other actions refer
+    // to as {use:<plugin>/<name>}.
+    std::map<std::string, std::string> provides;
+    std::string asset_id;                 // the asset's id (32 lowercase hex); else dyndep, else path
+    std::vector<std::string> asset_tags;  // the asset's tags (a target's pack.tags filters on them)
 };
 
 struct CookDecl {
@@ -85,6 +92,11 @@ struct CookDecl {
     // version, its actions); empty for the C++-lowered rules.
     uint32_t rule_version = 0;
     std::vector<ActionDecl> actions;
+    // "aggregate": the rule lowers it per target after every plugin (no
+    // actions here); empty for a per-plugin cook rule.
+    std::string rule_kind;
+    // The rule deletes the outputs of a task whose primary input is gone.
+    bool prune_dead_outputs = false;
     std::string file;
     int line = 0;
 };
@@ -133,6 +145,8 @@ struct TargetDecl {
     // The asset types (the cooked blob's u32 type field) this target's pack keeps,
     // as decimal strings; empty = every type.
     std::vector<std::string> pack_types;
+    // `pack = { tags = {...} }`: the pack keeps only assets with one of them.
+    std::vector<std::string> pack_tags;
     std::string file;
     int line = 0;
 };
@@ -159,6 +173,9 @@ struct WorkspaceDecl {
     // Rule libraries the workspace loads ("build/rules/x", workspace-relative
     // like require); Kiln's own "std/..." libraries are always available.
     std::vector<std::string> rules;
+    // Configs whose links write a link record and whose compiles take the
+    // patchable-object flags (`link_record = { "dev" }`).
+    std::vector<std::string> link_record;
 };
 
 // Everything a single file evaluation produced (declaration-only).

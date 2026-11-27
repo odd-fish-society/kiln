@@ -243,6 +243,22 @@ explained by `why-dirty`. Editing the library re-lowers what uses it. A cook
 passing a param the rule does not list is an error, and `kiln check` types
 the library with your manifests.
 
+What a rule's actions can also say:
+
+- `optional_inputs`: files that may not exist yet (a sidecar); creating,
+  editing or deleting one reruns the action.
+- `provides = { name = out }` names an output; another plugin's action
+  writes `{use:lib/name}` in its args or inputs to get the path, the input
+  and the dependency (the plugin must be one it depends on).
+- `asset_id`, a dyndep `"identity"`, and `asset_tags`: an asset's id stated
+  or reported by the tool, and tags a target's `pack = { tags = {...} }`
+  filters on. `asset` may name an input, to pack a file as it is.
+
+And the rule itself: `kind = "aggregate"` lowers its cooks once per target
+after every plugin, with `ctx.plugins` and `ctx.outputs` (every named
+output); `prune_dead_outputs = true` deletes the outputs of an action whose
+source is gone.
+
 ## Public vs private, in practice
 
 The distinction that makes builds fast:

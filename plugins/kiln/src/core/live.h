@@ -38,9 +38,9 @@ namespace fs = std::filesystem;
 
 namespace kiln::live {
 
-// Reload-capable configs: dev only. Their compiles add the
-// entry-padding/frame-pointer flags and their links write a record.
-bool is_live_config(const ConfigTuple& ct);
+// Reload-capable configs: the workspace's `link_record` list. Their compiles
+// add the entry-padding/frame-pointer flags and their links write a record.
+bool is_live_config(const WorkspaceConfig& ws, const ConfigTuple& ct);
 
 // The compile flags a reload-capable config adds: every function entry padded
 // to 16 bytes for the patch jump, frame pointers for the parked-stack walk,
