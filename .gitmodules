@@ -1,0 +1,9 @@
+[submodule "plugins/luau/luau"]
+	path = plugins/luau/luau
+	url = https://github.com/luau-lang/luau.git
+[submodule "plugins/cluau/cluau"]
+	path = plugins/cluau/cluau
+	url = https://github.com/odd-fish-society/cluau.git
+[submodule "plugins/hamr/hamr"]
+	path = plugins/hamr/hamr
+	url = https://github.com/odd-fish-society/hamr.git

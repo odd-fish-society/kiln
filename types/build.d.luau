@@ -118,6 +118,8 @@ export type WorkspaceSpec = {
     -- `kiln smoke`: the hamr suite (default "hamr.cluau") and a script whose
     -- last stdout line is the hamr binary (default: hamr on PATH).
     smoke: { suite: string?, hamr: string? }?,
+    -- The oldest Kiln this workspace accepts: ">=X.Y" or ">=X.Y.Z".
+    kiln_version: string?,
 }
 
 -- `command "name" { ... }` (workspace manifest only): `kiln <name> [args]`

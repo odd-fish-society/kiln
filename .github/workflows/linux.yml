@@ -1,0 +1,87 @@
+# Builds Kiln with GCC and with Clang and runs its suite (the boundary lint
+# included), checks that Kiln rebuilding itself converges byte for byte, and
+# runs the suite again under ASan and UBSan.
+#
+# The nested submodules (Luau, cluau, hamr) are checked out at the commits
+# this commit pins.
+name: Linux
+
+# dev is where streams land and every push is checked. main moves only to a
+# dev commit that already passed here, so it is not checked again. A stream
+# runs it only when started by hand (Run workflow on the Actions tab).
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    name: suite (${{ matrix.name }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: gcc, cc: gcc, cxx: g++ }
+          - { name: clang, cc: clang, cxx: clang++ }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build
+        run: |
+          ${{ matrix.cxx }} --version
+          cmake -S . -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Release -DKILN_BUILD_TESTS=ON \
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          cmake --build build/ci -j "$(nproc)"
+
+      - name: Suite
+        run: ./build/ci/kiln_tests
+
+  bootstrap:
+    name: bootstrap convergence
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      # The external build, then Kiln builds itself, then the self-built
+      # Kiln builds itself again: the two must be byte-identical.
+      - name: Bootstrap
+        run: ./bootstrap.sh
+
+  sanitizers:
+    name: suite (ASan + UBSan)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Build
+        run: |
+          cmake --preset dev
+          cmake --build --preset dev -j "$(nproc)"
+
+      - name: Suite
+        run: ./build/dev/kiln_tests

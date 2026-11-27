@@ -7,6 +7,7 @@
 #include "cluau/cluau.h"
 #include "core/hash.h"
 #include "core/util.h"
+#include "core/version.h"
 #include "lua.h"
 #include "lualib.h"
 #include "luau/ast_lint.h"
@@ -782,13 +783,55 @@ int decl_workspace(lua_State* L) {
     return 1;
 }
 
+// `kiln_version = ">=X.Y[.Z]"`: the oldest Kiln the workspace accepts.
+// Checked before any other field, so an older Kiln names the version it
+// needs instead of the first field it does not know.
+void check_kiln_version(lua_State* L, EvalState* st) {
+    lua_getfield(L, 2, "kiln_version");
+    if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+        return;
+    }
+    const char* raw = lua_tostring(L, -1);
+    const std::string want = raw ? raw : "";
+    lua_pop(L, 1);
+    int parts[3] = {0, 0, 0};
+    int n = 0;
+    bool ok = want.rfind(">=", 0) == 0 && want.size() > 2;
+    for (size_t i = 2; ok && i < want.size();) {
+        size_t j = i;
+        while (j < want.size() && want[j] >= '0' && want[j] <= '9')
+            ++j;
+        ok = j > i && n < 3;
+        if (!ok)
+            break;
+        parts[n++] = std::stoi(want.substr(i, j - i));
+        if (j == want.size())
+            break;
+        ok = want[j] == '.' && j + 1 < want.size();
+        i = j + 1;
+    }
+    if (!ok || n < 2)
+        luaL_error(L, "%s: kiln_version '%s' must look like \">=X.Y\" or \">=X.Y.Z\"",
+                   call_site(L, st).c_str(), want.c_str());
+    const int have[3] = {kVersionMajor, kVersionMinor, kVersionPatch};
+    for (int i = 0; i < 3; ++i) {
+        if (have[i] > parts[i])
+            return;
+        if (have[i] < parts[i])
+            luaL_error(L, "%s: this workspace needs kiln %s; this is kiln %s", call_site(L, st).c_str(),
+                       want.c_str(), kVersion);
+    }
+}
+
 int spec_workspace(lua_State* L) {
     EvalState* st = state_from(L);
     luaL_checktype(L, 2, LUA_TTABLE);
+    check_kiln_version(L, st);
     validate_fields(L, 2, st,
                     {"name", "pools", "jobs", "tools", "strict_globs", "cpp_std",
                      "c_std", "env_allow", "default_config", "system_libs",
-                     "plugin_roots", "rules", "link_record", "test_target", "smoke"},
+                     "plugin_roots", "rules", "link_record", "test_target", "smoke", "kiln_version"},
                     {});
     if (!st->decls.workspace)
         luaL_error(L, "internal: workspace spec without declaration");

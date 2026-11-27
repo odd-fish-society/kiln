@@ -25,20 +25,29 @@ did and why, so it never does anything twice: and it can always explain itself.
 
 ## Install
 
+A release (Linux x86-64) is one binary, its standard rules built in:
+
 ```sh
-git clone --recursive <kiln-repo-url>
+curl -fsSL https://github.com/odd-fish-society/kiln/releases/download/v0.1.0/kiln-v0.1.0-linux-x86_64.tar.gz | tar -xz
+./kiln-v0.1.0-linux-x86_64/bin/kiln --version
+```
+
+From source:
+
+```sh
+git clone --recursive https://github.com/odd-fish-society/kiln.git
 cd kiln && ./bootstrap.sh          # external-build via CMake, then Kiln rebuilds itself
-# deliverable.bootstrap/self-build/kiln: put it on PATH or use via submodule
+# deliverable.bootstrap/self-build/kiln: put it on PATH
 # (a third proof-build is compared byte-for-byte against self-build: the convergence check)
 ```
 
-In-tree in your engine repo (recommended): Kiln lives as a `kiln/` subfolder, built once
-by your bootstrap; invoke the self-build binary from scripts. Other projects can consume Kiln
-as a release binary: a build tool is consumed as an executable, not a source dependency.
+A project that builds Kiln from source pins it as a submodule (`kiln/`) and runs the
+CMake external build from its scripts. A workspace can state the oldest Kiln it accepts
+(`workspace { kiln_version = ">=0.1" }`); an older Kiln stops with the version it needs.
 
-Requires: Linux, clang or gcc, and for asset cooking the tools you configure in the
-workspace file (`glslc`, `basisu`, ...). `git submodule update --init --recursive`:
-Kiln vendors Luau as a nested submodule.
+Requires: Linux, GCC 15+ or Clang 19+ (C++20 and `#embed`), CMake and Ninja, and for
+asset cooking the tools you configure in the workspace file (`glslc`, `basisu`, ...).
+Kiln vendors Luau, cluau and hamr as nested submodules.
 
 ## Quick start
 
@@ -373,3 +382,4 @@ delete: worst case is a clean rebuild), `compile_commands/` for IDEs,
 - `docs/spec-outline.md`: the normative contracts (the "what"; wins conflicts).
 - `docs/decisions.md`: the design decisions and their reasons (the "why").
 - `docs/kpak-format.md`: the KPAK2 pack format.
+- `CHANGELOG.md` (what each release changed; `CONTRIBUTING.md`) branches and releases.

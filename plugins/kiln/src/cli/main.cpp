@@ -6,6 +6,7 @@
 #include "CLI/CLI.hpp"
 #include "console/ansi.h"
 #include "console/renderer.h"
+#include "core/version.h"
 #include "luau/manifest_env.h"
 #include "rules/registry.h"
 
@@ -102,6 +103,7 @@ int main(int argc, char** argv) {
         "Workspace: any directory containing kiln.workspace.luau.",
         "kiln"};
     app.require_subcommand(1);
+    app.set_version_flag("--version", std::string("kiln ") + kVersion);
 
     // ---- build -----------------------------------------------------------------
     auto* build = app.add_subcommand("build", "Build target(s)");
@@ -336,7 +338,8 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
         }
     } catch (const CLI::ParseError& e) {
-        if (e.get_name() == "CallForHelp" || e.get_name() == "CallForAllHelp")
+        if (e.get_name() == "CallForHelp" || e.get_name() == "CallForAllHelp" ||
+            e.get_name() == "CallForVersion")
             return app.exit(e); // prints the correct (sub)command help, exit 0
         std::fprintf(stderr, "%s\n", e.what());
         std::fprintf(stderr, "Run `kiln --help` for usage.\n");

@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 
 #include "core/util.h"
+#include "core/version.h"
 #include "test_util.h"
 
 using namespace kiln;
@@ -185,4 +186,36 @@ TEST_CASE("RC.5 kiln smoke runs the declared suite with the hamr the declared sc
     auto missing = run_kiln(tmp.path, {"smoke"});
     CHECK(missing.code == 2);
     CHECK(missing.out.find("no nope.cluau at the workspace root") != std::string::npos);
+}
+
+TEST_CASE("RC.6 kiln --version, and a workspace's kiln_version") {
+    TempDir tmp;
+    auto v = run_kiln(tmp.path, {"--version"});
+    CHECK(v.code == 0);
+    CHECK(v.out == std::string("kiln ") + kVersion + "\n");
+
+    const std::string target =
+        "target \"game\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"app/main\" } }\n";
+    auto with = [&](const std::string& ws) {
+        write_tree(tmp.path, {{"kiln.workspace.cluau", ws},
+                              {"build/game.target.cluau", target},
+                              {"plugins/app/plugin.build.cluau",
+                               "plugin \"app\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"},
+                              {"plugins/app/src/main.cpp", "int main() { return 0; }\n"}});
+        return run_kiln(tmp.path, {"build", "--progress=plain", "--workspace", "."});
+    };
+    CHECK(with("workspace \"rc\" { kiln_version = \">=0.1\" }\n").code == 0);
+    CHECK(with(std::string("workspace \"rc\" { kiln_version = \">=") + kVersion + "\" }\n").code == 0);
+    // A newer requirement wins over every other field, even one this Kiln
+    // does not know.
+    auto newer = with("workspace \"rc\" { kiln_version = \">=99.0\", from_the_future = true }\n");
+    CHECK(newer.code == 2);
+    CHECK(newer.out.find(std::string("this workspace needs kiln >=99.0; this is kiln ") + kVersion) !=
+          std::string::npos);
+    auto patch = with(std::string("workspace \"rc\" { kiln_version = \">=") + std::to_string(kVersionMajor) + "." +
+                      std::to_string(kVersionMinor) + "." + std::to_string(kVersionPatch + 1) + "\" }\n");
+    CHECK(patch.code == 2);
+    auto bad = with("workspace \"rc\" { kiln_version = \"0.1\" }\n");
+    CHECK(bad.code == 2);
+    CHECK(bad.out.find("must look like") != std::string::npos);
 }

@@ -1,0 +1,111 @@
+# A release for each version tag (vX.Y.Z): Kiln built and its suite run on
+# Linux, packaged with its manifest types, the licence, the README and the
+# changelog, and published as a GitHub release whose notes are the tag's
+# message. An existing tag is released again by running the workflow by
+# hand with its name.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'The tag to release (vX.Y.Z)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: linux-x86_64
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+          submodules: recursive
+
+      - name: Tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      # The C++ runtime is linked in, so the binary runs on any glibc Linux
+      # at least as new as the runner's.
+      - name: Build
+        run: |
+          cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release -DKILN_BUILD_TESTS=ON \
+            "-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++ -static-libgcc"
+          cmake --build build/release -j "$(nproc)"
+
+      # The tag names the version the binary reports.
+      - name: Check the tag against the version
+        run: |
+          version=$(./build/release/kiln --version | sed -n 's/^kiln \([0-9.]*\)$/\1/p')
+          if [ "v$version" != "$TAG" ]; then
+            echo "the tag is $TAG, but kiln --version says $version"
+            exit 1
+          fi
+
+      - name: Suite
+        run: ./build/release/kiln_tests
+
+      - name: Package
+        run: |
+          dir="kiln-$TAG-linux-x86_64"
+          mkdir -p "$dir/bin" "$dir/types"
+          cp build/release/kiln "$dir/bin/"
+          cp types/build.d.luau "$dir/types/"
+          cp LICENSE README.md CHANGELOG.md "$dir/"
+          tar -czf "$dir.tar.gz" "$dir"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: kiln-*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Notes from the tag
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          {
+            git tag -l --format='%(contents)' "$TAG"
+            echo
+            echo "Install on Linux (x86-64):"
+            echo
+            echo '```'
+            echo "curl -fsSL https://github.com/odd-fish-society/kiln/releases/download/$TAG/kiln-$TAG-linux-x86_64.tar.gz | tar -xz"
+            echo "./kiln-$TAG-linux-x86_64/bin/kiln --version"
+            echo '```'
+            echo
+            echo "The download holds the \`kiln\` binary (its standard rule library is built in), \`types/build.d.luau\` for typed manifests, the licence, the README and the changelog."
+          } > notes.md
+          (cd dist && sha256sum * > SHA256SUMS)
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Kiln ${TAG#v}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --title "$title" --notes-file notes.md
+          else
+            gh release create "$TAG" dist/* --title "$title" --notes-file notes.md --verify-tag
+          fi
