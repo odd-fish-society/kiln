@@ -23,9 +23,6 @@ struct PluginDecl {
     std::vector<std::string> private_deps;
     std::vector<std::string> optional_deps;
     std::string version; // informational only, NEVER hashed
-    // Reflection codegen: the tinyreflect tool binary path (a build
-    // output, pinned per config like the tinycook tool). Empty = this
-    // plugin generates no reflection TU.
     std::string file;
     int line = 0;
 };
@@ -76,6 +73,7 @@ struct ActionDecl {
     std::map<std::string, std::string> provides;
     std::string asset_id;                 // the asset's id (32 lowercase hex); else dyndep, else path
     std::vector<std::string> asset_tags;  // the asset's tags (a target's pack.tags filters on them)
+    int64_t asset_type = -1;              // the pack table's type number; -1 = the dyndep's, else 0
     std::string stdout_path;              // an output the process's standard output is written to
     std::vector<std::string> scan_dirs;   // quoted_include: searched after the includer's directory
     // Outputs compiled into every module of the plugin that has sources.
@@ -178,6 +176,24 @@ struct WorkspaceDecl {
     // Configs whose links write a link record and whose compiles take the
     // patchable-object flags (`link_record = { "dev" }`).
     std::vector<std::string> link_record;
+    // `kiln test` with no target builds and runs this one.
+    std::string test_target;
+    // `kiln smoke`: the hamr suite (default hamr.cluau) and the script whose
+    // last stdout line is the hamr binary (empty = hamr on PATH).
+    std::string smoke_suite;
+    std::string smoke_hamr;
+};
+
+// `command "name" { help, build, run, config }` in the workspace manifest: a
+// program `kiln <name>` / `kiln run <name>` runs after building `build`.
+struct CommandDecl {
+    std::string name;
+    std::string help;
+    std::vector<std::string> build; // targets built first
+    std::vector<std::string> run;   // argv, with {workspace} {platform} {config} {bin:<t>} {kiln}
+    std::string config;             // empty = the workspace's default_config
+    std::string file;
+    int line = 0;
 };
 
 // Everything a single file evaluation produced (declaration-only).
@@ -188,6 +204,7 @@ struct DeclSet {
     std::vector<CLibraryDecl> c_libraries; // call order
     std::optional<TargetDecl> target;
     std::optional<WorkspaceDecl> workspace;
+    std::vector<CommandDecl> commands; // call order
     std::vector<std::string> required_files; // sorted, deduped
     std::vector<FileSet> globs;              // call order; each FileSet sorted
 };

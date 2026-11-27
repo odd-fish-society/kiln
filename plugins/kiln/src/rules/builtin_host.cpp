@@ -220,7 +220,8 @@ TaskResult run_asset_manifest(TaskCtx& ctx) {
     // change this record's output bytes, or pack_target would stay cached
     // and repack a stale blob.
     json assets = json::array();
-    // An entry is "id=path", plus "\t<tag>,<tag>" when tagged; the id
+    // An entry is "id=path", plus "\t<tag>,<tag>" when tagged and "\t<type>"
+    // after the tags when the action states its type number; the id
     // "dyndep:<fallback>:<file>" is the identity the cook's tool wrote into
     // its dyndep file (the fallback when it wrote none).
     for (auto& entry : prefix_params(*ctx.decl, "asset.")) {
@@ -230,9 +231,14 @@ TaskResult run_asset_manifest(TaskCtx& ctx) {
         std::string id = entry.substr(0, eq);
         std::string path = entry.substr(eq + 1);
         std::vector<std::string> tags;
+        int64_t type = -1;
         if (auto tab = path.find('\t'); tab != std::string::npos) {
             std::string list = path.substr(tab + 1);
             path = path.substr(0, tab);
+            if (auto tab2 = list.find('\t'); tab2 != std::string::npos) {
+                type = std::stoll(list.substr(tab2 + 1));
+                list = list.substr(0, tab2);
+            }
             for (size_t at = 0; at <= list.size();) {
                 size_t comma = list.find(',', at);
                 if (comma == std::string::npos)
@@ -259,6 +265,11 @@ TaskResult run_asset_manifest(TaskCtx& ctx) {
             }
             std::sort(tags.begin(), tags.end());
             tags.erase(std::unique(tags.begin(), tags.end()), tags.end());
+            if (auto it = j->find("type"); it != j->end()) {
+                if (!it->is_number_unsigned() || it->get<uint64_t>() > 0xffffffffull)
+                    return fail("asset_manifest: " + file + ": 'type' must be an integer in [0, 2^32)");
+                type = static_cast<int64_t>(it->get<uint64_t>());
+            }
             if (auto it = j->find("identity"); dyn_id && it != j->end()) {
                 std::string reported = it->is_string() ? it->get<std::string>() : "";
                 bool hex = reported.size() == 32 || reported.size() == 64;
@@ -276,6 +287,8 @@ TaskResult run_asset_manifest(TaskCtx& ctx) {
         json a = {{"id", id}, {"path", path}, {"hash", hash}};
         if (!tags.empty())
             a["tags"] = tags;
+        if (type >= 0)
+            a["type"] = type;
         assets.push_back(std::move(a));
     }
     out["asset_manifest"] = assets;
@@ -298,6 +311,7 @@ TaskResult run_pack(TaskCtx& ctx) {
     struct Asset {
         std::string id, path, hash;
         std::vector<std::string> tags;
+        uint32_t type = 0; // the cook's type number (its dyndep's "type"), 0 when none
         bool operator<(const Asset& o) const { return id < o.id; }
     };
     std::vector<Asset> assets;
@@ -307,7 +321,8 @@ TaskResult run_pack(TaskCtx& ctx) {
             return fail(j.error);
         for (auto& a : j->value("asset_manifest", json::array()))
             assets.push_back({a.at("id").get<std::string>(), a.at("path").get<std::string>(),
-                              a.value("hash", ""), a.value("tags", std::vector<std::string>{})});
+                              a.value("hash", ""), a.value("tags", std::vector<std::string>{}),
+                              a.value("type", uint32_t(0))});
     }
     std::sort(assets.begin(), assets.end());
     // One id names one blob in a target's pack (a copied committed asset
@@ -338,7 +353,7 @@ TaskResult run_pack(TaskCtx& ctx) {
     };
     auto parse_asset_id = [](const std::string& hex32) -> std::pair<uint64_t, uint64_t> {
         // The first 32 hex chars of the 64-hex id: High = hex[0..16),
-        // Low = hex[16..32), MSB-first - the engine's AssetID::ToString form.
+        // Low = hex[16..32), MSB-first (the id's canonical hex form).
         auto parse16 = [](const char* p) {
             uint64_t v = 0;
             for (int i = 0; i < 16; ++i) {
@@ -353,21 +368,6 @@ TaskResult run_pack(TaskCtx& ctx) {
         };
         return {parse16(hex32.data()), parse16(hex32.data() + 16)};
     };
-    // The cooked blob's TinyAssetType (the .ctasset header's u32 at offset
-    // 12); 0 for anything that doesn't parse as one (defensive - the pack is
-    // not exclusively .ctasset content in principle). Only the header is read:
-    // the blobs stream into the pack below.
-    auto blob_type = [&](const std::string& path) -> uint32_t {
-        std::ifstream in(ctx.workspace_root / path, std::ios::binary);
-        char head[16];
-        if (!in.read(head, 16) || std::string_view(head, 7) != "TASSET1")
-            return 0;
-        uint32_t t = 0;
-        for (int i = 0; i < 4; ++i)
-            t |= (uint32_t)(uint8_t)head[12 + i] << (8 * i);
-        return t;
-    };
-
     // A target's `pack.tags` keeps only assets carrying one of them.
     std::set<std::string> keep_tags;
     for (auto& t : prefix_params(*ctx.decl, "pack_tag."))
@@ -384,13 +384,12 @@ TaskResult run_pack(TaskCtx& ctx) {
         const uint64_t size = fs::file_size(ctx.workspace_root / a.path, ec);
         if (ec)
             return fail("pack: cannot read " + a.path + ": " + ec.message());
-        const uint32_t type = blob_type(a.path);
         if (!keep_tags.empty() &&
             std::none_of(a.tags.begin(), a.tags.end(), [&](const std::string& t) { return keep_tags.count(t) != 0; })) {
             dropped_by_tags++;
             continue;
         }
-        packed.push_back({&a, type, size});
+        packed.push_back({&a, a.type, size});
     }
 
     constexpr size_t kHeaderSize = 5 + 4 + 4 + 32; // magic + count + table_offset + build hash
@@ -414,8 +413,10 @@ TaskResult run_pack(TaskCtx& ctx) {
             index["assets"].back()["tags"] = p.asset->tags;
         offset += p.size;
     }
-    if (!keep_tags.empty())
+    if (!keep_tags.empty()) {
+        index["tags"] = std::vector<std::string>(keep_tags.begin(), keep_tags.end());
         index["omitted_by_tags"] = dropped_by_tags;
+    }
 
     // build_hash = BLAKE3 of the serialized table bytes + each blob's
     // content hash (the table alone carries ids/types/offsets/sizes, so a
@@ -523,12 +524,12 @@ void register_host() {
     // v3: impl_hash over the archives' member records; the asset manifest
     // moved to the asset_manifest rule's record.
     register_rule("provider", 3, run_provider);
-    register_rule("asset_manifest", 1, run_asset_manifest);
+    register_rule("asset_manifest", 2, run_asset_manifest);
     // v2: fixed two kpak layout bugs (32-byte entry ids; 9+n*48 header math)
     // — see decisions.md "Pack & hot-reload pass".
     // v4: build hash covers the content hashes too; v5: reads the asset
     // records (`assets.*`), not the providers.
-    register_rule("pack_target", 5, run_pack);
+    register_rule("pack_target", 6, run_pack);
     register_rule("gen_compile_commands", 1, run_compile_commands);
 }
 

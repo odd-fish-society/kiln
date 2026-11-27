@@ -411,7 +411,7 @@ TEST_CASE("K7.8b fbs_gen: schemas become <stem>.fbs.h the library's compiles inc
 TEST_CASE("K7.9 a tool pinned at a target's bin output builds that target first, and rebuilds it when stale") {
     TempDir tmp;
     // The protoc is a real build output (target "genproto"), pinned by path like
-    // the engine pins tinycook/tinyreflect/protoc; `kiln build app` alone must
+    // a workspace pins its cook tools; `kiln build app` alone must
     // build it first, and a tool source edit must rebuild it before regenerating.
     auto tool_src = [](int v) {
         return "#include <cstdio>\n#include <string>\n"
@@ -518,66 +518,3 @@ TEST_CASE("K7.10 companions build with their target in its config; an unknown co
     CHECK(r2.out.find("unknown companion 'nope'") != std::string::npos);
 }
 
-namespace {
-
-// A minimal TinyAsset container: the header (20 bytes before v4, 24 from
-// it), one identity chunk (type 100) and a payload chunk.
-std::string tinyasset_bytes(uint32_t version, uint32_t type, uint64_t high, uint64_t low,
-                            const std::string& payload) {
-    std::string s("TASSET1\0", 8);
-    auto u32 = [&](uint32_t v) {
-        for (int i = 0; i < 4; ++i)
-            s.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
-    };
-    auto u64 = [&](uint64_t v) {
-        for (int i = 0; i < 8; ++i)
-            s.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
-    };
-    const bool identity = version >= 2;
-    const uint32_t chunks = identity ? 2 : 1;
-    u32(version);
-    u32(type);
-    u32(chunks);
-    if (version >= 4)
-        u32(0x04030201u);
-    const uint64_t data = s.size() + chunks * 20;
-    u32(1);
-    u64(data);
-    u64(payload.size());
-    if (identity) {
-        u32(100);
-        u64(data + payload.size());
-        u64(16);
-    }
-    s += payload;
-    if (identity) {
-        u64(high);
-        u64(low);
-    }
-    return s;
-}
-
-std::map<std::string, std::string> packaged_fixture(const std::string& pack_types) {
-    return {
-        {"kiln.workspace.luau", "workspace \"k7\" {\n  strict_globs = true,\n}\n"},
-        {"build/game.target.luau",
-         "target \"game\" {\n  platforms = { \"linux\" },\n  default_config = \"dev\",\n"
-         "  link = { \"app/main\" },\n" + pack_types + "}\n"},
-        {"plugins/content/plugin.build.luau",
-         "plugin \"content\" {}\n"
-         "cook \"imported\" {\n  rule = \"pack_tinyasset\",\n  inputs = glob(\"content/**/*.ctasset\"),\n}\n"
-         "cook \"icon\" {\n  rule = \"cook_copy\",\n  inputs = glob(\"content/*.png\"),\n}\n"},
-        {"plugins/content/content/models/rock.ctasset",
-         tinyasset_bytes(4, 1, 0x1122334455667788ull, 0x99aabbccddeeff00ull, "MESH")},
-        {"plugins/content/content/models/rock_mat.ctasset",
-         tinyasset_bytes(3, 2, 0x0102030405060708ull, 0x1112131415161718ull, "MATERIAL")},
-        {"plugins/content/content/icon.png", "PNGDATA"},
-        {"plugins/app/plugin.build.luau",
-         "plugin \"app\" { public_deps = { \"content\" } }\n"
-         "module \"main\" {\n  sources = glob(\"src/*.cpp\"),\n  deps = { public = { "
-         "\"content\" } },\n}\n"},
-        {"plugins/app/src/main.cpp", "int main() { return 0; }\n"},
-    };
-}
-
-} // namespace

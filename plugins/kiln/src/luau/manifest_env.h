@@ -4,6 +4,7 @@
 #include <functional>
 #include <vector>
 #include <map>
+#include <set>
 #include <string>
 
 #include "core/result.h"
@@ -58,5 +59,9 @@ Result<std::vector<ActionDecl>> lower_aggregate(const CookDecl& cook, const Aggr
 // Evaluates a workspace/target/plugin manifest file in the restricted env.
 // Manifest files are AST-linted (no functions/while/repeat).
 Result<EvalOutput> evaluate_file(const fs::path& file, const ManifestEnvOptions& opts);
+
+// Kiln's built-in CLI verbs: a workspace `command` may not take one of these
+// names, and `kiln <name>` is a workspace command only when it is none of them.
+const std::set<std::string>& builtin_verbs();
 
 } // namespace kiln::luau

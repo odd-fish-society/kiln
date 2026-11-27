@@ -6,6 +6,7 @@
 #include "CLI/CLI.hpp"
 #include "console/ansi.h"
 #include "console/renderer.h"
+#include "luau/manifest_env.h"
 #include "rules/registry.h"
 
 using namespace kiln;
@@ -21,10 +22,80 @@ console::ProgressMode default_progress_mode() {
     return console::ProgressMode::Fancy;
 }
 
+// `kiln run [--config C] [-j N] [--workspace P] [<name> [args...]]` and the
+// shorthand `kiln <name> [args...]`: every argument after the name is the
+// command's, so neither goes through CLI11. Returns -1 when argv is neither.
+int run_workspace_command(int argc, char** argv) {
+    if (argc < 2)
+        return -1;
+    const std::string first = argv[1];
+    const bool explicit_run = first == "run";
+    if (!explicit_run && (first.empty() || first[0] == '-' || luau::builtin_verbs().count(first)))
+        return -1;
+    std::string config, workspace, name;
+    int jobs = 0;
+    int i = explicit_run ? 2 : 1;
+    if (explicit_run) {
+        auto value = [&](const std::string& arg, const char* opt, std::string& out) -> int {
+            const std::string eq = std::string(opt) + "=";
+            if (arg.rfind(eq, 0) == 0) {
+                out = arg.substr(eq.size());
+                return 1;
+            }
+            if (arg != opt)
+                return 0;
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "kiln run: %s needs a value\n", opt);
+                return -1;
+            }
+            out = argv[++i];
+            return 1;
+        };
+        for (; i < argc; ++i) {
+            const std::string arg = argv[i];
+            if (arg.empty() || arg[0] != '-')
+                break;
+            if (arg == "-h" || arg == "--help") {
+                std::printf("Usage: kiln run [--config C] [-j N] [--workspace P] <name> [args...]\n"
+                            "       kiln <name> [args...]\n\n"
+                            "Runs a workspace command: builds its targets, then runs its program\n"
+                            "with the arguments appended. With no name, lists the commands.\n");
+                return 0;
+            }
+            std::string j;
+            int r = value(arg, "--config", config);
+            if (r == 0)
+                r = value(arg, "--workspace", workspace);
+            if (r == 0 && (r = value(arg, "-j", j)) == 1)
+                jobs = std::atoi(j.c_str());
+            if (r < 0)
+                return 2;
+            if (r == 0) {
+                std::fprintf(stderr, "kiln run: unknown option '%s' (kiln's options go before the command name)\n",
+                             arg.c_str());
+                return 2;
+            }
+        }
+    }
+    if (i < argc)
+        name = argv[i++];
+    std::vector<std::string> args(argv + i, argv + argc);
+    auto r = cmd_run(fs::path(workspace), name, args, config, jobs,
+                     default_progress_mode() == console::ProgressMode::Fancy);
+    if (!r.ok()) {
+        std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
+        return 2;
+    }
+    return *r;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     rules::register_builtin_rules();
+
+    if (int rc = run_workspace_command(argc, argv); rc >= 0)
+        return rc;
 
     CLI::App app{
         "Kiln — content-hashed, incrementally-correct build pipeline.\n"
@@ -105,27 +176,17 @@ int main(int argc, char** argv) {
     setup->add_option("--workspace", s_workspace, "workspace root (default: auto-detect)");
 
     // ---- test ---------------------------------------------------------------------
-    auto* test = app.add_subcommand("test", "Build + run the test target (default: tinytest)");
-    std::string t_target = "tinytest", t_platform, t_config, t_workspace;
+    auto* test = app.add_subcommand("test", "Build + run a test target (default: the workspace's test_target)");
+    std::string t_target, t_platform, t_config, t_workspace;
     int t_jobs = 0;
-    test->add_option("target", t_target, "target name (default: tinytest)");
+    test->add_option("target", t_target, "target name (default: the workspace's test_target)");
     test->add_option("-j", t_jobs, "worker count");
     test->add_option("--platform", t_platform, "platform override");
     test->add_option("--config", t_config, "config override");
     test->add_option("--workspace", t_workspace, "workspace root (default: auto-detect)");
 
-    // ---- shipping-audit ---------------------------------------------------------------
-    auto* shipping_audit = app.add_subcommand(
-        "shipping-audit",
-        "Audit the shipping binaries for stripped dev-only code");
-    std::string sa_config, sa_workspace;
-    std::vector<std::string> sa_targets;
-    shipping_audit->add_option("target", sa_targets, "target(s) to audit (default: sandbox tinyserver)");
-    shipping_audit->add_option("--config", sa_config, "config name (default: shipping)");
-    shipping_audit->add_option("--workspace", sa_workspace, "workspace root (default: auto-detect)");
-
     // ---- smoke ----------------------------------------------------------------------
-    auto* smoke = app.add_subcommand("smoke", "Run the workspace's hamr suite (hamr.cluau): builds, checks and their timings");
+    auto* smoke = app.add_subcommand("smoke", "Run the workspace's hamr suite (workspace smoke.suite, default hamr.cluau)");
     std::string s2_workspace;
     int s2_jobs = 0;
     bool s2_nightly = false;
@@ -136,55 +197,11 @@ int main(int argc, char** argv) {
     smoke->add_option("hamr_args", s2_extra, "after --: arguments for `hamr run` (--only <glob>, --skip <glob>, --changed, ...)");
     smoke->add_option("--workspace", s2_workspace, "workspace root (default: auto-detect)");
 
-    // ---- docs -----------------------------------------------------------------------
-    auto* docs = app.add_subcommand("docs", "Build the doc databases and render the static docs site (--serve [port] serves it)");
-    std::string docs_target = "tinyeditor", docs_tool = "tinydoc", docs_workspace;
-    int docs_port = 0, docs_jobs = 0;
-    bool docs_serve = false;
-    docs->add_option("target", docs_target, "the target whose cook_docs tasks cook the databases (default: tinyeditor)");
-    docs->add_option("--tool", docs_tool, "the docs tool's target name (default: tinydoc)");
-    docs->add_flag("--serve", docs_serve, "serve the site on 127.0.0.1 after rendering");
-    docs->add_option("--port", docs_port, "the serve port (default: 8040)");
-    docs->add_option("-j", docs_jobs, "worker count");
-    docs->add_option("--workspace", docs_workspace, "workspace root (default: auto-detect)");
-
-    // ---- test-scenes ----------------------------------------------------------------
-    auto* test_scenes = app.add_subcommand(
-        "test-scenes",
-        "Run the committed lighting test maps against their goldens");
-    std::string ts_scene, ts_workspace;
-    bool ts_update = false;
-    int ts_jobs = 0;
-    test_scenes->add_option("scene", ts_scene, "case name (default: all)");
-    test_scenes->add_flag("--update", ts_update, "rewrite the golden PNGs instead of comparing");
-    test_scenes->add_option("-j", ts_jobs, "worker count");
-    test_scenes->add_option("--workspace", ts_workspace, "workspace root (default: auto-detect)");
-
     // ---- check ----------------------------------------------------------------------
     auto* check = app.add_subcommand("check", "Type-check the manifests against types/build.d.luau (cluau's strict rules for .cluau)");
     std::string ck_workspace, ck_defs;
     check->add_option("--defs", ck_defs, "the manifest definitions (default: types/build.d.luau)");
     check->add_option("--workspace", ck_workspace, "workspace root (default: auto-detect)");
-
-    // ---- lint-content ---------------------------------------------------------------
-    auto* lint_content = app.add_subcommand("lint-content", "Lint the content trees' .meta sidecars");
-    std::string lc_workspace, lc_config = "dev";
-    bool lc_strict = false;
-    std::vector<std::string> lc_plugins;
-    lint_content->add_option("plugin", lc_plugins, "content plugin(s) to lint (default: all)");
-    lint_content->add_flag("--strict", lc_strict, "L1/L2 become errors");
-    lint_content->add_option("--config", lc_config, "config dir name for the tinycook tool (default: dev)");
-    lint_content->add_option("--workspace", lc_workspace, "workspace root (default: auto-detect)");
-
-    // ---- mint-content ---------------------------------------------------------------
-    auto* mint_content = app.add_subcommand("mint-content", "Write missing .meta sidecars");
-    std::string mc_workspace, mc_config = "dev";
-    bool mc_dry_run = false;
-    std::vector<std::string> mc_plugins;
-    mint_content->add_option("plugin", mc_plugins, "content plugin(s) to mint (default: all)");
-    mint_content->add_flag("--dry-run", mc_dry_run, "list what would be written");
-    mint_content->add_option("--config", mc_config, "config dir name for the tinycook tool (default: dev)");
-    mint_content->add_option("--workspace", mc_workspace, "workspace root (default: auto-detect)");
 
     // ---- clean ----------------------------------------------------------------------
     auto* clean = app.add_subcommand("clean", "Delete build outputs (and traces)");
@@ -194,6 +211,10 @@ int main(int argc, char** argv) {
     clean->add_flag("--traces", c_traces, "also delete the trace store");
     clean->add_flag("--dead", c_dead, "delete only dead outputs: cooked outputs whose sources are gone, and variant folders no target's last build used");
     clean->add_option("--workspace", c_workspace, "workspace root (default: auto-detect)");
+
+    // `kiln --help` also lists the workspace's commands (when run in one).
+    if (argc == 2 && (std::string_view(argv[1]) == "--help" || std::string_view(argv[1]) == "-h"))
+        app.footer(command_listing(fs::path()));
 
     int rc = 0;
     try {
@@ -298,38 +319,13 @@ int main(int argc, char** argv) {
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
-        } else if (*shipping_audit) {
-            auto r = cmd_shipping_audit(fs::path(sa_workspace), sa_config, sa_targets);
-            rc = r.ok() ? *r : 2;
-            if (!r.ok())
-                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
-        } else if (*docs) {
-            auto r = cmd_docs(fs::path(docs_workspace), docs_target, docs_tool, docs_serve ? (docs_port > 0 ? docs_port : 8040) : 0, docs_jobs);
-            rc = r.ok() ? *r : 2;
-            if (!r.ok())
-                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
         } else if (*smoke) {
             auto r = cmd_smoke(fs::path(s2_workspace), s2_jobs, s2_nightly, s2_extra);
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
-        } else if (*test_scenes) {
-            auto r = cmd_test_scenes(fs::path(ts_workspace), ts_scene, ts_update, ts_jobs);
-            rc = r.ok() ? *r : 2;
-            if (!r.ok())
-                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
         } else if (*check) {
             auto r = cmd_check(fs::path(ck_workspace), ck_defs);
-            rc = r.ok() ? *r : 2;
-            if (!r.ok())
-                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
-        } else if (*lint_content) {
-            auto r = cmd_lint_content(fs::path(lc_workspace), lc_plugins, lc_strict, lc_config);
-            rc = r.ok() ? *r : 2;
-            if (!r.ok())
-                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
-        } else if (*mint_content) {
-            auto r = cmd_mint_content(fs::path(mc_workspace), mc_plugins, mc_dry_run, mc_config);
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());

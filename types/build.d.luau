@@ -113,6 +113,22 @@ export type WorkspaceSpec = {
     -- TU's source and object hash) and whose compiles take the patchable-
     -- object flags; default none.
     link_record: { string? }?,
+    -- `kiln test` with no target builds and runs this one.
+    test_target: string?,
+    -- `kiln smoke`: the hamr suite (default "hamr.cluau") and a script whose
+    -- last stdout line is the hamr binary (default: hamr on PATH).
+    smoke: { suite: string?, hamr: string? }?,
+}
+
+-- `command "name" { ... }` (workspace manifest only): `kiln <name> [args]`
+-- builds `build`, then runs `run` with the arguments appended. Tokens in
+-- `run`: {workspace}, {platform}, {config} (the config dir, "linux-dev"),
+-- {bin:<target>}, {kiln}.
+export type CommandSpec = {
+    help: string?,
+    build: { string? }?,
+    run: { string? },
+    config: string?,
 }
 
 export type ConfigView = {
@@ -165,6 +181,7 @@ export type Action = {
     asset: string?, -- the output (or an input, packed verbatim) registered as primary's asset
     asset_id: string?, -- its id (32 lowercase hex); default: the dyndep's identity, else path-derived
     asset_tags: { string }?, -- its tags (a target's pack.tags keeps assets with one of them)
+    asset_type: number?, -- its type number in the pack table (else the dyndep's "type", else 0)
     -- Files that may be absent: their content, or their absence, enters the
     -- digest (creating one reruns the task). Never under .kiln/out/.
     optional_inputs: { string }?,
@@ -204,6 +221,7 @@ declare function cook(name: string): (spec: CookSpec) -> ()
 declare function c_library(name: string): (spec: CLibrarySpec) -> ()
 declare function target(name: string): (spec: TargetSpec) -> ()
 declare function workspace(name: string): (spec: WorkspaceSpec) -> ()
+declare function command(name: string): (spec: CommandSpec) -> ()
 
 declare function glob(pattern: string): FileSet
 -- `require "build/x"` is Luau's own require: a checker that resolves Kiln's

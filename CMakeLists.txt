@@ -1,4 +1,4 @@
-# Kiln — Luau build pipeline for TinyEngine
+# Kiln — a content-hashed build pipeline with Luau/cluau manifests
 #
 # NOTE (do not delete): this CMake build is the PERMANENT external-build bootstrap
 # ("escape hatch") for Kiln's self-hosting chain. Kiln builds itself via

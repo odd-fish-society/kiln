@@ -778,3 +778,25 @@ as above (SHOULD choices logged, MUST deviations fixed: none remain):
   pack indices' added tags; every pack, binary, archive and cooked asset is
   byte-identical.
 
+
+## A project's commands are workspace declarations
+
+- Kiln's CLI has only its own verbs. A project's verbs are `command "name"
+  { help, build, run, config }` in the workspace file: `kiln <name>` (or
+  `kiln run <name>`) builds `build`, then becomes `run`'s process with the
+  arguments appended, at the root. The first consumer's audit, golden
+  scenes, content lint/mint and docs site moved out this way: the audit's
+  C++ into its own tool, the others into its existing tools and its smoke
+  suite. Kiln options go before the name (`kiln run --config release x`):
+  after it every argument is the command's, so a command's flags never
+  collide with Kiln's.
+- `kiln test`'s default target and `kiln smoke`'s suite and hamr lookup are
+  workspace settings (`test_target`, `smoke = { suite, hamr }`), not names
+  Kiln knows.
+- The pack table's per-asset type number comes from the cook (the action's
+  `asset_type`, else its dyndep's `type`): Kiln no longer reads an asset's
+  header to find it. The index records the target's `pack.tags`, so a
+  checker of the pack needs only the pack.
+- The boundary lint scans the docs, types and README too, case-insensitively,
+  with the first consumer's tool, rule and command names; this log is
+  exempt (it records history as it was written).

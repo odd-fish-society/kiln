@@ -365,7 +365,8 @@ Result<std::string> resolve_uses(const LowerCtx& ctx, const std::string& plugin,
 }
 
 // The asset-record entry of an action's asset: "id=path", plus
-// "\t<tag>,<tag>" when tagged. With a dyndep the asset record reads it at run
+// "\t<tag>,<tag>" when tagged and "\t<type>" after it when the action states
+// a type number. With a dyndep the asset record reads it at run
 // time: "dyndep:<fallback>:<file>" takes its identity (else the fallback,
 // the path-derived id) and its tags; "dyntags:<id>:<file>" (an id the
 // action states) only its tags.
@@ -380,6 +381,8 @@ std::string action_asset_entry(const luau::ActionDecl& a, const std::string& pat
             tags += (tags.empty() ? "" : ",") + t;
         entry += "\t" + tags;
     }
+    if (a.asset_type >= 0)
+        entry += (a.asset_tags.empty() ? "\t\t" : "\t") + std::to_string(a.asset_type);
     return entry;
 }
 

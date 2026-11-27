@@ -28,6 +28,7 @@ struct Workspace {
     bool layered = false;                                 // any root declares a layer
     std::map<std::string, TargetDecl> targets;
     std::map<std::string, std::string> target_files;      // name → rel path
+    std::vector<luau::CommandDecl> commands;              // declaration order
     std::string workspace_file = "kiln.workspace.luau";   // or kiln.workspace.cluau
 };
 

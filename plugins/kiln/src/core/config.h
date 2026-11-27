@@ -42,6 +42,9 @@ struct WorkspaceConfig {
     std::vector<PluginRoot> plugin_roots;     // default: {{ "plugins", "" }}
     std::vector<std::string> rules;           // rule libraries ("build/rules/x"); std/ is implicit
     std::vector<std::string> link_record;     // configs whose links write a link record (live code)
+    std::string test_target;                  // `kiln test`'s default target
+    std::string smoke_suite = "hamr.cluau";   // `kiln smoke`'s hamr suite
+    std::string smoke_hamr;                   // script printing the hamr binary; empty = PATH
 };
 
 } // namespace kiln

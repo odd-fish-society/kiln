@@ -105,10 +105,10 @@ workspace {
     pools = { link = 2 },
     tools = { glslc = "glslc", basisu = "basisu" },
     plugin_roots = {
-        { path = "third_party/plugins", layer = "third_party" },
-        { path = "engine/plugins",      layer = "engine" },
-        { path = "editor/plugins",      layer = "editor" },
-        { path = "game/plugins",        layer = "game" },
+        { path = "external", layer = "external" },
+        { path = "engine",   layer = "engine" },
+        { path = "tools",    layer = "tools" },
+        { path = "game",     layer = "game" },
     },
 }
 ```
@@ -117,10 +117,10 @@ workspace {
 mygame/
   kiln.workspace.luau
   build/game.target.luau  editor.target.luau
-  third_party/plugins/stb/
-  engine/plugins/core/  renderer/
-  editor/plugins/editor_core/
-  game/plugins/gameplay/  game_content/
+  external/stb/
+  engine/core/  renderer/  audio/
+  tools/level_editor/
+  game/gameplay/  game_data/
 ```
 
 A plugin's layer comes from the root it lives in: there is no layer field to declare
@@ -134,12 +134,29 @@ NAMES, never paths, so moving a plugin between roots is a `git mv`.
 kiln build <target>[:<config>]...   # build one or more target/config pairs
 kiln daemon --target=game           # watch files, rebuild on save, hot-reload socket
 kiln plugins --target=game          # plugin table: NAME  [LAYER]  STATE  DECIDED-BY
-kiln query "rdeps(engine/plugins/core)"   # who depends on core?
-kiln why-dirty engine/plugins/game/link:game@linux-dev
+kiln query "rdeps(engine/core)"   # who depends on core?
+kiln why-dirty game/gameplay/link:game@linux-dev
 kiln setup-clion                    # emit compile_commands.json + CLion instructions
 kiln clean                          # delete outputs (add --traces to also forget receipts)
 kiln clean --dead                   # delete only dead outputs (gone sources, unused variants)
+kiln test                           # build + run the workspace's test_target
+kiln smoke                          # the workspace's hamr suite
+kiln <command> [args...]            # a command the workspace declares (kiln --help lists them)
 ```
+
+A workspace adds its own verbs as commands in `kiln.workspace.luau`: Kiln builds the
+listed targets, then runs the program with your arguments appended, at the root.
+
+```lua
+command "audit" {
+    help = "Audit the release binaries",
+    build = { "auditor" },
+    run = { "{bin:auditor}", "--platform", "{platform}" },
+}
+```
+
+`kiln audit --strict` builds `auditor` and runs it with `--platform linux --strict`.
+The tokens are `{workspace}`, `{platform}`, `{config}`, `{bin:<target>}` and `{kiln}`.
 
 Progress output is a pinned bar with a rolling `[done/total]` counter in a terminal,
 and plain sequential lines when piped or in CI (`--progress=plain|fancy|none`,
@@ -315,10 +332,10 @@ Save a PNG, see it in the running game in about a second.
 ## When something rebuilds and you don't know why
 
 ```sh
-$ kiln why-dirty engine/plugins/game/link:game@linux-dev
-engine/plugins/game/link:game@linux-dev  REBUILT because:
-  dep engine/plugins/audio/provider changed (interface_hash)
-    because engine/plugins/audio/include/mixer.h content changed (was 3f9a…, now 71bc…)
+$ kiln why-dirty game/gameplay/link:game@linux-dev
+game/gameplay/link:game@linux-dev  REBUILT because:
+  dep engine/audio/provider changed (interface_hash)
+    because engine/audio/include/mixer.h content changed (was 3f9a…, now 71bc…)
 ```
 
 Also useful: `kiln build --explain` (per-task reasons as it goes) and

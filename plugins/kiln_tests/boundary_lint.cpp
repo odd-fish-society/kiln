@@ -1,10 +1,10 @@
-// Boundary lint (spec §14). Nothing under kiln/plugins
-// may reference the consuming engine — no quoted #include
-// escaping kiln/ + third_party/ + system paths, and no engine-identifying
-// strings. This replaces the physical enforcement a separate repository
+// Boundary lint (spec §14). Nothing Kiln ships (its plugins, docs, types and
+// README) may reference a consuming project: no quoted #include escaping
+// kiln/ + third_party/ + system paths, and no project-identifying strings. This replaces the physical enforcement a separate repository
 // would have provided; grep-level detection is deliberate.
 #include "hamr/test.h"
 
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -18,26 +18,41 @@ namespace {
 
 fs::path repo_root() { return fs::path(KILN_SOURCE_DIR); }
 
-// Engine-identifying denylist (spec §14): the engine name plus the engine's
-// configured plugin-root paths. A consuming-workspace layout change (e.g.
-// moving plugins between roots) updates the denylist in the SAME commit.
+// Project-identifying denylist (spec §14), matched case-insensitively: the
+// first consumer's name, its plugin-root paths, and the names of its tools,
+// targets, rules and commands that once lived in Kiln. A consuming-workspace
+// layout change updates the denylist in the SAME commit.
 const std::vector<std::string>& deny_strings() {
     static const std::vector<std::string> v = {
         "TinyEngine", "TinyEditor", "tiny-engine", "tiny_engine",
         // The engine workspace's configured plugin roots (M1 layout).
         "third_party/plugins", "engine/plugins", "editor/plugins", "game/plugins",
+        // Its tools and targets.
+        "tinycook", "tinyreflect", "tinydoc", "tinyscriptcheck", "tinyaudit", "tinyserver",
+        "tinyeditor", "tinytest",
+        // Its asset container and the rules, fields and commands that knew it.
+        "tinyasset", "ctasset", "TASSET1", "TinyAssetType", "cook_docs", "check_scripts",
+        "reflect_tool", "reflect_gen", "prune_dead_cooks", "pack_types", "shipping-audit",
+        "test-scenes", "lint-content", "mint-content", "game_content", "golden_lighting",
     };
     return v;
 }
 
+std::string lower(std::string s) {
+    for (char& c : s)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
 std::vector<fs::path> scan_roots() {
-    return {repo_root() / "plugins"};
+    return {repo_root() / "plugins", repo_root() / "docs", repo_root() / "types",
+            repo_root() / "README.md", repo_root() / "kiln.workspace.cluau"};
 }
 
 bool scannable(const fs::path& p) {
     auto ext = p.extension().generic_string();
     return ext == ".cpp" || ext == ".h" || ext == ".md" || ext == ".sh" ||
-           ext == ".luau" || ext == ".c";
+           ext == ".luau" || ext == ".cluau" || ext == ".c";
 }
 
 // Returns a violation description for `file`, or nullopt when clean.
@@ -51,9 +66,10 @@ std::optional<std::string> check_file(const fs::path& file) {
     size_t lineno = 0;
     while (std::getline(in, line)) {
         ++lineno;
-        // Engine-identifying strings.
+        // Project-identifying strings.
+        const std::string low = lower(line);
         for (auto& deny : deny_strings()) {
-            if (line.find(deny) != std::string::npos) {
+            if (low.find(lower(deny)) != std::string::npos) {
                 return "engine-identifying string '" + deny + "' in " +
                        file.generic_string() + ":" + std::to_string(lineno);
             }
@@ -91,10 +107,17 @@ std::optional<std::string> check_file(const fs::path& file) {
 
 } // namespace
 
-TEST_CASE("boundary lint: no engine references under plugins") {
+TEST_CASE("boundary lint: no consuming-project references in what Kiln ships") {
     size_t scanned = 0;
     for (auto& root : scan_roots()) {
         std::error_code ec;
+        if (fs::is_regular_file(root, ec)) {
+            auto violation = check_file(root);
+            INFO(violation.value_or(""));
+            REQUIRE_FALSE(violation.has_value());
+            ++scanned;
+            continue;
+        }
         fs::recursive_directory_iterator it(root, ec), end;
         for (; it != end; it.increment(ec)) {
             if (ec) {
@@ -112,6 +135,10 @@ TEST_CASE("boundary lint: no engine references under plugins") {
                 // plugin manifest beside it is still scanned.
                 std::string rel = it->path().lexically_relative(repo_root()).generic_string();
                 if (rel.rfind("plugins/cluau/cluau/", 0) == 0)
+                    continue;
+                // Kiln's decision log is its history, written while it lived
+                // in its first consumer's tree; it stays as written.
+                if (rel == "docs/decisions.md")
                     continue;
                 auto violation = check_file(it->path());
                 std::string vmsg = violation.value_or("");

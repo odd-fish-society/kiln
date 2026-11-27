@@ -16,6 +16,13 @@
 
 namespace kiln::luau {
 
+const std::set<std::string>& builtin_verbs() {
+    static const std::set<std::string> v = {"build", "plugins", "query", "why-dirty", "daemon",
+                                            "setup-clion", "test", "smoke", "check", "clean",
+                                            "run", "help"};
+    return v;
+}
+
 namespace {
 
 // A.cluau manifest (or required helper) is translated to Luau in manifest
@@ -72,6 +79,7 @@ struct EvalState {
     // Rule libraries: loaded once, on the first cook that needs one.
     bool rules_loaded = false;
     std::string pending_rule;                    // between `rule "x"` and its spec
+    std::map<std::string, std::string> command_sites; // command name -> call site
     std::map<std::string, std::string> rule_sites; // name -> "file:line"
     // Set when lowering an aggregate rule's cook at target lowering.
     const AggregateView* aggregate = nullptr;
@@ -780,7 +788,7 @@ int spec_workspace(lua_State* L) {
     validate_fields(L, 2, st,
                     {"name", "pools", "jobs", "tools", "strict_globs", "cpp_std",
                      "c_std", "env_allow", "default_config", "system_libs",
-                     "plugin_roots", "rules", "link_record"},
+                     "plugin_roots", "rules", "link_record", "test_target", "smoke"},
                     {});
     if (!st->decls.workspace)
         luaL_error(L, "internal: workspace spec without declaration");
@@ -805,6 +813,16 @@ int spec_workspace(lua_State* L) {
     w.system_libs = get_strvec_field(L, 2, "system_libs");
     w.rules = get_strvec_field(L, 2, "rules");
     w.link_record = get_strvec_field(L, 2, "link_record");
+    w.test_target = get_string_field(L, 2, "test_target", false, present);
+    lua_getfield(L, 2, "smoke");
+    if (!lua_isnil(L, -1)) {
+        if (!lua_istable(L, -1))
+            luaL_typeerrorL(L, -1, "smoke");
+        validate_fields(L, -1, st, {"suite", "hamr"}, {});
+        w.smoke_suite = get_string_field(L, -1, "suite", false, present);
+        w.smoke_hamr = get_string_field(L, -1, "hamr", false, present);
+    }
+    lua_pop(L, 1);
 
     lua_getfield(L, 2, "pools");
     if (lua_istable(L, -1)) {
@@ -851,6 +869,58 @@ int spec_workspace(lua_State* L) {
         }
     }
     lua_pop(L, 1);
+    return 0;
+}
+
+// ---- workspace commands -------------------------------------------------------
+
+bool valid_command_name(const std::string& n) {
+    if (n.empty() || !(n[0] >= 'a' && n[0] <= 'z'))
+        return false;
+    for (char c : n)
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'))
+            return false;
+    return true;
+}
+
+int decl_command(lua_State* L) {
+    EvalState* st = state_from(L);
+    const char* name = luaL_checkstring(L, 1);
+    if (current_kind(st) != FileKind::Workspace)
+        luaL_error(L, "%s: `command` is only allowed in kiln.workspace.luau", call_site(L, st).c_str());
+    if (!valid_command_name(name))
+        luaL_error(L, "%s: command name '%s' must be lowercase letters, digits and '-', starting with a letter",
+                   call_site(L, st).c_str(), name);
+    if (builtin_verbs().count(name))
+        luaL_error(L, "%s: command '%s' would shadow the built-in `kiln %s`", call_site(L, st).c_str(), name, name);
+    if (auto it = st->command_sites.find(name); it != st->command_sites.end())
+        luaL_error(L, "%s: command '%s' declared twice (first at %s)", call_site(L, st).c_str(), name,
+                   it->second.c_str());
+    st->command_sites[name] = call_site(L, st);
+    CommandDecl c;
+    c.name = name;
+    c.file = st->command_sites[name];
+    st->decls.commands.push_back(std::move(c));
+    lua_newuserdatatagged(L, 1, 1);
+    lua_getfield(L, LUA_REGISTRYINDEX, "kiln_command_mt");
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+int spec_command(lua_State* L) {
+    EvalState* st = state_from(L);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    validate_fields(L, 2, st, {"help", "build", "run", "config"}, {});
+    if (st->decls.commands.empty())
+        luaL_error(L, "internal: command spec without declaration");
+    auto& c = st->decls.commands.back();
+    bool present = false;
+    c.help = get_string_field(L, 2, "help", false, present);
+    c.build = get_strvec_field(L, 2, "build");
+    c.run = get_strvec_field(L, 2, "run");
+    c.config = get_string_field(L, 2, "config", false, present);
+    if (c.run.empty())
+        luaL_error(L, "%s: command '%s' needs a non-empty `run`", c.file.c_str(), c.name.c_str());
     return 0;
 }
 
@@ -1029,7 +1099,7 @@ ActionDecl read_action(lua_State* L, int idx, const CookDecl& c) {
                    c.rule.c_str());
     validate_fields(L, idx, state_from(L),
                     {"primary", "kind", "tool", "tool_path", "args", "env", "inputs", "outputs", "depfile",
-                     "dyndep", "scan", "asset", "optional_inputs", "provides", "asset_id", "asset_tags",
+                     "dyndep", "scan", "asset", "optional_inputs", "provides", "asset_id", "asset_tags", "asset_type",
                      "stdout", "scan_dirs", "module_sources"},
                     {});
     ActionDecl a;
@@ -1051,6 +1121,14 @@ ActionDecl read_action(lua_State* L, int idx, const CookDecl& c) {
     a.provides = get_flat_map_field(L, idx, "provides");
     a.asset_id = action_string(L, idx, "asset_id", c);
     a.asset_tags = action_list(L, idx, "asset_tags", c);
+    lua_getfield(L, idx, "asset_type");
+    if (!lua_isnil(L, -1)) {
+        const double n = lua_isnumber(L, -1) ? lua_tonumber(L, -1) : -1;
+        if (n < 0 || n > 4294967295.0 || n != static_cast<double>(static_cast<int64_t>(n)))
+            luaL_error(L, "%s: action 'asset_type' must be an integer in [0, 2^32)", c.file.c_str());
+        a.asset_type = static_cast<int64_t>(n);
+    }
+    lua_pop(L, 1);
     a.stdout_path = action_string(L, idx, "stdout", c);
     if (!a.stdout_path.empty())
         a.stdout_path = util::norm(a.stdout_path);
@@ -1115,8 +1193,8 @@ ActionDecl read_action(lua_State* L, int idx, const CookDecl& c) {
             luaL_error(L, "%s: asset '%s' is not one of the action's outputs or inputs", where.c_str(),
                        a.asset.c_str());
     }
-    if ((!a.asset_id.empty() || !a.asset_tags.empty()) && a.asset.empty())
-        luaL_error(L, "%s: asset_id and asset_tags need an 'asset'", where.c_str());
+    if ((!a.asset_id.empty() || !a.asset_tags.empty() || a.asset_type >= 0) && a.asset.empty())
+        luaL_error(L, "%s: asset_id, asset_tags and asset_type need an 'asset'", where.c_str());
     if (!a.asset_id.empty()) {
         bool hex = a.asset_id.size() == 32 || a.asset_id.size() == 64;
         for (char ch : a.asset_id)
@@ -1566,6 +1644,11 @@ void install_api(lua_State* L, EvalState* st) {
     lua_setfield(L, LUA_REGISTRYINDEX, "kiln_workspace_mt");
 
     lua_createtable(L, 0, 1);
+    lua_pushcfunction(L, spec_command, "spec");
+    lua_setfield(L, -2, "__call");
+    lua_setfield(L, LUA_REGISTRYINDEX, "kiln_command_mt");
+
+    lua_createtable(L, 0, 1);
     lua_pushcfunction(L, spec_rule, "spec");
     lua_setfield(L, -2, "__call");
     lua_setfield(L, LUA_REGISTRYINDEX, "kiln_rule_mt");
@@ -1582,6 +1665,7 @@ void install_api(lua_State* L, EvalState* st) {
     set_field(L, "c_library", decl_c_library);
     set_field(L, "target", decl_target);
     set_field(L, "workspace", decl_workspace);
+    set_field(L, "command", decl_command);
     set_field(L, "glob", glob_impl);
     set_field(L, "require", require_impl);
     set_field(L, "rule", decl_rule);

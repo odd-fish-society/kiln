@@ -33,8 +33,23 @@ int run_process(const fs::path& bin) {
 
 } // namespace
 
-Result<int> cmd_test(const fs::path& root, const std::string& target, int jobs,
+Result<int> cmd_test(const fs::path& root, const std::string& target_in, int jobs,
                      const std::string& platform, const std::string& config) {
+    std::string target = target_in;
+    if (target.empty()) {
+        auto found = root.empty() ? find_workspace_root(fs::current_path())
+                                  : Result<fs::path>::success(root);
+        auto ws = found.ok() ? load_workspace(*found) : Result<Workspace>::fail(found.error);
+        if (!ws.ok()) {
+            std::fprintf(stderr, "kiln: error: %s\n", ws.error.c_str());
+            return Result<int>::success(2);
+        }
+        target = ws->config.test_target;
+        if (target.empty()) {
+            std::fprintf(stderr, "kiln: error: `kiln test` needs a target (the workspace declares no test_target)\n");
+            return Result<int>::success(2);
+        }
+    }
     BuildOptions opts;
     opts.workspace_root = root;
     opts.target_specs = { target };
@@ -51,7 +66,7 @@ Result<int> cmd_test(const fs::path& root, const std::string& target, int jobs,
         std::fprintf(stderr, "kiln: error: %s\n", hashes.error.c_str());
         return Result<int>::success(2);
     }
-    // Lines look like "tinytest:linux-dev <hash hex>".
+    // Lines look like "<target>:linux-dev <hash hex>".
     std::string cfg;
     size_t pos = 0;
     while (pos < hashes->size()) {

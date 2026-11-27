@@ -54,6 +54,8 @@ json actions_json(const std::vector<ActionDecl>& actions) {
             j[i]["asset_id"] = a.asset_id;
         if (!a.asset_tags.empty())
             j[i]["asset_tags"] = strvec(a.asset_tags);
+        if (a.asset_type >= 0)
+            j[i]["asset_type"] = a.asset_type;
         if (!a.stdout_path.empty())
             j[i]["stdout"] = a.stdout_path;
         if (!a.scan_dirs.empty())
@@ -89,6 +91,7 @@ std::vector<ActionDecl> actions_from_json(const json& j) {
             a.provides[it.key()] = it.value().get<std::string>();
         a.asset_id = v.value("asset_id", "");
         a.asset_tags = to_strvec(v.value("asset_tags", json::array()));
+        a.asset_type = v.value("asset_type", int64_t(-1));
         a.stdout_path = v.value("stdout", "");
         a.scan_dirs = to_strvec(v.value("scan_dirs", json::array()));
         a.module_sources = to_strvec(v.value("module_sources", json::array()));
@@ -223,6 +226,9 @@ std::string decl_set_to_json(const DeclSet& decls) {
                           {"tools", tools},
                           {"rules", strvec(w.rules)},
                           {"link_record", strvec(w.link_record)},
+                          {"test_target", w.test_target},
+                          {"smoke_suite", w.smoke_suite},
+                          {"smoke_hamr", w.smoke_hamr},
                           {"strict_globs", w.strict_globs},
                           {"cpp_std", w.cpp_std},
                           {"c_std", w.c_std},
@@ -231,6 +237,18 @@ std::string decl_set_to_json(const DeclSet& decls) {
                           {"system_libs", strvec(w.system_libs)},
                           {"plugin_roots_declared", w.plugin_roots_declared},
                           {"plugin_roots", roots}};
+    }
+    if (!decls.commands.empty()) {
+        json cmds = json::array();
+        for (auto& c : decls.commands)
+            cmds.push_back({{"name", c.name},
+                            {"help", c.help},
+                            {"build", strvec(c.build)},
+                            {"run", strvec(c.run)},
+                            {"config", c.config},
+                            {"file", c.file},
+                            {"line", c.line}});
+        j["commands"] = cmds;
     }
     j["required_files"] = strvec(decls.required_files);
     auto globs = json::array();
@@ -361,6 +379,9 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
                 w.tools[tit.key()] = tit.value().get<std::string>();
             w.rules = to_strvec(v.value("rules", json::array()));
             w.link_record = to_strvec(v.value("link_record", json::array()));
+            w.test_target = v.value("test_target", "");
+            w.smoke_suite = v.value("smoke_suite", "");
+            w.smoke_hamr = v.value("smoke_hamr", "");
             w.strict_globs = v.value("strict_globs", false);
             w.cpp_std = v.value("cpp_std", "c++20");
             w.c_std = v.value("c_std", "c11");
@@ -375,6 +396,17 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
                 w.plugin_roots.push_back(std::move(pr));
             }
             out.workspace = std::move(w);
+        }
+        for (auto& v : j.value("commands", json::array())) {
+            CommandDecl c;
+            c.name = v.value("name", "");
+            c.help = v.value("help", "");
+            c.build = to_strvec(v.value("build", json::array()));
+            c.run = to_strvec(v.value("run", json::array()));
+            c.config = v.value("config", "");
+            c.file = v.value("file", "");
+            c.line = v.value("line", 0);
+            out.commands.push_back(std::move(c));
         }
         out.required_files = to_strvec(j.value("required_files", json::array()));
         for (auto& v : j.value("globs", json::array())) {

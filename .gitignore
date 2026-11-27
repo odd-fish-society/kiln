@@ -8,3 +8,4 @@ compile_commands.json
 *.tmp
 build/external-build/
 build/tests/
+.hamr/

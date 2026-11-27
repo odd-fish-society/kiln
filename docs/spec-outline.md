@@ -90,10 +90,10 @@ kiln/
 <workspace>/
   kiln.workspace.luau
   build/
-  third_party/plugins/<name>/plugin.build.luau
-  engine/plugins/<name>/plugin.build.luau
-  editor/plugins/<name>/plugin.build.luau
-  game/plugins/<name>/plugin.build.luau
+  external/<name>/plugin.build.luau
+  engine/<name>/plugin.build.luau
+  tools/<name>/plugin.build.luau
+  game/<name>/plugin.build.luau
 ```
 
 - **Residency principle:** everything the graph BUILDS lives inside a plugin
@@ -110,10 +110,10 @@ kiln/
 ```lua
 workspace {
     plugin_roots = {
-        { path = "third_party/plugins", layer = "third_party" },
-        { path = "engine/plugins",      layer = "engine" },
-        { path = "editor/plugins",      layer = "editor" },
-        { path = "game/plugins",        layer = "game" },
+        { path = "external", layer = "external" },
+        { path = "engine",   layer = "engine" },
+        { path = "tools",    layer = "tools" },
+        { path = "game",     layer = "game" },
     },
 }
 ```
@@ -125,7 +125,7 @@ workspace {
     is the single-root rule applied at that path: `<path>/*/plugin.build.luau`, one
     directory level, no recursion.
   - Roots MUST NOT overlap: no root path may equal or be a path-prefix of another
-    (`engine/plugins` + `engine/plugins/extra` ⇒ config error, exit 2). A missing or
+    (`engine` + `engine/extra` ⇒ config error, exit 2). A missing or
     empty root directory is LEGAL (zero plugins): a root may exist in config before
     its first plugin does.
   - `layer` is an identifier string. Either EVERY root declares a layer or NONE does;
@@ -490,6 +490,13 @@ target(name: string)(spec: {           -- only legal in build/*.target.luau
   link: {string}?,                     -- root modules to link into the binary
 })
 
+command(name: string)(spec: {          -- only legal in kiln.workspace.luau
+  help: string?,                       -- its line in `kiln --help`
+  build: {string}?,                    -- targets built first, in the command's config
+  run: {string}*,                      -- argv; tokens below; the user's args appended
+  config: string?,                     -- default: the workspace's default_config
+})
+
 glob(pattern: string) -> FileSet       -- see 6.4 (not in rule libraries)
 path.join(a, b), path.parent(p), path.basename(p),
 path.norm(p), path.extension(p), path.replace_extension(p, ext),
@@ -498,8 +505,21 @@ rule(name: string)(spec: { ... })      -- only in a rule library, spec §6.8
 config: frozen table {platform, config, features}   -- read-only view for data filters
 ```
 
-Calling `plugin`/`module`/`cook` outside a plugin manifest, or `target` outside a target
-file ⇒ error with file:line. Duplicate names within a scope ⇒ error listing both sites.
+Calling `plugin`/`module`/`cook` outside a plugin manifest, `target` outside a target
+file, or `command` outside the workspace file ⇒ error with file:line.
+
+**Workspace commands.** `kiln <name> [args...]` (or `kiln run [--config C] [-j N]
+[--workspace P] <name> [args...]`) runs the workspace's command `name`: it builds
+`build` (a failed build exits 1 and runs nothing), then replaces Kiln's process with
+`run` plus the user's arguments, at the workspace root, so the program's output and
+exit code are the command's. `run`'s tokens: `{workspace}` (the absolute root),
+`{platform}` (the host's), `{config}` (the config dir, `linux-dev`), `{bin:<target>}`
+(that target's binary in it; an unknown target is an error) and `{kiln}` (Kiln's own
+binary). A name must match `[a-z][a-z0-9-]*` and not be a built-in verb (§13). `kiln
+--help` and `kiln run` with no name list the commands. The workspace's `test_target`
+is `kiln test`'s default target, and `smoke = { suite?, hamr? }` names `kiln smoke`'s
+hamr suite (default `hamr.cluau`) and a script whose last stdout line is the hamr
+binary (default: `hamr` on PATH). Duplicate names within a scope ⇒ error listing both sites.
 **Unknown spec fields are ERRORS**, with file:line and a did-you-mean suggestion via
 edit distance against the known field set (`unknown field 'public_deqs': did you mean
 'public_deps'?`). Silent ignoring of unknown fields is forbidden: a typo'd dependency
@@ -615,7 +635,7 @@ rule(name: string)(spec: {
 - **Actions** (validated; an error names the cook, the rule and the field):
   `{primary?, kind? = "exec" | "copy", tool? | tool_path?, args?, env?, inputs?,
   optional_inputs?, outputs*, stdout?, depfile?, dyndep?, scan?, scan_dirs?, asset?,
-  asset_id?, asset_tags?, provides?, module_sources?}`. `primary` defaults to `inputs[1]` and is
+  asset_id?, asset_tags?, asset_type?, provides?, module_sources?}`. `primary` defaults to `inputs[1]` and is
   the task's identity, unique per rule; `inputs` defaults to `{primary}`; an exec action
   names exactly one of `tool` (a name: the workspace `tools` table, else PATH, resolved at
   lowering - not found ⇒ error naming the tool) and `tool_path` (a build output or an
@@ -623,7 +643,7 @@ rule(name: string)(spec: {
   under `.kiln/out/`. `scan = "quoted_include"` reports the primary's `#include "..."`
   closure (spec §5b), searching the includer's directory and then each of `scan_dirs`;
   `depfile` is Make syntax (spec §5a); `dyndep` is JSON `{"inputs": [...], "identity":
-  "<hex>"?, "tags": [...]?}` (paths inside the workspace). `stdout` names an output the
+  "<hex>"?, "tags": [...]?, "type": <u32>?}` (paths inside the workspace). `stdout` names an output the
   process's standard output is written to. The token `{workspace}` in an arg becomes the
   absolute workspace root when the action runs (the params keep the token, so digests stay
   machine-independent). `asset` names
@@ -631,7 +651,8 @@ rule(name: string)(spec: {
   verbatim). Its id is `asset_id` when given (32 or 64 lowercase hex), else the dyndep's
   `identity` (read by the plugin's asset record at run time), else
   BLAKE3(plugin + "/" + plugin-relative primary) (spec §9); `asset_tags` tags it, together
-  with the dyndep's `tags` (§9). The sandbox's `hash.blake3(s)` (64 lowercase hex) lets a
+  with the dyndep's `tags` (§9); its number in the pack table is `asset_type`, else the
+  dyndep's `type`, else 0 (Kiln reads no asset's bytes). The sandbox's `hash.blake3(s)` (64 lowercase hex) lets a
   rule tell the tool the id it will be packed under.
 - **Optional inputs:** `optional_inputs` lists files that may be absent (never under
   `.kiln/out/`). Each one's content, or a fixed absence marker, enters the digest after
@@ -858,7 +879,7 @@ Violation ⇒ error, exit 2, this exact shape:
 
 ```
 plugin 'renderer' (layer engine) depends on 'gameplay' (layer game):
-dependencies must not point upward (engine/plugins/renderer/plugin.build.luau:4)
+dependencies must not point upward (engine/renderer/plugin.build.luau:4)
 ```
 
 The check constrains DEPENDENCIES only. Target composition is unconstrained: a target
@@ -1015,7 +1036,7 @@ directory moves between roots (spec §0). Deliberate ID changes are audited by d
 (format: header, id-sorted table, blobs: specified in `docs/kpak-format.md`) +
 `<target>.kpak.json` index. An asset's tags (`asset_tags`, §6.8) are in its asset record
 and its index entry; a target's `pack = { tags = { ... } }` keeps only the assets carrying
-one of them (the index's `omitted_by_tags` counts the rest).
+one of them (the index's `tags` lists them and `omitted_by_tags` counts the rest).
 
 **Acceptance:** cross-plugin texture reference; edit PNG ⇒ one recook + one repack;
 tool binary swap ⇒ recook of that rule's tasks only.
@@ -1088,6 +1109,11 @@ kiln daemon [build args]
 kiln setup-clion [--config=]
 kiln clean [--traces]                     # deletes .kiln/out (+ traces with flag)
 kiln clean --dead                         # deletes dead cooks and unrecorded variant folders
+kiln test [<target>] [-j N] [--platform=] [--config=]   # build + run; default: workspace test_target
+kiln smoke [--nightly] [-j N] [-- <hamr run args>]       # the workspace's hamr suite
+kiln check [--defs=]                      # type-check the manifests
+kiln run [--config=C] [-j N] [<name> [args...]]          # a workspace command (§6.2); no name lists them
+kiln <name> [args...]                     # the same, for a name that is no built-in verb
 Exit codes: 0 ok, 1 task failures, 2 usage/config errors, 3 internal error.
 ```
 

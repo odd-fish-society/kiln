@@ -67,6 +67,7 @@ Result<Workspace> load_workspace(const fs::path& root) {
     auto wres = luau::evaluate_file(ws.root / ws.workspace_file, wopts);
     if (!wres.ok())
         return Result<Workspace>::fail(ws.workspace_file + ": " + wres.error);
+    ws.commands = wres->decls.commands;
     if (wres->decls.workspace) {
         auto& w = *wres->decls.workspace;
         ws.config.name = w.name;
@@ -75,6 +76,10 @@ Result<Workspace> load_workspace(const fs::path& root) {
         ws.config.tools = w.tools;
         ws.config.rules = w.rules;
         ws.config.link_record = w.link_record;
+        ws.config.test_target = w.test_target;
+        if (!w.smoke_suite.empty())
+            ws.config.smoke_suite = w.smoke_suite;
+        ws.config.smoke_hamr = w.smoke_hamr;
         ws.config.strict_globs = w.strict_globs;
         ws.config.cpp_std = w.cpp_std;
         ws.config.c_std = w.c_std;

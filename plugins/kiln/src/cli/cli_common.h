@@ -29,26 +29,20 @@ Result<int> cmd_setup_clion(const fs::path& root, const std::string& config);
 Result<int> cmd_clean(const fs::path& root, bool traces, bool dead);
 Result<int> cmd_test(const fs::path& root, const std::string& target, int jobs,
                      const std::string& platform, const std::string& config);
-// The workspace's hamr suite (hamr.cluau) under hamr, the nightly tier or the
-// fast one; `extra` goes to `hamr run` as it is (--only, --changed, ...).
+// The workspace's hamr suite (`smoke.suite`) under hamr, the nightly tier or
+// the fast one; `extra` goes to `hamr run` as it is (--only, --changed, ...).
 // Replaces the process with hamr's on success.
 Result<int> cmd_smoke(const fs::path& root, int jobs, bool nightly, const std::vector<std::string>& extra);
-// `kiln docs`: build `target` (its cook_docs tasks), run `<tool> render`, and
-// with serve_port > 0 `<tool> serve` on localhost.
-Result<int> cmd_docs(const fs::path& root, const std::string& target, const std::string& tool, int serve_port, int jobs);
-Result<int> cmd_shipping_audit(const fs::path& root, const std::string& config,
-                              const std::vector<std::string>& targets);
+// A workspace command (`command "name" {...}`): builds its targets in its
+// config, then replaces the process with its program, `args` appended. An
+// empty name lists the commands.
+Result<int> cmd_run(const fs::path& root, const std::string& name,
+                    const std::vector<std::string>& args, const std::string& config, int jobs,
+                    bool fancy);
+// The workspace's commands as help text ("" outside a workspace or with none).
+std::string command_listing(const fs::path& root);
 // Type-check the manifests (types/build.d.luau, cluau's strict rules for
 // .cluau manifests); 1 when any error.
 Result<int> cmd_check(const fs::path& root, const std::string& defs);
-Result<int> cmd_lint_content(const fs::path& root, const std::vector<std::string>& plugins,
-                             bool strict, const std::string& config);
-Result<int> cmd_mint_content(const fs::path& root, const std::vector<std::string>& plugins,
-                             bool dry_run, const std::string& config);
-// The per-lighting-case test maps. The
-// `scene` argument names one case (empty = all); `--update` rewrites the
-// committed goldens instead of comparing.
-Result<int> cmd_test_scenes(const fs::path& root, const std::string& scene,
-                            bool update, int jobs);
 
 } // namespace kiln

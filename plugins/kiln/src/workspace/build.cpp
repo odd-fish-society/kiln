@@ -302,7 +302,7 @@ std::vector<TargetSpec> tool_targets(const Workspace& ws, const ResolutionResult
 // (platform, config, `feature.<k>`), so tasks of every target can share it.
 void register_expand_rule(const Workspace& ws, ExpansionMemo& memo) {
     rules::register_host_rule(
-        "expand_plugin", 7, // v7: platform/config/features in params; v6: cook rule_version/actions (cluau rules lowered at expansion); v5: c_library fbs_sources/fbs_tool; v4: c_library proto_sources/proto_tool; v3: declset JSON gained plugin reflect_tool; v2: module/c_library public_link_flags
+        "expand_plugin", 8, // v8: actions' asset_type; v7: platform/config/features in params; v6: cook rule_version/actions (cluau rules lowered at expansion); v5: c_library fbs_sources/fbs_tool; v4: c_library proto_sources/proto_tool; v3: declset JSON gained a plugin codegen-tool field; v2: module/c_library public_link_flags
         [&ws, &memo](TaskCtx& ctx) -> TaskResult {
             TaskResult r;
             const auto& params = ctx.decl->params;
@@ -378,9 +378,9 @@ Result<size_t> plan_target(const BuildOptions& opts, const Workspace& ws, const 
             return Result<size_t>::success(i);
 
     // Tool targets build first, in this invocation, before this target's
-    // lowering folds their binaries' tool_hash - so `kiln build tinyeditor`
-    // alone works and a pull that changed tinycook/tinyreflect/protoc
-    // sources never cooks with the stale binary (supersedes the "sequencing
+    // lowering folds their binaries' tool_hash - so `kiln build editor`
+    // alone works and a pull that changed a cook tool's sources never cooks
+    // with the stale binary (supersedes the "sequencing
     // is by target order" decision, kiln/docs/decisions.md "Cooking pass").
     stack.push_back(key);
     std::vector<size_t> tools;

@@ -14,11 +14,12 @@ offset 5     u32 table_count
 offset 9     u32 table_offset                      (bytes from file start; fixed at 45)
 offset 13    u8[32] build_hash                     (raw BLAKE3 of the table bytes)
 offset 45    table[table_count]:                   (36 bytes each)
-                 bytes[16]  asset id (the raw 128-bit AssetID: High u64 LE,
-                            Low u64 LE - the canonical AssetID::ToString form
-                            is hex(High)+hex(Low))
-                 u32        asset type (the cooked blob's TinyAssetType; 0 if
-                            the blob isn't a .tinyasset)
+                 bytes[16]  asset id (the raw 128-bit id: High u64 LE,
+                            Low u64 LE - its canonical hex form is
+                            hex(High)+hex(Low))
+                 u32        asset type (the number its cook reported: the
+                            action's `asset_type`, else its dyndep's "type";
+                            0 when neither says)
                  u64        blob offset (from file start)
                  u64        blob size
 then         blobs (raw, in id-sorted order)
@@ -34,24 +35,27 @@ edits the table alone would miss). Peers exchange `build_hash` at
 handshake; assets are referenced over the wire by their table
 position (`AssetIndex`, u32).
 
-## Index JSON (format 1, unchanged)
+## Index JSON (format 1)
 
 ```json
 {
   "format": 1,
   "assets": [
     {"id": "<64-hex>", "path": ".kiln/out/<config>/assets/<plugin>/<rel>",
-     "offset": 234, "size": 12345}
+     "offset": 234, "size": 12345, "tags": ["Mesh"]}
   ],
-  "omitted_types": {"3": 119}
+  "tags": ["Mesh", "Scene"],
+  "omitted_by_tags": 119
 }
 ```
 
-A `pack_tinyasset` entry's `id` is the committed file's own 32-hex identity
-and its `path` the committed workspace-relative path. `omitted_types` (type
-number -> count) is present only when the target declares `pack_types`.
-One id names one blob: a duplicate fails the pack. The blobs stream from
-their files into the pack (the writer never holds them in memory).
+An asset packed verbatim (an action whose `asset` is one of its inputs) is
+listed under its own committed path, with the id its action or dyndep states.
+An entry's `tags` are present when its asset has any. `tags` (the target's
+`pack.tags`, sorted) and `omitted_by_tags` (how many assets they left out) are
+present only when the target declares `pack.tags`. One id names one blob: a
+duplicate fails the pack. The blobs stream from their files into the pack (the
+writer never holds them in memory).
 
 `id` is stable across moves that keep the plugin-relative source path; a
 rename changes the id (a build-cooked asset's identity derives from its
@@ -61,7 +65,7 @@ id→path source (the table carries no paths).
 
 ## Readers
 
-Read the magic; "KPAK2" → parse the header + table (the runtime's
-`KpakArchive::IndexOf`/`IdAt`/`TypeAt`/`BuildHashHex`). Blob reads use the
+Read the magic; "KPAK2" → parse the header + table (id lookup, the type
+numbers, the build hash). Blob reads use the
 index JSON's offset/size (unchanged path). No decompression in v2. The
 runtime should load the index once at startup and read blobs lazily.

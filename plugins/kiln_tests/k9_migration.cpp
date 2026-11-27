@@ -558,7 +558,7 @@ TEST_CASE("variant_folder_of names the variant folder of each output shape") {
           ".kiln/graph/linux-dev/0123456789");
     // Not a variant: the binaries, a cooked asset, a non-hex or short name.
     CHECK(variant_folder_of(".kiln/out/linux-dev/bin/game").empty());
-    CHECK(variant_folder_of(".kiln/out/linux-dev/assets/app/0123456789/x.ctasset").empty());
+    CHECK(variant_folder_of(".kiln/out/linux-dev/assets/app/0123456789/x.bin").empty());
     CHECK(variant_folder_of(".kiln/out/linux-dev/obj/app/main/0123456789x/a.o").empty());
     CHECK(variant_folder_of(".kiln/out/linux-dev/obj/app/main/ABCDEF0123/a.o").empty());
     CHECK(variant_folder_of(".kiln/graph/linux-dev/graph.json").empty());

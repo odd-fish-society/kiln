@@ -20,6 +20,8 @@ namespace {
 // `t.sh cat <in>... <out>`: the inputs that exist, concatenated into <out>.
 // `t.sh dyn <in|-> <out|-> <dyndep> <id>`: copies <in> to <out> (unless "-")
 // and writes a dyndep reporting <id> as the asset's identity.
+// `t.sh typed <in> <out> <dyndep> <n>`: copies, and reports type <n> and the
+// tag "keep".
 const char* kTool = R"SH(#!/bin/sh
 mode="$1"; shift
 case "$mode" in
@@ -36,6 +38,9 @@ dyn)
   mkdir -p "$(dirname "$3")"
   if [ "$2" != "-" ]; then mkdir -p "$(dirname "$2")"; cat "$1" > "$2"; fi
   printf '{"inputs": [], "identity": "%s"}\n' "$4" > "$3" ;;
+typed)
+  mkdir -p "$(dirname "$2")" "$(dirname "$3")"; cat "$1" > "$2"
+  printf '{"inputs": [], "type": %s, "tags": ["keep"]}\n' "$4" > "$3" ;;
 esac
 )SH";
 
@@ -526,4 +531,70 @@ rule "gen_cpp" { version = 1, lower = lower }
     INFO(r3.out);
     CHECK(ran(r3.out, "value.gen.cpp/compile_cpp"));
     CHECK(util::run_process({(tmp.path / ".kiln/out/linux-dev/bin/game").generic_string()}, tmp.path, nullptr) == 1);
+}
+
+TEST_CASE("RF.10 the pack table's type numbers: the dyndep's, the action's, else 0; the index names its tags") {
+    TempDir tmp;
+    fs::path tool = install_tool(tmp.path);
+    write_tree(tmp.path, {
+        {"kiln.workspace.cluau", "workspace \"r2\" { strict_globs = true, rules = { \"build/rules/r2\" } }\n"},
+        {"build/game.target.cluau",
+         "target \"game\" { platforms = { \"linux\" }, default_config = \"dev\", link = { \"app/main\" }, "
+         "pack = { tags = { \"keep\", \"also\" } } }\n"},
+        {"build/rules/r2.cluau", with_tool(kHelpers + R"(
+local function lower(cook: Cook, ctx: RuleCtx): { Action } {
+	let actions: { Action } = {}
+	for (_, input in cook.inputs) {
+		let out = out_of(input, ctx, ".out")
+		let dyn = out_of(input, ctx, ".dyn.json")
+		if (string.find(input, "a.txt") != nil) {
+			table.insert(actions, { primary = input, tool_path = "@TOOL@", args = { "typed", input, out, dyn, "42" }, outputs = { out, dyn }, dyndep = dyn, asset = out })
+		} else if (string.find(input, "b.txt") != nil) {
+			table.insert(actions, { primary = input, tool_path = "@TOOL@", args = { "cat", input, out }, outputs = { out }, asset = out, asset_tags = { "keep" }, asset_type = 7 })
+		} else {
+			table.insert(actions, { primary = input, tool_path = "@TOOL@", args = { "cat", input, out }, outputs = { out }, asset = out, asset_tags = { "keep" } })
+		}
+	}
+	return actions
+}
+rule "typed" { version = 1, lower = lower }
+)", tool)},
+        {"plugins/app/plugin.build.cluau",
+         "plugin \"app\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\") }\n"
+         "cook \"texts\" { rule = \"typed\", inputs = glob(\"content/*.txt\") }\n"},
+        {"plugins/app/src/main.cpp", "int main() { return 0; }\n"},
+        {"plugins/app/content/a.txt", "a\n"},
+        {"plugins/app/content/b.txt", "b\n"},
+        {"plugins/app/content/c.txt", "c\n"},
+    });
+    auto r = run_kiln(tmp.path, build_args());
+    INFO(r.out);
+    REQUIRE(r.code == 0);
+    auto index = nlohmann::json::parse(read_file(tmp.path / ".kiln/out/linux-dev/pack/game.kpak.json"));
+    CHECK(index["tags"] == nlohmann::json::array({"also", "keep"}));
+    const std::string pack = read_file(tmp.path / ".kiln/out/linux-dev/pack/game.kpak");
+    auto u32 = [&](size_t at) {
+        uint32_t v = 0;
+        for (int i = 0; i < 4; ++i)
+            v |= (uint32_t)(uint8_t)pack[at + i] << (8 * i);
+        return v;
+    };
+    REQUIRE(pack.size() > 45);
+    REQUIRE(u32(5) == 3);
+    // Table entries are in the index's order: 16-byte id, then the type.
+    std::map<std::string, uint32_t> types;
+    for (size_t i = 0; i < 3; ++i)
+        types[fs::path(index["assets"][i]["path"].get<std::string>()).filename().string()] = u32(45 + i * 36 + 16);
+    CHECK(types["a.txt.out"] == 42);
+    CHECK(types["b.txt.out"] == 7);
+    CHECK(types["c.txt.out"] == 0);
+
+    // A type outside u32 is an error naming the dyndep.
+    auto lib = read_file(tmp.path / "build/rules/r2.cluau");
+    lib.replace(lib.find("\"42\""), 4, "\"-1\"");
+    write_tree(tmp.path, {{"build/rules/r2.cluau", lib}});
+    auto bad = run_kiln(tmp.path, build_args());
+    INFO(bad.out);
+    CHECK(bad.code != 0);
+    CHECK(bad.out.find("'type' must be an integer") != std::string::npos);
 }
