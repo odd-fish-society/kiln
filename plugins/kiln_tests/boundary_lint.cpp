@@ -1,7 +1,7 @@
 // Boundary lint (spec §14). Nothing Kiln ships (its plugins, docs, types and
 // README) may reference a consuming project: no quoted #include escaping
-// kiln/ + third_party/ + system paths, and no project-identifying strings. This replaces the physical enforcement a separate repository
-// would have provided; grep-level detection is deliberate.
+// Kiln's own plugins + system paths, and no project-identifying strings.
+// Grep-level detection is deliberate.
 #include "hamr/test.h"
 
 #include <cctype>
@@ -25,7 +25,7 @@ fs::path repo_root() { return fs::path(KILN_SOURCE_DIR); }
 const std::vector<std::string>& deny_strings() {
     static const std::vector<std::string> v = {
         "TinyEngine", "TinyEditor", "tiny-engine", "tiny_engine",
-        // The engine workspace's configured plugin roots (M1 layout).
+        // The engine workspace's plugin roots, as they once were.
         "third_party/plugins", "engine/plugins", "editor/plugins", "game/plugins",
         // Its tools and targets.
         "tinycook", "tinyreflect", "tinydoc", "tinyscriptcheck", "tinyaudit", "tinyserver",

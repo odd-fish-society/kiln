@@ -89,7 +89,7 @@ std::vector<std::string> build_compile_argv(const TaskDecl& decl,
     // PCH: -include the COPIED header (derived path, never hashed); the
     // adjacent .gch is picked up there (GCC and Clang both look for it).
     // -Werror=invalid-pch turns GCC's silent per-TU header recompilation
-    // into a hard error (M2); Clang already fails on a stale PCH.
+    // into a hard error; Clang already fails on a stale PCH.
     std::string pch = param(decl, "pch", "");
     if (!pch.empty()) {
         argv.push_back("-include");

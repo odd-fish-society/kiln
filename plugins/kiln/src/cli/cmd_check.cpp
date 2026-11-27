@@ -22,7 +22,7 @@ Result<int> cmd_check(const fs::path& root_in, const std::string& defs_in) {
         return Result<int>::fail(ws.error);
 
     // The definitions: --defs, else the workspace's own copy, else an
-    // in-tree Kiln's (types/build.d.luau - the skill's "IDE typing" file).
+    // Kiln submodule's (kiln/types/build.d.luau, the file editors type against).
     fs::path defs = defs_in;
     std::error_code ec;
     if (defs.empty())

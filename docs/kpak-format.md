@@ -1,12 +1,13 @@
-# Kiln: the kpak container format (v2)
+# The kpak container format (v2)
 
-`.kpak` is the per-target asset container written by the `pack_target` rule.
-Index sidecar: `<target>.kpak.json`.
+A `.kpak` file holds one target's assets. The `pack_target` rule writes it, along with
+an index file next to it, `<target>.kpak.json`.
 
-## Layout (v2)
+## Layout
 
-All integers little-endian. The magic is the version: "KPAK2" marks v2
-("KPAK1" was the v1 layout: 48-byte entries with 32-hex ids, no header).
+All integers are little-endian. The magic doubles as the version: "KPAK2" marks this
+layout. (The older "KPAK1" layout had no header and 48-byte entries with 32-character
+hex ids.)
 
 ```
 offset 0     magic: "KPAK2"                        (5 bytes)
@@ -25,15 +26,17 @@ offset 45    table[table_count]:                   (36 bytes each)
 then         blobs (raw, in id-sorted order)
 ```
 
-Entries are sorted by asset id ascending (High then Low). Blobs are stored
-uncompressed; the format is versioned by magic so a future v3 may add zstd
-framing without breaking readers. `build_hash = BLAKE3(serialized table
-bytes + each blob's 64-hex content hash from the provider manifest, in
-table order)`: two builds of identical content + cook settings produce the
-same hash; ANY asset change changes it (the content hashes catch same-size
-edits the table alone would miss). Peers exchange `build_hash` at
-handshake; assets are referenced over the wire by their table
-position (`AssetIndex`, u32).
+The table is sorted by asset id, ascending (High, then Low). Blobs are stored
+uncompressed. Because the magic carries the version, a later v3 can add compression
+without confusing older readers.
+
+The build hash is BLAKE3 over the serialized table bytes followed by each blob's
+64-character content hash from the provider manifest, in table order. Two builds of
+the same content with the same cook settings get the same hash, and any change to any
+asset changes it. The content hashes are what catch an edit that keeps a blob's size,
+which the table alone would miss. A game can compare build hashes at a network
+handshake, and then refer to assets over the wire by their position in the table (a
+u32).
 
 ## Index JSON (format 1)
 
@@ -49,23 +52,24 @@ position (`AssetIndex`, u32).
 }
 ```
 
-An asset packed verbatim (an action whose `asset` is one of its inputs) is
-listed under its own committed path, with the id its action or dyndep states.
-An entry's `tags` are present when its asset has any. `tags` (the target's
-`pack.tags`, sorted) and `omitted_by_tags` (how many assets they left out) are
-present only when the target declares `pack.tags`. One id names one blob: a
-duplicate fails the pack. The blobs stream from their files into the pack (the
-writer never holds them in memory).
+- An asset packed as it is (an action whose `asset` is one of its own inputs) is listed
+  under its committed source path, with the id its action or dyndep states.
+- An entry has `tags` only when its asset has any.
+- The top-level `tags` (the target's `pack.tags`, sorted) and `omitted_by_tags` (how
+  many assets those tags left out) appear only when the target declares `pack.tags`.
+- One id names one blob. Two assets with the same id fail the pack.
+- The writer streams each blob from its file into the pack and never holds it in memory.
 
-`id` is stable across moves that keep the plugin-relative source path; a
-rename changes the id (a build-cooked asset's identity derives from its
-plugin-relative source path, not its content).
-Offsets are the v2 layout's blob positions; the index stays the runtime's
-id→path source (the table carries no paths).
+An asset's id is stable as long as its plugin-relative source path stays the same.
+Renaming or moving the source changes the id, because a cooked asset's identity comes
+from that path, not from its content.
 
-## Readers
+The offsets are blob positions in the layout above. The table has no paths, so the
+index is where the runtime maps an id to a path.
 
-Read the magic; "KPAK2" → parse the header + table (id lookup, the type
-numbers, the build hash). Blob reads use the
-index JSON's offset/size (unchanged path). No decompression in v2. The
-runtime should load the index once at startup and read blobs lazily.
+## Reading a pack
+
+Read the magic. For "KPAK2", parse the header and the table, which give you id lookup,
+the type numbers and the build hash. Read each blob through the offset and size in the
+index JSON; there's nothing to decompress. A runtime should load the index once at
+startup and read blobs when it needs them.

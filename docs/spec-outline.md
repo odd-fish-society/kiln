@@ -1,10 +1,13 @@
-# Kiln: Implementation Specification (v1)
+# Kiln specification
 
-This document is Kiln's reference specification: the contracts, formats, hashing rules
-and invariants the implementation follows. Where the spec says MUST/MUST NOT, deviation is
-a bug. Where it says SHOULD, use judgment but document deviations in `docs/decisions.md`.
-Anything not specified here: choose the simplest option consistent with the invariants,
-and record the choice in `docs/decisions.md`.
+This is Kiln's reference specification: the contracts, formats, hashing rules and
+invariants the code follows. Where it says MUST or MUST NOT, any difference in behaviour
+is a bug. Where it says SHOULD, there's room for judgment, and a choice that departs from
+it is written down in `docs/decisions.md`. Where the spec says nothing, Kiln takes the
+simplest option that keeps the invariants, and that choice goes in `docs/decisions.md`
+too.
+
+The code refers to sections as "spec §n", so section numbers are stable.
 
 ---
 
@@ -18,8 +21,8 @@ and record the choice in `docs/decisions.md`.
   2. Action digest = `hash(input content hashes, params, tool/rule version, config tuple)`.
   3. Trace store maps identity → `(action_digest, output_hashes, dynamic_deps)`. SQLite.
   4. Rebuilder: verifying traces + recorded dynamic deps (depfile model) + early cutoff.
-  5. Scheduler: applicative topological worker pool. No suspending/coroutine scheduler
-     in v1.
+  5. Scheduler: applicative topological worker pool. There is no suspending or
+     coroutine scheduler.
   6. Two evaluation contexts, one language: manifest env (declaration-only) and rule env
      (host primitives). Determinism is API-enforced: no io/os, no wall clock, no
      `math.random`, inputs passed in.
@@ -30,48 +33,41 @@ and record the choice in `docs/decisions.md`.
   them, but public core APIs return `Result<T>` (see spec §2.6). No RTTI requirements.
 - **Build of Kiln itself:** CMake + Ninja, single `kiln` executable plus `kiln_core` static
   lib (so tests link the lib). Presets: `dev` (ASan+UBSan), `release`.
-- **Third-party (vendored, pinned in `third_party/`):** BLAKE3 (C impl), SQLite amalgamation,
-  Luau (git submodule, pinned tag), CLI11 (header-only), hamr's C++ test library (`hamr/test.h`, from the hamr submodule; tests), `nlohmann/json`
-  (serialization; used ONLY at edges: never in hash paths, see spec §2.3).
-- **Platforms:** Linux first (inotify, TIOCGWINSZ). Windows support is designed-for but
-  may stub the watcher/console specifics behind `#ifdef` with TODO markers. No macOS work.
-- **Repo topology:** Kiln lives IN-TREE as a `kiln/` subfolder of the engine repo: one
-  checkout, one commit stream; tool, manifests, and docs are version-locked by
-  construction. The folder is laid out exactly as a standalone repository would be (own
-  CMake, bootstrap, docs, its own `plugins/`). History-preserving
-  extraction to a standalone repo (`git filter-repo` / `subtree split`, then consumed as
-  a submodule or release binary) is the documented contingency, triggered only by:
-  open-sourcing Kiln, a second source-level consumer, or engine CI load exceeding what
-  path filters handle. Kiln MUST NOT reference the consuming engine: no engine header
-  includes and no engine-identifying paths or strings anywhere under `kiln/plugins`:
-  enforced by the boundary lint in spec §14; all
-  engine-specific content lives in the engine's workspace files. Luau is a submodule of
-  Kiln ⇒ document `git submodule update --init --recursive` in the README. Kiln's
-  documentation (spec §16) lives under `kiln/` so it is always at the same commit as the
-  tool it describes.
-- **Repo layout:**
+- **Third-party libraries** (each vendored in its own plugin under `plugins/`): BLAKE3
+  (the C implementation), the SQLite amalgamation, Luau, cluau and hamr (git submodules
+  at pinned commits), CLI11 (header-only), and `nlohmann/json`. hamr supplies the C++ test
+  library (`hamr/test.h`). JSON is used ONLY at the edges, never in a hash path (spec §2.3).
+- **Platforms:** Linux first (inotify, TIOCGWINSZ). The design allows for Windows, where
+  the file watcher and the console code may be stubbed behind `#ifdef`. There is no macOS
+  support.
+- **Repository:** Kiln is its own repository. A project uses it as a release binary or
+  pins it as a submodule. Kiln MUST NOT reference any project that consumes it: no
+  includes of a project's headers and no project-identifying paths or strings in
+  anything Kiln ships (its plugins, docs, types and README). The boundary lint in
+  spec §14 enforces this. Everything project-specific lives in the project's own
+  workspace files. Luau, cluau and hamr are nested submodules, so a clone needs
+  `--recursive` (the README says so). The documentation (spec §16) lives in the same
+  repository, at the same commit as the tool it describes.
+- **Repository layout:**
 
 ```
-kiln/
-  CMakeLists.txt
-  third_party/            blake3/ sqlite/ luau/ cli11/ hamr/ json/
-  src/core/               hash.{h,cpp} trace_store.{h,cpp} task.{h,cpp} graph.{h,cpp}
-                          scheduler.{h,cpp} executor.{h,cpp} config.{h,cpp} result.h
-  src/workspace/          workspace loading, plugin resolution, expansion orchestration,
-                          DeclSet lowering (the target-graph layer; src/core is runtime)
-  src/luau/               vm.{h,cpp} manifest_env.{h,cpp} require.{h,cpp} decl.{h,cpp}
-  src/rules/              builtin_cpp.{h,cpp} builtin_shader.{h,cpp} builtin_copy.{h,cpp}
-                          cook_texture.{h,cpp} ...
-  src/cli/                main.cpp cmd_build.cpp cmd_query.cpp cmd_plugins.cpp
-                          cmd_why_dirty.cpp cmd_daemon.cpp
-  src/console/            renderer.{h,cpp} ansi.{h,cpp}
-  types/build.d.luau      (Luau typedefs for the manifest/rule API)
-  tests/                  one file per area: k1_core_loop.cpp, k2_scheduler.cpp, ...
-  tests/fixtures/         miniature workspaces used by integration tests
-  docs/decisions.md
+CMakeLists.txt  bootstrap.sh  kiln.workspace.cluau  build/kiln.target.cluau
+plugins/kiln/src/core/        hashing, the trace store, tasks, the graph, the scheduler,
+                              the executor, configs (the runtime)
+plugins/kiln/src/workspace/   workspace loading, plugin resolution, expansion, lowering,
+                              the dead-output sweep (the target-graph layer)
+plugins/kiln/src/luau/        the VM, the manifest environment, declarations, glob, lints
+plugins/kiln/src/rules/       the built-in rules: C/C++, PCH, exec, copy, checks, ...
+plugins/kiln/src/cli/         main.cpp and one file per verb group
+plugins/kiln/src/console/     the progress renderer and ANSI helpers
+plugins/kiln/std/cook.cluau   the standard cook rules, built into the binary
+plugins/kiln_tests/           one file per area (k1_core_loop.cpp, ...) and fixtures/
+plugins/<library>/            blake3, sqlite, luau, cluau, hamr, cli11, json
+types/build.d.luau            the Luau typedefs for the manifest and rule API
+docs/                         this spec, decisions.md, kpak-format.md
 ```
 
-- **Workspace layout Kiln operates on** (the user's engine repo):
+- **Workspace layout Kiln operates on** (the project's repository):
 
 ```
 <workspace>/
@@ -84,7 +80,7 @@ kiln/
                               logs/, compile_commands/
 ```
 
-  Layered example (the shape a game engine workspace is expected to take):
+  Layered example (the shape a game project's workspace typically takes):
 
 ```
 <workspace>/
@@ -309,7 +305,7 @@ output_summary_hash(t) = CanonicalHasher over sorted (path, hash) pairs of t's o
 Downstream tasks embed `output_summary_hash` of each dep in their digest (spec §2.2), so
 `outputs_changed == false` automatically yields cache hits downstream: early cutoff
 falls out of the digest structure; there is no separate dirty-propagation code path.
-This is intentional: do NOT implement a boolean dirty-bit system.
+This is intentional: there is no boolean dirty bit, and there MUST NOT be one.
 
 ### 2.6 Errors
 
@@ -330,8 +326,7 @@ string and, where relevant, a file path + line.
 
 - Graph: `std::vector<TaskDecl>` + adjacency built from `dep_tasks`. Detect task-level
   cycles with iterative DFS; error lists the cycle as display strings.
-- Ready queue: compute in-degrees; workers pop from a mutex+condvar deque (no lock-free
-  cleverness in v1). On task completion, decrement dependents; enqueue at zero.
+- Ready queue: compute in-degrees; workers pop from a mutex+condvar deque (nothing lock-free). On task completion, decrement dependents; enqueue at zero.
 - **Pools:** `map<string, semaphore>` from workspace config (`pools = { link = 2 }` in
   `kiln.workspace.luau`). Default pool size = hardware_concurrency, overridable `-j N`.
 - **Keep-going (default ON):** on failure, mark transitive dependents
@@ -524,7 +519,7 @@ binary (default: `hamr` on PATH). Duplicate names within a scope ⇒ error listi
 edit distance against the known field set (`unknown field 'public_deqs': did you mean
 'public_deps'?`). Silent ignoring of unknown fields is forbidden: a typo'd dependency
 that vanishes silently is the worst failure mode a manifest can have. Fields that are
-recognized-but-inert in v1 (currently only `sealed`) warn once per file, not error.
+recognized but inert (currently only `sealed`) warn once per file, not error.
 Declarations append to a C++-side ordered vector; nothing executes.
 
 **Manifest restriction:** after evaluation, walk the Luau AST (Luau's analysis API) of
@@ -907,12 +902,11 @@ satisfied. Kiln eats exactly the dogfood it serves.
 `c_library(name){ sources: FileSet*, includes: {string}?, public_includes: {string}?,
 defines: {string}?, c_std: string?, cpp_std: string? }`: legal in any manifest; produces
 a static archive + the two provider records of spec §7.2 (`impl_artifact` = the `.a`).
-Depless in v1: no `deps` field; each library lists every include dir it needs explicitly
-(dep support may be added when it earns its keep). Header-only libraries are expressed
+It has no `deps` field: each library lists every include directory it needs explicitly. Header-only libraries are expressed
 as a `c_library` with empty `sources`: the archive task is skipped and the interface
 record still flows (empty `impl_artifact`). Compiles C and C++ TUs by extension.
-rule_version starts at 1. This rule is REQUIRED for sqlite/blake3/luau and later for the
-engine's vendored deps. Residency (spec §0): each vendored library lives in its own plugin
+rule_version starts at 1. Kiln builds its own sqlite, blake3 and luau with it, and a
+project builds its vendored libraries the same way. Residency (spec §0): each vendored library lives in its own plugin
 directory with the `c_library` decl beside its sources: not in a shared root-level tree
 reached by `../` globs.
 
@@ -924,8 +918,8 @@ the build. Each build in the chain is named for its purpose (log lines narrate t
 directories name the artifact):
 - **external-build:** kiln built by something that isn't kiln:
   `cmake --preset release && cmake --build` ⇒ `external-build/kiln`. The CMake build
-  is PERMANENT: it MUST NOT be deleted when self-hosting lands, and CI runs it from a
-  clean checkout on every push (escape-hatch job). A comment in the top-level
+  is PERMANENT: it MUST NOT be deleted in favour of the self-build, and CI runs it from
+  a clean checkout on every push. A comment in the top-level
   CMakeLists.txt says why.
 - **self-build:** kiln built by kiln: `external-build/kiln build kiln:linux-release` ⇒
   `self-build/kiln`. This is the binary that goes on PATH.
@@ -1062,7 +1056,7 @@ plugins/game/link:game@linux-dev  REBUILT because:
     because plugins/audio/include/mixer.h content changed (was 3f9a…, now 71bc…)
 ```
 
-- `kiln query`: v1 verbs only: `deps(expr)`, `rdeps(expr)`, `all()`, filter by prefix
+- `kiln query`: the verbs are `deps(expr)`, `rdeps(expr)`, `all()`, filter by prefix
   string. Operates on the serialized DeclSets + lowered graph; `--json` supported.
   `--config <platform-config>` picks the graph; without it, the config whose
   `graph.json` the last build wrote.
@@ -1096,7 +1090,7 @@ spec §8's resolution) then re-running the spec §11 generation; (3) LSP client 
 luau-lsp on `*.luau` build files; (4) why-dirty context action. NO project-model or
 indexing code: CLion's compilation-database support owns that.
 
-## 13. CLI contract (v1 complete list)
+## 13. CLI contract (the complete list)
 
 ```
 kiln build [<target>[:<config>]...] [-j N] [--platform=] [--config=] [--feature k=v]
@@ -1125,27 +1119,25 @@ Exit codes: 0 ok, 1 task failures, 2 usage/config errors, 3 internal error.
 - Every acceptance item in spec sections 2-10 is a named test. CI (GitHub Actions, Linux): dev preset
   (sanitizers) + release, both run full suite.
 - Golden-output tests compare normalized text (strip timings): helper provided.
-- Boundary lint: a test asserts nothing under `kiln/plugins`
-  references the consuming engine: no `#include` resolving outside `kiln/` +
-  `third_party/` + system paths, and no occurrences of engine-identifying strings (small
-  denylist maintained in the test: the engine name, its plugin ROOT PATHS as configured
-  in the consuming workspace: a workspace layout change updates the denylist in the
-  same commit). A grep-level
-  implementation is acceptable and preferred; the point is that boundary erosion fails
-  CI, not that detection is clever. This test replaces the physical enforcement a
-  separate repository would have provided.
+- Boundary lint: a test asserts that nothing Kiln ships (its plugins, docs, types and
+  README) references a consuming project: no `#include` resolving outside Kiln's own
+  plugins and system paths, and none of the project-identifying strings in a small
+  denylist kept in the test (a project's name, its plugin root paths, and the names of
+  its tools, rules and commands that once lived in Kiln). The match ignores case. A
+  grep-level check is deliberate: the point is that the boundary can't erode without CI
+  failing, not that the detection is clever.
 - Performance guardrail test: 1000-task no-op build < 300 ms (excluding process start).
 
-## 15. Non-goals for v1 (do not implement)
+## 15. Non-goals
 
-Remote/CAS cache; suspending scheduler; sandboxed execution enforcement (strace verify);
+Kiln deliberately does not do these: a remote or CAS cache; a suspending scheduler; sandboxed execution enforcement (strace verify);
 Windows watcher; distributed builds; a native rule ABI (rules loaded into Kiln as shared
 objects: rules are cluau, spec §6.8); critical-path scheduling; visibility
 (`sealed` parses but only warns); kpak encryption/patching.
 
 ## 16. Documentation
 
-Kiln's documentation lives under `kiln/`, at the same commit as the tool:
+Kiln's documentation lives in its repository, at the same commit as the tool:
 - `README.md`: what Kiln is, building it, and getting started.
 - `docs/spec-outline.md`: this specification.
 - `docs/decisions.md`: recorded choices and deviations from this specification.

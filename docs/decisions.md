@@ -1,14 +1,14 @@
-# Kiln: decisions & deviations
+# Kiln: decisions and deviations
 
-The normative spec is `docs/spec-outline.md` ("the spec"). Where
-the spec says SHOULD or leaves a choice open, the call is recorded here, with
-its reasons, the alternatives rejected and the consequences. Deviations from MUSTs are bugs:
-if one appears, fix it, don't log it here.
+The spec, `docs/spec-outline.md`, says how Kiln behaves. This file says
+why. Where the spec says SHOULD or leaves a choice open, the choice is recorded here
+with its reasons, the alternatives that were turned down, and what follows from it. A
+departure from a MUST is a bug: it gets fixed, not logged here.
 
-Entries marked ": canonized, spec §n" record choices the (amended) spec now
-owns; they remain here only as a record of what changed and why. The first
-sections follow the order Kiln was built in, one per area; the later ones each
-cover one piece of work.
+An entry marked "canonized, spec §n" records a choice the spec has since taken over. It
+stays here as the record of what changed and why. The first sections follow the order
+in which Kiln was built, one per area. The later ones each cover one piece of work and
+the choices it made.
 
 ## Tooling
 
@@ -21,8 +21,9 @@ cover one piece of work.
 - SQLite amalgamation `3.46.1`, CLI11 `2.4.2`, nlohmann/json `3.11.3`
   (edges only: never in hash paths, per spec §2.3), and for the tests
   hamr's `hamr/test.h` (a submodule, at the workspace's hamr pin).
-- Kiln lives in-tree as a `kiln/` subfolder laid out as a standalone
-  repository would be: canonized, spec §0.
+- Kiln started in-tree, as a `kiln/` folder of its first project laid out as a
+  standalone repository would be, and later moved to its own repository with its
+  history (see "Kiln in its own repository" below): canonized, spec §0.
 - `src/workspace/`: canonized, spec §0.
 
 ## Core loop
@@ -800,3 +801,16 @@ as above (SHOULD choices logged, MUST deviations fixed: none remain):
 - The boundary lint scans the docs, types and README too, case-insensitively,
   with the first consumer's tool, rule and command names; this log is
   exempt (it records history as it was written).
+
+## Kiln in its own repository
+
+- Kiln moved out of its first project into its own repository, with its history
+  extracted from the project's (`git filter-repo --subdirectory-filter`). The project
+  now pins it as a submodule. Kiln's nested Luau, cluau and hamr submodules are
+  recorded in Kiln's repository, so a project clones it with `--recursive`.
+- `kiln --version` prints the version from `core/version.h`, and a workspace can
+  require a minimum with `kiln_version = ">=X.Y[.Z]"`. The requirement is checked
+  before any other workspace field, so an older Kiln reading a newer workspace says
+  which version it needs instead of rejecting a field it doesn't know yet.
+- The boundary lint no longer needs to stand in for a repository boundary, but it
+  stays: it keeps project names out of what Kiln ships.

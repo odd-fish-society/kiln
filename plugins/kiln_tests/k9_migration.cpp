@@ -131,7 +131,7 @@ TEST_CASE("KILN-2 pch end-to-end: recompiles on header edit, not on output loss"
     INFO(r1.out);
     REQUIRE(r1.code == 0);
     CHECK(count_executed(r1.out) > 0);
-    // The gch must actually exist and the copied header too (M1).
+    // The gch must actually exist and the copied header too.
     const fs::path gch = variant_file(tmp.path, ".kiln/out/linux-dev/pch/app/main", "pch.h.gch");
     REQUIRE(!gch.empty());
     const fs::path pch_copy = gch.parent_path() / "pch.h";
@@ -157,7 +157,7 @@ TEST_CASE("KILN-2 pch end-to-end: recompiles on header edit, not on output loss"
     CHECK(count_executed(r4.out) == 0);
 
     // Delete the pch outputs (header copy + gch): the pch task repairs them,
-    // but the INPUT digest is unchanged ⇒ zero module compiles re-run (M1/M2).
+    // but the INPUT digest is unchanged ⇒ zero module compiles re-run.
     std::error_code ec;
     fs::remove(pch_copy, ec);
     fs::remove(gch, ec);
