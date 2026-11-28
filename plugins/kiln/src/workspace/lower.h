@@ -44,6 +44,9 @@ struct LowerCtx {
     std::map<std::string, std::map<std::string, std::string>> named_outputs;
     // Each cook rule lowered, and whether it prunes dead outputs.
     std::map<std::string, bool> prune_rules;
+    // Embed table name -> the module that declared it: the table's symbols
+    // are global, so one name may be used once per target.
+    std::map<std::string, std::string> embed_sites;
 
     struct PluginTasks {
         std::vector<TaskId> compiles;      // module compiles (all modules)

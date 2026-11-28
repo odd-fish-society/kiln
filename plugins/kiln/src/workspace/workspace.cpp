@@ -67,8 +67,13 @@ Result<Workspace> load_workspace(const fs::path& root) {
     if (!wres.ok())
         return Result<Workspace>::fail(ws.workspace_file + ": " + wres.error);
     ws.commands = wres->decls.commands;
-    for (auto& d : wres->decls.dependencies)
+    for (auto& d : wres->decls.dependencies) {
+        if (d.git.empty() || d.commit.empty())
+            return Result<Workspace>::fail(d.file + ": dependency '" + d.name +
+                                           "' needs its table: dependency \"" + d.name +
+                                           "\" { git = \"...\", commit = \"...\" }");
         ws.config.dependencies.push_back({d.name, d.git, d.commit, d.file});
+    }
     if (wres->decls.workspace) {
         auto& w = *wres->decls.workspace;
         ws.config.name = w.name;

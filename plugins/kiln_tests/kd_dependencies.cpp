@@ -103,9 +103,22 @@ TEST_CASE("KD.1 a dependency is fetched once, linked under .kiln and built throu
         if (it->path().extension() == ".d")
             CHECK(read_file(it->path()).find(".kiln/store") == std::string::npos);
 
-    // The tree is read-only.
+    // The tree's files are read-only, its folders aren't, so deleting .kiln
+    // the ordinary way works.
     auto perms = fs::status(ws / ".kiln/deps/lib/src/lib.c").permissions();
     CHECK((perms & fs::perms::owner_write) == fs::perms::none);
+    auto dir_perms = fs::status(ws / ".kiln/deps/lib/src").permissions();
+    CHECK((dir_perms & fs::perms::owner_write) != fs::perms::none);
+
+    {
+        TempDir copy;
+        std::error_code cec;
+        fs::copy(ws, copy.path / "ws", fs::copy_options::recursive | fs::copy_options::copy_symlinks, cec);
+        std::error_code rec;
+        fs::remove_all(copy.path / "ws/.kiln", rec);
+        CHECK(!rec);
+        CHECK(!fs::exists(copy.path / "ws/.kiln"));
+    }
 
     // A new commit is fetched and rebuilds what uses it.
     auto commit2 = commit_lib(tmp.path / "up", 42);
@@ -189,15 +202,27 @@ TEST_CASE("KD.4 a tree that lost its stamp is checked out again; mistakes are na
     write_tree(ws, app_workspace(git, commit));
     REQUIRE(run_kiln(ws, build()).code == 0);
 
+    // Its stamp gone, and a partial checkout left by a killed process beside
+    // it: the tree is checked out again and the leftover removed.
     std::error_code ec;
+    fs::path repo_dir;
     for (auto it = fs::recursive_directory_iterator(ws / ".kiln/store/src", ec);
          it != fs::recursive_directory_iterator(); it.increment(ec))
-        if (it->path().extension() == ".ok")
+        if (it->path().extension() == ".ok") {
+            repo_dir = it->path().parent_path();
             fs::remove(it->path(), ec);
+            break;
+        }
+    REQUIRE(!repo_dir.empty());
+    const fs::path stale = repo_dir / (".partial-" + commit + "-99999999");
+    write_tree(stale, {{"src/lib.c", "half"}});
+    write_tree(repo_dir, {{".partial-" + commit + "-99999999.index", "x"}});
     auto again = run_kiln(ws, build());
     REQUIRE(again.code == 0);
     CHECK(again.out.find("fetching dependency lib") != std::string::npos);
     CHECK(run_app(ws) == 5);
+    CHECK(!fs::exists(stale));
+    CHECK(!fs::exists(repo_dir / (".partial-" + commit + "-99999999.index")));
 
     // A commit the repository doesn't have.
     write_tree(ws, app_workspace(git, std::string(40, 'a')));
@@ -273,4 +298,92 @@ TEST_CASE("KD.6 kiln fetch links, kiln cache reports and prunes") {
     REQUIRE(p.code == 0);
     CHECK(p.out.find("unused, removed") != std::string::npos);
     CHECK(count_trees(ws / ".kiln/store") == 0);
+}
+
+TEST_CASE("KD.7 git is needed only to fetch, and its absence is explained") {
+    TempDir tmp;
+    auto commit = commit_lib(tmp.path / "up", 2);
+    auto git = (tmp.path / "up").string();
+    auto ws = tmp.path / "ws";
+    write_tree(ws, app_workspace(git, commit, ", tools = { git = \"/nonexistent/git\" }"));
+    auto r = run_kiln(ws, build());
+    CHECK(r.code == 2);
+    CHECK(r.out.find("needs git to fetch, and `/nonexistent/git` can't be run") != std::string::npos);
+
+    // Once the tree is in the store, no git is run at all.
+    write_tree(ws, app_workspace(git, commit));
+    REQUIRE(run_kiln(ws, build()).code == 0);
+    write_tree(ws, app_workspace(git, commit, ", tools = { git = \"/nonexistent/git\" }"));
+    auto offline = run_kiln(ws, build());
+    CHECK(offline.code == 0);
+    CHECK(run_app(ws) == 2);
+}
+
+TEST_CASE("KD.8 git runs on the store alone, wherever and however Kiln is started") {
+    TempDir tmp;
+    auto commit = commit_lib(tmp.path / "up", 4);
+    auto ws = tmp.path / "ws";
+    // A relative `git` is relative to the workspace, even from a subfolder.
+    write_tree(ws, app_workspace("../up", commit));
+    auto from_sub = run_kiln(ws / "plugins", {"build", "--progress=plain", "--workspace", ".."});
+    REQUIRE(from_sub.code == 0);
+    CHECK(run_app(ws) == 4);
+
+    // A GIT_DIR inherited from a hook doesn't redirect the store's git.
+    auto ws2 = tmp.path / "ws2";
+    write_tree(ws2, app_workspace((tmp.path / "up").string(), commit));
+    auto hooked = run_kiln(ws2, build(), {{"GIT_DIR", (tmp.path / "elsewhere").string()},
+                                          {"GIT_OBJECT_DIRECTORY", (tmp.path / "objects").string()}});
+    REQUIRE(hooked.code == 0);
+    CHECK(run_app(ws2) == 4);
+    CHECK(!fs::exists(tmp.path / "elsewhere"));
+    CHECK(!fs::exists(tmp.path / "objects"));
+
+    // The mirror keeps the commit by a ref and never collects garbage itself.
+    std::string refs, gc;
+    std::error_code ec;
+    fs::path mirror;
+    for (auto& e : fs::directory_iterator(ws2 / ".kiln/store/git", ec))
+        mirror = e.path();
+    REQUIRE(!mirror.empty());
+    sh(ws2, {"git", "--git-dir", mirror.string(), "show-ref"}, &refs);
+    CHECK(refs.find("refs/kiln/" + commit) != std::string::npos);
+    sh(ws2, {"git", "--git-dir", mirror.string(), "config", "gc.auto"}, &gc);
+    CHECK(kiln::util::trim(gc) == "0");
+}
+
+TEST_CASE("KD.9 the users records: overrides count, broken records are ignored") {
+    TempDir tmp;
+    auto commit = commit_lib(tmp.path / "up", 6);
+    auto ws = tmp.path / "ws";
+    write_tree(ws, app_workspace((tmp.path / "up").string(), commit));
+    REQUIRE(run_kiln(ws, build()).code == 0);
+
+    // Built with an override, the store's tree is still this workspace's.
+    auto mine = tmp.path / "mine";
+    write_tree(mine, {{"include/lib.h", "int lib_value(void);\n"}, {"src/lib.c", "int lib_value(void) { return 60; }\n"}});
+    auto args = build();
+    args.push_back("--dependency");
+    args.push_back("lib=" + mine.string());
+    REQUIRE(run_kiln(ws, args).code == 0);
+    auto p = run_kiln(ws, {"cache", "--prune", "--workspace", "."});
+    REQUIRE(p.code == 0);
+    CHECK(p.out.find("removed") == std::string::npos);
+
+    // Records that aren't the expected JSON don't break anyone's build.
+    write_tree(ws / ".kiln/store/users", {{"a.json", "[]"}, {"b.json", "{\"workspace\": 3}"},
+                                          {"c.json", "{\"workspace\": \".\", \"uses\": [1, {\"git\": 2}]}"},
+                                          {"d.json", "not json"}});
+    auto r = run_kiln(ws, build());
+    CHECK(r.code == 0);
+    CHECK(run_app(ws) == 6);
+    CHECK(run_kiln(ws, {"cache", "--workspace", "."}).code == 0);
+}
+
+TEST_CASE("KD.10 a dependency needs its table") {
+    TempDir tmp;
+    write_tree(tmp.path, {{"kiln.workspace.cluau", "workspace \"kd\" {}\ndependency \"lib\"\n"}});
+    auto r = run_kiln(tmp.path, build());
+    CHECK(r.code == 2);
+    CHECK(r.out.find("dependency 'lib' needs its table") != std::string::npos);
 }

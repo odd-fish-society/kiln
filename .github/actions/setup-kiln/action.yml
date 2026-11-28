@@ -21,7 +21,9 @@ inputs:
     required: false
     default: ''
   workspace:
-    description: The workspace folder (where kiln.workspace.cluau is).
+    description: >
+      The workspace folder (where kiln.workspace.cluau is). For a workspace nested inside another,
+      name the outermost one: its .kiln/store is the one Kiln uses and the one this action caches.
     required: false
     default: '.'
   cache-store:

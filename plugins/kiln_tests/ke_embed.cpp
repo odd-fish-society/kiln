@@ -123,3 +123,48 @@ TEST_CASE("KE.4 embed mistakes are named") {
     CHECK(outside.code == 2);
     CHECK(outside.out.find("is not under its base") != std::string::npos);
 }
+
+TEST_CASE("KE.5 one embed name per target, since its symbols are global") {
+    TempDir tmp;
+    write_tree(tmp.path, {
+        {"kiln.workspace.cluau", "workspace \"ke\" {}\n"},
+        {"build/app.target.cluau", "target \"app\" { platforms = { \"linux\" }, link = { \"a/main\" } }\n"},
+        {"plugins/b/plugin.build.cluau",
+         "plugin \"b\" {}\nmodule \"b\" { sources = glob(\"src/*.cpp\"), embed = { name = \"data\", files = { \"src/f.txt\" } } }\n"},
+        {"plugins/b/src/b.cpp", "#include \"data.embed.h\"\nunsigned long b_n() { return data_count; }\n"},
+        {"plugins/b/src/f.txt", "b"},
+        {"plugins/a/plugin.build.cluau",
+         "plugin \"a\" { public_deps = { \"b\" } }\n"
+         "module \"main\" { sources = glob(\"src/*.cpp\"), deps = { private = { \"b/b\" } },"
+         " embed = { name = \"data\", files = { \"src/f.txt\" } } }\n"},
+        {"plugins/a/src/main.cpp", "#include \"data.embed.h\"\nunsigned long b_n();\nint main() { return (int)(data_count + b_n()); }\n"},
+        {"plugins/a/src/f.txt", "a"},
+    });
+    auto r = run_kiln(tmp.path, build());
+    CHECK(r.code == 2);
+    CHECK(r.out.find("embed 'data' is declared by both") != std::string::npos);
+}
+
+TEST_CASE("KE.6 every byte value comes through unchanged") {
+    TempDir tmp;
+    std::string all;
+    for (int round = 0; round < 3; ++round)
+        for (int b = 0; b < 256; ++b)
+            all += static_cast<char>(b);
+    all += "??" "=\\\"0x1";  // a trigraph, escapes and digits right after an escaped byte
+    write_tree(tmp.path, {
+        {"kiln.workspace.cluau", "workspace \"ke\" {}\n"},
+        {"build/app.target.cluau", "target \"app\" { platforms = { \"linux\" }, link = { \"app/main\" } }\n"},
+        {"plugins/app/plugin.build.cluau",
+         "plugin \"app\" {}\nmodule \"main\" { sources = glob(\"src/*.cpp\"), embed = { name = \"bin\", files = { \"data/all.bin\" } } }\n"},
+        {"plugins/app/src/main.cpp",
+         "#include <cstdio>\n#include \"bin.embed.h\"\n"
+         "int main() { std::FILE* f = std::fopen(\"out.bin\", \"wb\"); std::fwrite(bin_files[0].data, 1, bin_files[0].size, f);"
+         " std::fclose(f); return bin_files[0].data[bin_files[0].size] == 0 ? 0 : 1; }\n"},
+        {"plugins/app/data/all.bin", all},
+    });
+    REQUIRE(run_kiln(tmp.path, build()).code == 0);
+    std::string out;
+    CHECK(kiln::util::run_process({(tmp.path / ".kiln/out/linux-dev/bin/app").string()}, tmp.path, &out) == 0);
+    CHECK(read_file(tmp.path / "out.bin") == all);
+}

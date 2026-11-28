@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
+#include <optional>
 #include <set>
 
 #include "core/hash.h"
@@ -39,25 +41,73 @@ std::string git_tool(const Workspace& ws) {
     return it == ws.config.tools.end() ? "git" : it->second;
 }
 
-// Git never prompts, and never runs the user's hooks inside the store.
-const std::map<std::string, std::string>& git_env() {
-    static const std::map<std::string, std::string> env = {{"GIT_TERMINAL_PROMPT", "0"}};
-    return env;
-}
-
+// Git runs on the store alone: every inherited GIT_* variable (GIT_DIR in a
+// hook, GIT_OBJECT_DIRECTORY, ...) is cleared, it never prompts (no stdin,
+// no terminal prompt, ssh in batch mode unless the user chose an ssh
+// command), and it never runs the user's hooks. The user's git config still
+// applies to fetching, for credentials and URL rewrites.
 int git(const Workspace& ws, std::vector<std::string> args, std::string* out,
         std::map<std::string, std::string> env = {}) {
     args.insert(args.begin(), {git_tool(ws), "-c", "core.hooksPath=/dev/null"});
-    for (auto& [k, v] : git_env())
-        env.emplace(k, v);
+    env.emplace("GIT_TERMINAL_PROMPT", "0");
+    const char* ssh = std::getenv("GIT_SSH_COMMAND");
+    env.emplace("GIT_SSH_COMMAND", ssh && *ssh ? ssh : "ssh -o BatchMode=yes");
     std::string sink;
-    return util::run_process(args, {}, out ? out : &sink, env);
+    return util::run_process(args, ws.root, out ? out : &sink, env, {"GIT_"}, true);
+}
+
+// A checkout reads no system or user config, so every machine puts the same
+// bytes in a tree (no autocrlf, no smudge filters).
+const std::map<std::string, std::string>& checkout_env() {
+    static const std::map<std::string, std::string> env = {{"GIT_CONFIG_NOSYSTEM", "1"},
+                                                           {"GIT_CONFIG_GLOBAL", "/dev/null"}};
+    return env;
+}
+
+// A relative path in `git` is relative to the workspace, wherever Kiln runs
+// from; a URL (scheme:// or host:path) is kept as written.
+std::string resolve_git(const Workspace& ws, const std::string& git) {
+    if (git.find("://") != std::string::npos || (!git.empty() && git[0] == '/'))
+        return git;
+    const auto colon = git.find(':');
+    if (colon != std::string::npos && git.find('/') > colon)
+        return git;
+    return (fs::absolute(ws.root) / git).lexically_normal().generic_string();
+}
+
+// One record in users/: the workspace (relative to the store's owner) and
+// the trees it uses. A record that isn't valid JSON of that shape is
+// ignored rather than trusted.
+struct UserRecord {
+    std::string workspace;
+    std::vector<std::pair<std::string, std::string>> uses; // (git, commit)
+    std::vector<std::string> names;
+};
+std::optional<UserRecord> read_record(const fs::path& p) {
+    auto t = util::read_file(p);
+    if (!t.ok())
+        return std::nullopt;
+    json j = json::parse(*t, nullptr, false);
+    if (!j.is_object() || !j.contains("workspace") || !j["workspace"].is_string())
+        return std::nullopt;
+    UserRecord r;
+    r.workspace = j["workspace"].get<std::string>();
+    if (j.contains("uses") && j["uses"].is_array())
+        for (auto& u : j["uses"])
+            if (u.is_object() && u.contains("git") && u["git"].is_string() && u.contains("commit") &&
+                u["commit"].is_string()) {
+                r.uses.push_back({u["git"].get<std::string>(), u["commit"].get<std::string>()});
+                r.names.push_back(u.contains("name") && u["name"].is_string() ? u["name"].get<std::string>() : "");
+            }
+    return r;
 }
 
 std::string trimmed(const std::string& s) { return std::string(util::trim(s)); }
 
-// Files read-only, then folders, so nothing in a tree can be edited by
-// mistake through a workspace's link. `writable` undoes it before a delete.
+// A tree's files are read-only, so nothing can be edited by mistake through
+// a workspace's link; its folders stay writable, so `rm -rf .kiln` or `git
+// clean` can still delete it. `writable` undoes it before a delete, folders
+// included (a store an earlier version made read-only throughout).
 void set_writable(const fs::path& root, bool writable) {
     std::error_code ec;
     std::vector<fs::path> dirs;
@@ -71,13 +121,11 @@ void set_writable(const fs::path& root, bool writable) {
             fs::permissions(it->path(), fs::perms::owner_write,
                             writable ? fs::perm_options::add : fs::perm_options::remove, ec);
     }
-    dirs.push_back(root);
-    for (auto& d : dirs)
-        fs::permissions(d, fs::perms::owner_write | fs::perms::group_write | fs::perms::others_write,
-                        writable ? fs::perm_options::add : fs::perm_options::remove, ec);
     if (writable)
         for (auto& d : dirs)
             fs::permissions(d, fs::perms::owner_write, fs::perm_options::add, ec);
+    if (writable)
+        fs::permissions(root, fs::perms::owner_write, fs::perm_options::add, ec);
 }
 
 void remove_tree(const fs::path& p) {
@@ -86,6 +134,24 @@ void remove_tree(const fs::path& p) {
         return;
     set_writable(p, true);
     fs::remove_all(p, ec);
+}
+
+// Removes what a killed checkout of `commit` left beside its tree (a partial
+// folder and its index). Called with the store locked, so no live checkout
+// owns them.
+void remove_partials(const fs::path& repo_dir, const std::string& commit) {
+    std::error_code ec;
+    const std::string prefix = ".partial-" + commit + "-";
+    std::vector<fs::path> stale;
+    for (auto& e : fs::directory_iterator(repo_dir, ec))
+        if (e.path().filename().string().rfind(prefix, 0) == 0)
+            stale.push_back(e.path());
+    for (auto& p : stale) {
+        if (fs::is_directory(fs::symlink_status(p, ec)))
+            remove_tree(p);
+        else
+            fs::remove(p, ec);
+    }
 }
 
 uint64_t tree_bytes(const fs::path& root) {
@@ -129,33 +195,47 @@ struct StoreLock {
 
 // Makes sure the mirror holds `commit`: fetched by id first, then every
 // branch and tag for a server that refuses fetching by id.
-Result<void> ensure_commit(const Workspace& ws, const fs::path& mirror, const DependencyConfig& d) {
+Result<void> ensure_commit(const Workspace& ws, const fs::path& mirror, const DependencyConfig& d,
+                           const std::string& url) {
     std::error_code ec;
     std::string out;
+    if (git(ws, {"--version"}, &out) != 0)
+        return Result<void>::fail("dependency '" + d.name + "' needs git to fetch, and `" + git_tool(ws) +
+                                  "` can't be run: install git, or name it in the workspace's tools table "
+                                  "(tools = { git = \"/path/to/git\" })");
     if (!fs::exists(mirror / "HEAD", ec)) {
         fs::create_directories(mirror, ec);
         if (git(ws, {"init", "--bare", "-q", mirror.string()}, &out) != 0)
             return Result<void>::fail("dependency '" + d.name + "': git init failed: " + trimmed(out));
     }
+    // The mirror never collects garbage on its own: every pinned commit is
+    // kept, by the ref below, until `kiln cache --prune` drops the mirror.
+    git(ws, {"--git-dir", mirror.string(), "config", "gc.auto", "0"}, nullptr);
     auto have = [&] {
         return git(ws, {"--git-dir", mirror.string(), "cat-file", "-e", d.commit + "^{commit}"}, nullptr) == 0;
     };
-    if (have())
+    // A fetch by id updates no ref; this one keeps the commit reachable, so
+    // the next fetch only brings what is new and nothing prunes it.
+    auto keep = [&] {
+        git(ws, {"--git-dir", mirror.string(), "update-ref", "refs/kiln/" + d.commit, d.commit}, nullptr);
         return Result<void>::success();
-    git(ws, {"--git-dir", mirror.string(), "fetch", "-q", "--no-tags", d.git, d.commit}, &out);
+    };
     if (have())
-        return Result<void>::success();
+        return keep();
+    git(ws, {"--git-dir", mirror.string(), "fetch", "-q", "--no-tags", url, d.commit}, &out);
+    if (have())
+        return keep();
     std::string out2;
     int rc = git(ws,
-                 {"--git-dir", mirror.string(), "fetch", "-q", d.git, "+refs/heads/*:refs/heads/*",
+                 {"--git-dir", mirror.string(), "fetch", "-q", url, "+refs/heads/*:refs/heads/*",
                   "+refs/tags/*:refs/tags/*"},
                  &out2);
     if (have())
-        return Result<void>::success();
+        return keep();
     if (rc != 0)
-        return Result<void>::fail("dependency '" + d.name + "' (" + d.site + "): fetching " + d.git +
+        return Result<void>::fail("dependency '" + d.name + "' (" + d.site + "): fetching " + url +
                                   " failed: " + trimmed(out2.empty() ? out : out2));
-    return Result<void>::fail("dependency '" + d.name + "' (" + d.site + "): " + d.git + " has no commit " +
+    return Result<void>::fail("dependency '" + d.name + "' (" + d.site + "): " + url + " has no commit " +
                               d.commit);
 }
 
@@ -165,10 +245,12 @@ Result<void> checkout_tree(const Workspace& ws, const fs::path& mirror, const fs
                            const DependencyConfig& d) {
     std::error_code ec;
     const fs::path partial = tree.parent_path() / (".partial-" + d.commit + "-" + std::to_string(::getpid()));
-    remove_tree(partial);
+    fs::create_directories(tree.parent_path(), ec);
+    remove_partials(tree.parent_path(), d.commit);
     fs::create_directories(partial, ec);
     const std::string index = partial.string() + ".index";
-    std::map<std::string, std::string> env = {{"GIT_INDEX_FILE", index}};
+    std::map<std::string, std::string> env = checkout_env();
+    env["GIT_INDEX_FILE"] = index;
     std::string out;
     if (git(ws, {"--git-dir", mirror.string(), "--work-tree", partial.string(), "read-tree", d.commit}, &out, env) !=
             0 ||
@@ -270,6 +352,9 @@ Result<SyncResult> sync(const Workspace& ws, const SyncOptions& opts) {
     StoreLock lock(store);
     json uses = json::array();
     for (auto& d : ws.config.dependencies) {
+        const std::string url = resolve_git(ws, d.git);
+        // Recorded even when overridden, so a prune keeps the tree.
+        uses.push_back({{"name", d.name}, {"git", url}, {"commit", d.commit}});
         auto ov = std::find_if(opts.overrides.begin(), opts.overrides.end(),
                                [&](auto& o) { return o.first == d.name; });
         if (ov != opts.overrides.end()) {
@@ -282,21 +367,21 @@ Result<SyncResult> sync(const Workspace& ws, const SyncOptions& opts) {
             res.linked.push_back({d.name, dir.string()});
             continue;
         }
-        const std::string key = repo_key(d.git);
+        const std::string key = repo_key(url);
         const fs::path mirror = store / "git" / (key + ".git");
         const fs::path tree = store / "src" / key / d.commit;
         const fs::path stamp = store / "src" / key / (d.commit + ".ok");
         if (!fs::is_regular_file(stamp, ec) || !fs::is_directory(tree, ec)) {
             if (opts.note)
                 opts.note("fetching dependency " + d.name + " (" + d.commit.substr(0, 12) + ")");
-            auto c = ensure_commit(ws, mirror, d);
+            auto c = ensure_commit(ws, mirror, d, url);
             if (!c.ok())
                 return Result<SyncResult>::fail(std::move(c.error));
             fs::remove(stamp, ec);
             auto t = checkout_tree(ws, mirror, tree, d);
             if (!t.ok())
                 return Result<SyncResult>::fail(std::move(t.error));
-            if (auto w = util::write_file(stamp, d.git + "\n"); !w.ok())
+            if (auto w = util::write_file(stamp, url + "\n"); !w.ok())
                 return Result<SyncResult>::fail(std::move(w.error));
             ++res.fetched;
         }
@@ -304,7 +389,6 @@ Result<SyncResult> sync(const Workspace& ws, const SyncOptions& opts) {
         if (!r.ok())
             return Result<SyncResult>::fail(std::move(r.error));
         res.linked.push_back({d.name, tree.string()});
-        uses.push_back({{"name", d.name}, {"git", d.git}, {"commit", d.commit}});
     }
 
     // This workspace's record, and a warning where another workspace using
@@ -319,20 +403,14 @@ Result<SyncResult> sync(const Workspace& ws, const SyncOptions& opts) {
     for (auto& e : fs::directory_iterator(users, ec)) {
         if (e.path() == my_record)
             continue;
-        auto t = util::read_file(e.path());
-        if (!t.ok())
+        auto other = read_record(e.path());
+        if (!other || !has_workspace_file(owner / other->workspace))
             continue;
-        json other = json::parse(*t, nullptr, false);
-        if (other.is_discarded())
-            continue;
-        const std::string who = other.value("workspace", "?");
-        if (!has_workspace_file(owner / who))
-            continue;
-        for (auto& u : other.value("uses", json::array()))
+        for (auto& [git, commit] : other->uses)
             for (auto& d : ws.config.dependencies)
-                if (u.value("git", "") == d.git && u.value("commit", "") != d.commit)
+                if (git == resolve_git(ws, d.git) && commit != d.commit)
                     res.warnings.push_back("dependency '" + d.name + "' is at " + d.commit.substr(0, 12) +
-                                           " here, but " + who + " pins " + u.value("commit", "").substr(0, 12) +
+                                           " here, but " + other->workspace + " pins " + commit.substr(0, 12) +
                                            " of the same repository");
     }
     return Result<SyncResult>::success(std::move(res));
@@ -351,28 +429,38 @@ Result<std::string> cache(const Workspace& ws, bool prune) {
     std::map<std::string, std::vector<std::string>> used_by; // "<repo>/<commit>" -> workspaces
     std::set<std::string> live_repos;
     for (auto& e : fs::directory_iterator(store / "users", ec)) {
-        auto t = util::read_file(e.path());
-        json rec = t.ok() ? json::parse(*t, nullptr, false) : json();
-        const std::string who = rec.is_object() ? rec.value("workspace", "") : "";
-        if (who.empty() || !has_workspace_file(owner / who)) {
+        auto rec = read_record(e.path());
+        if (!rec || rec->workspace.empty() || !has_workspace_file(owner / rec->workspace)) {
             if (prune)
                 fs::remove(e.path(), ec);
             continue;
         }
-        for (auto& u : rec.value("uses", json::array())) {
-            const std::string key = repo_key(u.value("git", ""));
-            used_by[key + "/" + u.value("commit", "")].push_back(who);
+        for (auto& [git, commit] : rec->uses) {
+            const std::string key = repo_key(git);
+            used_by[key + "/" + commit].push_back(rec->workspace);
             live_repos.insert(key);
         }
     }
 
     uint64_t total = 0;
     std::vector<fs::path> trees;
+    std::vector<fs::path> partials;
     for (auto& repo : fs::directory_iterator(store / "src", ec))
         if (repo.is_directory(ec))
-            for (auto& t : fs::directory_iterator(repo.path(), ec))
-                if (t.is_directory(ec) && t.path().filename().string().rfind(".partial-", 0) != 0)
+            for (auto& t : fs::directory_iterator(repo.path(), ec)) {
+                if (t.path().filename().string().rfind(".partial-", 0) == 0)
+                    partials.push_back(t.path());
+                else if (t.is_directory(ec))
                     trees.push_back(t.path());
+            }
+    // Left by a killed checkout; the lock means no live one owns them.
+    if (prune)
+        for (auto& p : partials) {
+            if (fs::is_directory(fs::symlink_status(p, ec)))
+                remove_tree(p);
+            else
+                fs::remove(p, ec);
+        }
     std::sort(trees.begin(), trees.end());
     out += "trees:\n";
     if (trees.empty())
@@ -392,8 +480,11 @@ Result<std::string> cache(const Workspace& ws, bool prune) {
                 line += " " + w;
             total += bytes;
         } else if (prune) {
-            remove_tree(t);
+            // The stamp first: a prune interrupted partway leaves a tree
+            // with no stamp, which the next fetch checks out again, never a
+            // half-deleted tree that looks complete.
             fs::remove(t.parent_path() / (commit + ".ok"), ec);
+            remove_tree(t);
             line += "  unused, removed";
         } else {
             line += "  unused";

@@ -14,14 +14,16 @@ Dependencies, embedded files, and a CI action. Existing manifests don't need to 
   as `dep:<name>/...` in globs, sources, include folders and the other paths they write.
   Each repository and commit is fetched once, workspaces nested inside another share
   the outermost one's store (`share_store = false` opts out), and nothing is written
-  outside the workspace.
+  outside the workspace. Git runs isolated from the caller's `GIT_*` variables, never
+  prompts, and checks trees out without the user's config, so every machine gets the
+  same bytes.
 - `kiln fetch` fetches and links the declared dependencies; any build does too.
   `--dependency name=dir` (on `build`, `test`, `daemon` and `fetch`) links one to your
-  own checkout for a run. `kiln cache` shows the store, and `kiln cache --prune` deletes
-  what no workspace uses.
+  own checkout for a run, and `kiln daemon` watches that checkout. `kiln cache` shows
+  the store, and `kiln cache --prune` deletes what no workspace uses.
 - A module's `embed = { name, files, base }` compiles files into it as a table,
   `<name>_files` and `<name>_count` in `<name>.embed.h`. Editing an embedded file
-  rebuilds only the table.
+  rebuilds only the table. A name is used once per target.
 - The `setup-kiln` action (`.github/actions/setup-kiln`) installs a release in a GitHub
   Actions job, checks its checksum and caches the dependency store.
 - `seed.sh` keeps its download in the outermost workspace's store, so a Kiln checkout

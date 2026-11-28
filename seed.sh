@@ -15,7 +15,7 @@
 
 set -u
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 . "$ROOT/build/seed.env"
 # The outermost folder at or above this checkout holding a kiln.workspace.cluau.
 outermost() {
@@ -86,6 +86,11 @@ sha256_of "$TMP/$NAME/bin/kiln" > "$TMP/kiln.sha256"
 "$TMP/$NAME/bin/kiln" --version >/dev/null 2>&1 || fail "the downloaded Kiln $VERSION doesn't run here"
 
 # Moved into place in one step, so a concurrent caller sees all of it or none.
-mv "$TMP" "$DIR" 2>/dev/null || { cached_ok || fail "can't move the seed into $DIR"; }
+# -T refuses to move into a folder another caller created meanwhile; that
+# caller's copy is then used and this one is thrown away.
+if ! mv -T "$TMP" "$DIR" 2>/dev/null; then
+    cached_ok || fail "can't move the seed into $DIR"
+    rm -rf "$TMP"
+fi
 trap - EXIT
 echo "$BIN"

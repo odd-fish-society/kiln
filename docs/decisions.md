@@ -963,9 +963,20 @@ tracked files are only what its authors wrote. Manifests reach them as `dep:<nam
 which resolves to the link `.kiln/deps/<name>`. That keeps every hashed path
 workspace-relative and the same in every checkout, which a store path would not be.
 
-Trees are read-only, because one tree can serve several workspaces and an edit made by
-mistake through one link would change all of them. Working on a dependency is what
-`--dependency name=dir` is for.
+A tree's files are read-only, because one tree can serve several workspaces and an edit
+made by mistake through one link would change all of them. Working on a dependency is
+what `--dependency name=dir` is for. We first made the folders read-only too, and
+dropped that: `rm -rf .kiln` and `git clean` then failed, and read-only files already
+stop the edits that matter.
+
+Git runs isolated from the caller's environment (every `GIT_*` variable cleared, no
+stdin, no prompts), because a build started from a git hook inherits `GIT_DIR` and
+would otherwise point the store's git somewhere else. Fetching keeps the user's git
+config, since that is where credentials and URL rewrites live; checking a tree out
+ignores it, so `autocrlf` or a smudge filter on one machine can't change the bytes of a
+tree other workspaces share. A commit fetched by id gets a ref of its own and the
+mirror's automatic gc is off, so moving a pin downloads only what is new and a pinned
+commit is never collected.
 
 ## The embed rule
 

@@ -460,6 +460,18 @@ Result<int> cmd_daemon(const BuildOptions& opts, console::Renderer& renderer) {
         auto w = watcher.init(root, ws->config.plugin_roots);
         if (!w.ok())
             return Result<int>::fail(std::move(w.error));
+        // A dependency linked to the user's own checkout is watched too, so
+        // editing it rebuilds; store trees never change, so they aren't.
+        std::error_code ec;
+        for (auto& [name, dir] : opts.dependencies)
+            if (fs::is_directory(dir, ec)) {
+                const fs::path at = fs::absolute(dir).lexically_normal();
+                auto t = watcher.add_watch(at, true);
+                if (t.ok())
+                    t = watcher.add_tree(at);
+                if (!t.ok())
+                    return Result<int>::fail(std::move(t.error));
+            }
     }
 
     HotReload hot;

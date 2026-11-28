@@ -1,5 +1,5 @@
 // The embed rule (spec §7.4): a module's `embed = { name, files }` becomes a
-// table of the files' bytes. The output is plain byte arrays, so any C++
+// table of the files' bytes. The output is plain string literals, so any C++
 // compiler accepts it, and it holds no path or time: equal files, equal text.
 #include "rules/registry.h"
 
@@ -80,19 +80,31 @@ TaskResult run_embed(TaskCtx& ctx) {
             r.error = "embed: can't read " + files[i] + ": " + bytes.error;
             return r;
         }
-        // Each array ends with a 0 the size doesn't count, so text can be
+        // A string literal: compilers read one far faster, and in far less
+        // memory, than an initializer list of numbers. Printable bytes stay
+        // as they are and the rest become three-digit octal escapes (which,
+        // unlike hex ones, never swallow the digit after them). The literal's
+        // own terminating 0 is the one `size` doesn't count, so text can be
         // read as a C string.
-        cpp += "const unsigned char kData" + std::to_string(k) + "[] = {";
+        cpp += "const char kData" + std::to_string(k) + "[] =\n    \"";
         size_t col = 0;
         for (unsigned char c : *bytes) {
-            if (col++ % 16 == 0)
-                cpp += "\n   ";
-            char buf[8];
-            snprintf(buf, sizeof(buf), " 0x%02x,", c);
-            cpp += buf;
+            if (col >= 96) {
+                cpp += "\"\n    \"";
+                col = 0;
+            }
+            if (c >= 0x20 && c < 0x7f && c != '"' && c != '\\' && c != '?') {
+                cpp += static_cast<char>(c);
+                col += 1;
+            } else {
+                const char esc[5] = {'\\', static_cast<char>('0' + (c >> 6)), static_cast<char>('0' + ((c >> 3) & 7)),
+                                     static_cast<char>('0' + (c & 7)), 0};
+                cpp += esc;
+                col += 4;
+            }
         }
-        cpp += "\n    0x00\n};\n";
-        table += "    {" + quoted(entries[i]) + ", kData" + std::to_string(k) + ", " +
+        cpp += "\";\n";
+        table += "    {" + quoted(entries[i]) + ", reinterpret_cast<const unsigned char*>(kData" + std::to_string(k) + "), " +
                  std::to_string(bytes->size()) + "},\n";
     }
     cpp += "} // namespace\n\n";
@@ -115,7 +127,7 @@ TaskResult run_embed(TaskCtx& ctx) {
 } // namespace
 
 void register_embed() {
-    register_rule("embed", 1, run_embed);
+    register_rule("embed", 2, run_embed); // 2: string literals instead of byte lists
 }
 
 } // namespace builtin

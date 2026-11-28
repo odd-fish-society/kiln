@@ -766,6 +766,14 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             const std::string gen_dir = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/embed/" + m.name;
             includes.push_back(gen_dir);
             for (auto& e : m.embeds) {
+                // <name>_files is one symbol for the whole binary: a second
+                // table of that name would be silently dropped at the link.
+                const std::string here = plugin + "/" + m.name + " (" + site + ")";
+                auto [prev, fresh] = ctx.embed_sites.emplace(e.name, here);
+                if (!fresh)
+                    return Result<void>::fail("embed '" + e.name + "' is declared by both " + prev->second +
+                                              " and " + here +
+                                              "; its symbols are global, so each table in a target needs its own name");
                 std::map<std::string, std::string> hp;
                 hp["name"] = e.name;
                 hp["part"] = "header";

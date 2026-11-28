@@ -9,6 +9,7 @@
 #include <sstream>
 
 #ifdef __linux__
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -259,7 +260,8 @@ int run_process(const std::vector<std::string>& argv, const fs::path& cwd,
 }
 
 int run_process(const std::vector<std::string>& argv, const fs::path& cwd,
-                std::string* out, const std::map<std::string, std::string>& env) {
+                std::string* out, const std::map<std::string, std::string>& env,
+                const std::vector<std::string>& unset_prefixes, bool no_stdin) {
 #ifdef __linux__
     int pipefd[2];
     if (pipe(pipefd) != 0)
@@ -272,8 +274,27 @@ int run_process(const std::vector<std::string>& argv, const fs::path& cwd,
         dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[0]);
         close(pipefd[1]);
-        if (!cwd.empty())
-            chdir(cwd.c_str());
+        if (!cwd.empty() && chdir(cwd.c_str()) != 0)
+            _exit(127);
+        if (no_stdin) {
+            int devnull = open("/dev/null", O_RDONLY);
+            if (devnull >= 0) {
+                dup2(devnull, STDIN_FILENO);
+                close(devnull);
+            }
+        }
+        if (!unset_prefixes.empty()) {
+            std::vector<std::string> names;
+            for (char** e = environ; *e; ++e) {
+                std::string_view kv(*e);
+                std::string name(kv.substr(0, kv.find('=')));
+                for (auto& p : unset_prefixes)
+                    if (name.rfind(p, 0) == 0)
+                        names.push_back(name);
+            }
+            for (auto& n : names)
+                unsetenv(n.c_str());
+        }
         for (auto& [k, v] : env)
             setenv(k.c_str(), v.c_str(), 1);
         std::vector<char*> args;

@@ -855,23 +855,41 @@ A dependency is source the workspace's own manifests build: a plugin declares it
 workspace. Kiln only fetches the files.
 
 **Isolation.** Nothing Kiln fetches or makes lives outside the workspace: the trees are
-in a store under `.kiln/`, and git runs with the user's hooks off and no prompt. A build
-writes nothing to the user's home or cache folders.
+in a store under `.kiln/`, and a build writes nothing to the user's home or cache
+folders. Git runs on the store alone. Every inherited `GIT_*` variable is cleared (a
+`GIT_DIR` set by a hook can't redirect it), its standard input is `/dev/null`, it never
+prompts (`GIT_TERMINAL_PROMPT=0`, ssh in batch mode unless the user set
+`GIT_SSH_COMMAND`), and the user's hooks are off. Fetching still reads the user's git
+config, so credentials and URL rewrites work as they do for git itself (and a
+credential helper the user configured stores what it stores). Checking a tree out reads
+no system or user config, so every machine puts the same bytes in a tree: no `autocrlf`,
+no smudge filters. `git` comes from the workspace's `tools` table, else `PATH`, and is
+only needed to fetch; a store that already holds every tree builds without it.
+
+A `git` that is a relative path is relative to the workspace, wherever Kiln is started
+from; a URL (`scheme://...` or `host:path`) is used as written. The store keys a
+repository by the resolved string.
 
 **The store**, `.kiln/store/`, holds:
 
 - `git/<repo>.git`, a bare mirror per repository URL (`<repo>` is the first 16 hex digits
   of the URL's BLAKE3). Moving a pin fetches only the objects that are new.
-- `src/<repo>/<commit>/`, a read-only tree per repository and commit, and
+- `src/<repo>/<commit>/`, a tree per repository and commit, and
   `src/<repo>/<commit>.ok` beside it, written once the tree is complete. A tree whose
   stamp is missing is checked out again. Checkouts go to a partial folder first and are
-  renamed into place, so an existing tree is always complete.
+  renamed into place, so an existing tree is always complete; partial folders a killed
+  checkout left are deleted by the next checkout of that commit (the store is locked,
+  so none of them is live). A tree's files are read-only, so nothing edits them by
+  mistake through a link; its folders aren't, so `rm -rf .kiln` or `git clean` still
+  works.
 - `users/<workspace>.json`, which trees each workspace using the store links.
 - `releases/`, the cache of Kiln releases (the seed, §7a.2).
 
 The mirror gets a commit by fetching it by id; for a server that refuses that, it
-fetches every branch and tag. A commit the repository doesn't have is an error naming
-the dependency. A store is locked while Kiln works in it, so a build and a daemon, or
+fetches every branch and tag. Each commit gets a ref, `refs/kiln/<commit>`, so the next
+fetch only brings what is new, and the mirror's automatic garbage collection is off, so
+nothing pinned disappears. A commit the repository doesn't have is an error naming the
+dependency. A store is locked while Kiln works in it, so a build and a daemon, or
 two nested workspaces, never race.
 
 **Nested workspaces share one store.** A workspace inside another one on disk uses the
@@ -890,28 +908,40 @@ error rather than something Kiln deletes.
 
 **Fetching.** `kiln build`, `kiln test` and `kiln daemon` fetch and link before
 anything evaluates a plugin manifest; `kiln fetch` does only that and prints each link.
-Nothing is fetched for a dependency already linked at its commit.
+Nothing is fetched for a dependency already linked at its commit. The commands that
+only read the project (`kiln plugins`, `query`, `setup-clion`, `why-dirty`) don't fetch;
+on a fresh clone they say which dependency to fetch first. A `dependency` written
+without its `{ git, commit }` table is an error naming it.
 
 **Your own checkout.** `--dependency <name>=<dir>` (on `build`, `test`, `daemon` and
 `fetch`) links the dependency to a folder of the user's own for that run, for editing it
 alongside the workspace; the next run without the option links the store's tree again.
-Naming a dependency the workspace doesn't declare is an error.
+`kiln daemon` watches an override's folder, so an edit there rebuilds. Naming a
+dependency the workspace doesn't declare is an error. An overridden dependency stays in
+the workspace's users record, so a prune keeps its tree.
 
 **The cache command.** `kiln cache` prints the store's trees with their sizes and the
 workspaces using each, the mirrors' and releases' sizes and the total. `kiln cache
 --prune` deletes the trees no workspace using the store declares (a workspace whose
-folder is gone no longer counts), and the mirrors left with no tree. `kiln clean`
-leaves the store and the links alone.
+folder is gone no longer counts), the mirrors left with no tree, and any partial
+folders. It deletes a tree's stamp before the tree, so an interrupted prune leaves a
+tree the next fetch checks out again, never one that looks complete. A users record
+that isn't the expected JSON is ignored. `kiln clean` leaves the store and the links
+alone.
 
 Submodules of a dependency aren't checked out; a library that needs one declares it as
 a dependency of its own.
 
 The tests (KD) cover fetching once per repository and commit, nested workspaces
 sharing the store and the warning for differing pins, `share_store = false`, an
-override and its edits rebuilding, a tree whose stamp is gone, a missing commit, a short
-commit id, an undeclared `dep:` name, a `dependency` outside the workspace file, a build
-that leaves a fresh `HOME` and `XDG_CACHE_HOME` empty, and `kiln fetch` and `kiln
-cache --prune`.
+override and its edits rebuilding, a tree whose stamp is gone with a stale partial
+beside it, a missing commit, a short commit id, an undeclared `dep:` name, a
+`dependency` outside the workspace file or without its table, a build that leaves a
+fresh `HOME` and `XDG_CACHE_HOME` empty, deleting `.kiln` the ordinary way, `kiln fetch`
+and `kiln cache --prune`, git being absent (an error to fetch, unneeded once the trees
+are there), a relative `git` from a subfolder, an inherited `GIT_DIR`, the mirror's ref
+and gc setting, an override keeping its tree through a prune, and broken users
+records.
 
 ## 7. Two graphs
 
@@ -1147,15 +1177,19 @@ extern const KilnEmbeddedFile <name>_files[];
 extern const std::size_t <name>_count;
 ```
 
-`<name>.embed.cpp` defines them. The table is sorted by entry name. An entry's name is
+`<name>.embed.cpp` defines them. The symbols are global, so a name may be used by one
+module per target; a second is an error naming both modules (the linker would otherwise
+keep one table and silently give both modules its files). The table is sorted by entry
+name. An entry's name is
 the file's name, or with `base` its path under that folder (`sub/b.txt`); two files with
 one name are an error that suggests `base`. Each `data` holds the file's bytes followed by
 a 0 that `size` doesn't count, so text can be read as a C string. A table of no files has
 `count` 0. The struct is guarded by `KILN_EMBEDDED_FILE_DEFINED`, so several tables can
 be included together. `name` must be a C identifier and unique in its module.
 
-The output is plain byte arrays, which any C++ compiler accepts, and it holds no path or
-time, so equal files give equal text. The header and the table are separate tasks: the
+The data is written as string literals (printable bytes as they are, the rest as
+three-digit octal escapes), which any C++ compiler accepts and reads far faster than a
+list of numbers, and the output holds no path or time, so equal files give equal text. The header and the table are separate tasks: the
 header depends only on the name, so editing an embedded file rebuilds the table and the
 link, never what includes the header. Files joining or leaving a glob join or leave the
 table like any glob change. A CMake build of the same code can write the same table with
@@ -1167,7 +1201,8 @@ writes it. So a generated header costs no extra rebuild after a fresh build.
 
 The tests (KE) cover the table's contents, order and sizes with and without `base`, an
 empty file, two tables in one module, an edit rebuilding only the table, files joining
-and leaving the glob, and the naming errors.
+and leaving the glob, the naming errors, one name used by two modules of a target, and
+every byte value (with escapes and digits right after them) coming through unchanged.
 
 ## 7a. Self-hosting
 

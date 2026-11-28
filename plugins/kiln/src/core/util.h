@@ -49,9 +49,12 @@ std::string find_in_path(std::string_view name);
 // Returns the exit code. `out` is capped at 4 MiB (tail kept, marker inserted).
 int run_process(const std::vector<std::string>& argv, const fs::path& cwd,
                 std::string* out);
-// The same, with `env` set in the child on top of the inherited environment.
+// The same, with `env` set in the child on top of the inherited environment,
+// after removing every inherited variable whose name starts with one of
+// `unset_prefixes`; stdin is /dev/null when `no_stdin`.
 int run_process(const std::vector<std::string>& argv, const fs::path& cwd,
-                std::string* out, const std::map<std::string, std::string>& env);
+                std::string* out, const std::map<std::string, std::string>& env,
+                const std::vector<std::string>& unset_prefixes = {}, bool no_stdin = false);
 
 std::string to_upper(std::string_view s);
 
