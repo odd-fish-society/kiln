@@ -4,6 +4,26 @@ Each release is an annotated tag (`v0.x.0`, or `v0.x.y` for a release of
 fixes only) whose message is the entry below. Versions before 1.0 may change
 the manifest API; every entry says whether existing manifests need to change.
 
+## 0.3.0
+
+Kiln builds itself from a released Kiln, and the CMake build is gone. Manifests don't
+need to change.
+
+- A checkout's first build starts from the seed, the release `build/seed.env` pins.
+  `seed.sh [cache-dir]` downloads it once, checks it against the pinned SHA256 and
+  prints its path. `./bootstrap.sh` has the seed build Kiln, then that Kiln builds
+  itself and checks that rebuilding converges byte for byte. You need curl instead of
+  CMake and Ninja.
+- `--tool name=path` (on `build`, `test` and `daemon`) replaces one entry of the
+  workspace's `tools` table for that run, for example `--tool cxx=clang++ --tool
+  cc=clang`. A different compiler reruns the compiles.
+- `kiln test` accepts a `target:config` spec, like `kiln build`.
+- Kiln's suite is a Kiln target, `kiln_tests`. Kiln's own configs are `release`, `dev`
+  and `dev-asan-ubsan`.
+- Fixed: the trace store and the file-hash cache now close their SQLite connections,
+  and the file lists of `glob` results are freed. Neither leak was seen before, because
+  the old sanitizer build wasn't sanitizing.
+
 ## 0.2.1
 
 Licensing and documentation only. Manifests and behaviour are unchanged.
