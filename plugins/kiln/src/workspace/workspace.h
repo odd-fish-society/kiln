@@ -4,6 +4,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/config.h"
@@ -45,6 +46,11 @@ Result<fs::path> find_workspace_root(const fs::path& start);
 // build/*.target.cluau. With no plugin_roots declared, discovery is
 // plugins/*/plugin.build.cluau.
 Result<Workspace> load_workspace(const fs::path& root);
+
+// `--tool <name>=<path>`: each entry replaces (or adds) that entry of the
+// workspace's `tools` table for this invocation only.
+void apply_tool_overrides(Workspace& ws,
+                          const std::vector<std::pair<std::string, std::string>>& tools);
 
 std::string host_platform();
 

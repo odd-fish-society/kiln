@@ -1,11 +1,14 @@
 #!/bin/sh
-# Kiln self-host bootstrap (spec §7a.2).
+# Kiln's bootstrap (spec §7a.2): Kiln built from source by a released Kiln,
+# then by itself, with a check that the build has converged.
 #
-#   external-build: CMake+Ninja build (PERMANENT escape hatch, never delete)
-#   self-build: external-build/kiln builds the workspace manifests, THE
-#       deliverable; this binary goes on PATH
-#   proof-build: self-build/kiln builds them again (fresh .kiln state dir);
-#       a disposable check artifact, never shipped
+#   seed: the released Kiln that build/seed.env pins (seed.sh fetches it)
+#   seed-build: the seed builds the workspace; this Kiln is today's source
+#       built with the seed's command lines
+#   self-build: seed-build/kiln builds the workspace again; this is the
+#       deliverable, the binary that goes on PATH
+#   proof-build: self-build/kiln builds it once more from a fresh .kiln
+#       state dir; a disposable check artifact, never shipped
 #   convergence check: self-build/kiln and proof-build/kiln MUST be
 #       byte-identical.
 #
@@ -38,28 +41,30 @@ fail() {
 
 mkdir -p "$BOOT"
 
-# Every stage runs on every invocation: both builds are incremental, so an
+# Every stage runs on every invocation: the builds are incremental, so an
 # up-to-date stage costs a no-op build. Skipping a stage because its binary
-# already existed compared a months-old self-build against today's proof-build
-# (a false exit 3, 2026-11-07).
+# already existed would compare an old self-build against today's proof-build.
 
-# ---- external-build: CMake (escape hatch, permanent) -------------------------
-echo "building kiln with cmake (escape hatch)…"
-if [ ! -f "$BOOT/cmake-build/CMakeCache.txt" ]; then
-    cmake --preset release -S "$ROOT" -B "$BOOT/cmake-build" >/dev/null || fail "external-build cmake configure failed"
-fi
-cmake --build "$BOOT/cmake-build" -j"$JOBS" >/dev/null || fail "external-build cmake build failed"
-mkdir -p "$BOOT/external-build"
-cp "$BOOT/cmake-build/kiln" "$BOOT/external-build/kiln" || fail "external-build copy failed"
-echo "== external-build ok: $BOOT/external-build/kiln"
+# ---- seed: the pinned release -------------------------------------------------
+SEED=$("$ROOT/seed.sh") || fail "no seed: see the message above"
+echo "== seed ok: $SEED ($("$SEED" --version))"
 
-# ---- self-build: external-build/kiln builds the workspace --------------------
+# ---- seed-build: the seed builds the workspace ---------------------------------
+echo "building kiln with the seed…"
+(cd "$ROOT" && "$SEED" build kiln:linux-release --progress=plain) || fail "seed-build build failed"
+mkdir -p "$BOOT/seed-build"
+cp "$ROOT/.kiln/out/linux-release/bin/kiln" "$BOOT/seed-build/kiln" || fail "seed-build copy failed"
+echo "== seed-build ok: $BOOT/seed-build/kiln"
+
+# ---- self-build: seed-build/kiln builds the workspace --------------------------
+# Where the seed lowers a compile the same way, its output is reused, so this
+# costs little.
 echo "building kiln with kiln…"
-(cd "$ROOT" && "$BOOT/external-build/kiln" build kiln:linux-release --progress=plain) || fail "self-build build failed"
+(cd "$ROOT" && "$BOOT/seed-build/kiln" build kiln:linux-release --progress=plain) || fail "self-build build failed"
 mkdir -p "$BOOT/self-build"
 cp "$ROOT/.kiln/out/linux-release/bin/kiln" "$BOOT/self-build/kiln" || fail "self-build copy failed"
 echo "== self-build ok: $BOOT/self-build/kiln"
-CONFIG_SELF=$(cd "$ROOT" && "$BOOT/external-build/kiln" build kiln:linux-release --print-config-hash) \
+CONFIG_SELF=$(cd "$ROOT" && "$BOOT/seed-build/kiln" build kiln:linux-release --print-config-hash) \
     || fail "self-build config-hash resolution failed"
 echo "self-build config: $CONFIG_SELF"
 
@@ -89,7 +94,7 @@ echo "proof-build config: $CONFIG_PROOF"
 [ "$CONFIG_SELF" = "$CONFIG_PROOF" ] || fail "ConfigTuple mismatch between self-build and proof-build: '$CONFIG_SELF' vs '$CONFIG_PROOF'"
 
 # ---- convergence check -------------------------------------------------------
-echo "convergence: self-build ≡ proof-build"
+echo "convergence: self-build == proof-build"
 if cmp -s "$BOOT/self-build/kiln" "$BOOT/proof-build/kiln"; then
     echo "== convergence ok: self-build == proof-build (byte-identical)"
     exit 0

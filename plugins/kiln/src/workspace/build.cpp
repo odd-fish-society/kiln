@@ -621,6 +621,7 @@ Result<BuildOutcome> run_build(const BuildOptions& opts, console::Renderer& rend
     auto ws = load_workspace(root);
     if (!ws.ok())
         return Result<BuildOutcome>::fail(ws.error);
+    apply_tool_overrides(*ws, opts.tools);
 
     std::vector<TargetSpec> specs;
     if (opts.target_specs.empty()) {
@@ -804,6 +805,7 @@ Result<std::string> resolve_config_hashes(const BuildOptions& opts) {
     auto ws = load_workspace(root);
     if (!ws.ok())
         return Result<std::string>::fail(ws.error);
+    apply_tool_overrides(*ws, opts.tools);
 
     std::vector<TargetSpec> specs;
     if (opts.target_specs.empty()) {

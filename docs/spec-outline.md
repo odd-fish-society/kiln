@@ -41,8 +41,10 @@ around them.
 Kiln is C++20. Internal code may throw, but exceptions never cross a module boundary:
 public core APIs return `Result<T>` (§2.6). Nothing depends on RTTI.
 
-CMake and Ninja build a single `kiln` executable and a `kiln_core` static library that
-the tests link. The presets are `dev` (with ASan and UBSan) and `release`.
+Kiln builds itself from its own manifests: the `kiln` target is the executable and
+`kiln_tests` is the suite, which has `kiln` as its companion (§7a.2 describes how the
+first build starts). Kiln's configs are `release` (its default), `dev` and
+`dev-asan-ubsan`, whose flags `build/flags.cluau` gives.
 
 Each third-party library is vendored in its own plugin under `plugins/`: the BLAKE3 C
 implementation, the SQLite amalgamation, CLI11 (header-only), `nlohmann/json`, and
@@ -64,7 +66,8 @@ so a clone needs `--recursive`. The documentation (§16) lives in the same repos
 at the same commit as the code it describes.
 
 ```
-CMakeLists.txt  bootstrap.sh  kiln.workspace.cluau  build/kiln.target.cluau
+bootstrap.sh  seed.sh  kiln.workspace.cluau  build/seed.env  build/flags.cluau
+build/kiln.target.cluau  build/kiln_tests.target.cluau
 plugins/kiln/src/core/        hashing, the trace store, tasks, the graph, the scheduler,
                               the executor and configs (the runtime)
 plugins/kiln/src/workspace/   workspace loading, plugin resolution, expansion, lowering
@@ -1065,13 +1068,20 @@ never in a shared tree at the root reached with `../` globs.
 directory out from under the build. Each build in the chain is named after what it
 produces; the log lines say what is happening.
 
-The **external build** is Kiln built by something other than Kiln: `cmake --preset
-release && cmake --build` produces `external-build/kiln`. The CMake build is permanent.
-It must not be removed in favour of the self-build, CI runs it from a clean checkout on
-every push, and a comment at the top of `CMakeLists.txt` says why.
+The **seed** is the released Kiln that `build/seed.env` pins: its version, and for each
+platform the SHA256 of the release download. `seed.sh [cache-dir]` prints its path. It
+downloads the release the first time, into `<cache-dir>/<version>/` (by default
+`.bootstrap/seed/`), refuses a download whose checksum doesn't match the pin, and
+downloads again when a cached copy no longer matches. Only platforms with a release have
+a seed.
 
-The **self-build** is Kiln built by Kiln: `external-build/kiln build kiln:linux-release`
-produces `self-build/kiln`, the binary that goes on `PATH`.
+The **seed build** is today's source built by the seed: `seed build kiln:linux-release`
+produces `seed-build/kiln`.
+
+The **self-build** is Kiln built by Kiln: `seed-build/kiln build kiln:linux-release`
+produces `self-build/kiln`, the binary that goes on `PATH`. Where the seed lowered a
+compile the same way, the self-build reuses its output, so this step usually costs
+little.
 
 The **proof build** is Kiln rebuilt by the self-build with a fresh `.kiln` state
 directory: `self-build/kiln build kiln:linux-release` produces `proof-build/kiln`. It
@@ -1107,13 +1117,12 @@ These apply to the `compile_cpp` and `c_library` rules everywhere:
 
 ### 7a.4 Manifest compatibility
 
-During the bootstrap, Kiln's own manifests are read by the previous binary. So the
-manifests in this repository must stay valid for the manifest API of the previously
-released or pinned Kiln. A change to the manifest API lands in two commits: first the
-Kiln that accepts the new syntax, with the manifests untouched, then, once that binary
-is the bootstrap's starting point, the manifests that use it. CI checks this roughly:
-the external build's binary must be able to evaluate the repository's manifests at
-every commit.
+During the bootstrap, Kiln's own manifests are read by the seed. So the manifests in
+this repository must stay valid for the manifest API of the release `build/seed.env`
+pins. A change to the manifest API lands in two steps: first the Kiln that accepts the
+new syntax, with the manifests untouched; then, once a release has it and the seed has
+moved to that release, the manifests that use it. CI checks this at every commit,
+because every job starts from the seed.
 
 The tests check that `./bootstrap.sh` succeeds from a clean checkout and the
 convergence check holds. Rebuilding after deleting `.bootstrap/` must be fully cached at
@@ -1270,8 +1279,9 @@ This is the complete list:
 
 ```
 kiln build [<target>[:<config>]...] [-j N] [--platform=] [--config=] [--feature k=v]
-           [--enable-plugin=p]* [--disable-plugin=p]* [--progress=fancy|plain|none]
-           [--fail-fast] [--explain]      # --explain prints why each task ran
+           [--tool name=path]* [--enable-plugin=p]* [--disable-plugin=p]*
+           [--progress=fancy|plain|none] [--fail-fast] [--explain]
+                                          # --explain prints why each task ran
 kiln plugins --target=T [--platform=][--config=][--json]
 kiln query "<expr>" [--json]
 kiln why-dirty <task-or-path>
@@ -1279,13 +1289,18 @@ kiln daemon [build args]
 kiln setup-clion [--config=]
 kiln clean [--traces]                     # deletes .kiln/out (and the traces with the flag)
 kiln clean --dead                         # deletes dead cooks and variant folders no record lists
-kiln test [<target>] [-j N] [--platform=] [--config=]   # build and run; default: the test_target
+kiln test [<target>] [-j N] [--platform=] [--config=] [--tool name=path]*
+                                          # build and run; default: the test_target
 kiln smoke [--nightly] [-j N] [-- <hamr run args>]       # the workspace's hamr suite
 kiln check [--defs=]                      # type-check the manifests
 kiln convert <file.luau>... [--check]     # convert Luau manifests to cluau (§6.7)
 kiln run [--config=C] [-j N] [<name> [args...]]          # a workspace command (§6.2); no name lists them
 kiln <name> [args...]                     # the same, for any name that isn't a built-in verb
 ```
+
+`--tool name=path` replaces (or adds) that entry of the workspace's `tools` table for
+this invocation only; `daemon` takes it too. The compilers are part of every compile's
+digest, so a different compiler reruns the compiles.
 
 Kiln exits with 0 on success, 1 when a task failed, 2 for a usage or configuration
 error and 3 for an internal error.
@@ -1296,8 +1311,9 @@ The tests use hamr's C++ library (`hamr/test.h`) and run under hamr. There are u
 tests next to each module and integration tests that drive the real binary against small
 fixture workspaces: two or three plugins, one shader, one texture, and stub tools (a fake
 `glslc` that concatenates its inputs), so the tests need no SDK. Each behaviour this
-outline says is tested has a named test. CI runs on GitHub Actions on Linux, with the
-`dev` preset (sanitizers) and with `release`, both running the full suite. Golden-output
+outline says is tested has a named test. CI runs on GitHub Actions on Linux: the seed builds Kiln, and
+that Kiln builds and runs the full suite with GCC, with Clang (`--tool`) and in
+`dev-asan-ubsan`, and checks the bootstrap's convergence. Golden-output
 tests compare text with the timings stripped, using a shared helper.
 
 The boundary lint checks that nothing Kiln ships (its plugins, docs, types and README)

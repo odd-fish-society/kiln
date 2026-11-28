@@ -96,7 +96,7 @@ luau::ManifestEnvOptions plugin_opts(const fs::path& root, const std::string& pl
 
 TEST_CASE("R1.1 the standard rule libraries type-check clean under cluau's strict rules") {
     TempDir tmp;
-    auto defs = util::read_file(fs::path(KILN_SOURCE_DIR) / "types/build.d.luau");
+    auto defs = util::read_file(source_root() / "types/build.d.luau");
     REQUIRE(defs.ok());
     std::vector<std::string> files;
     for (auto& lib : luau::std_libraries()) {
@@ -159,7 +159,7 @@ TEST_CASE("R1.2 a workspace rule library: exec with env, depfile and dyndep; cac
 
     // kiln check types the library with the manifests.
     auto check = run_kiln(tmp.path, {"check", "--workspace", ".", "--defs",
-                                     (fs::path(KILN_SOURCE_DIR) / "types/build.d.luau").generic_string()});
+                                     (source_root() / "types/build.d.luau").generic_string()});
     INFO(check.out);
     CHECK(check.code == 0);
     CHECK(check.out.find("build/rules/gen.cluau") == std::string::npos); // no findings in it

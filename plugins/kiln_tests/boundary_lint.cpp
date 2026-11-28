@@ -11,12 +11,13 @@
 #include <vector>
 
 #include "core/util.h"
+#include "test_util.h"
 
 namespace fs = std::filesystem;
 
 namespace {
 
-fs::path repo_root() { return fs::path(KILN_SOURCE_DIR); }
+fs::path repo_root() { return kiln::testutil::source_root(); }
 
 // Project-identifying denylist (spec §14), matched case-insensitively: the
 // first consumer's name, its plugin-root paths, and the names of its tools,

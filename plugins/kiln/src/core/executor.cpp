@@ -159,7 +159,7 @@ Executor::Result Executor::run_task(const TaskDecl& decl,
     ctx.workspace_root = workspace_root_;
     ctx.out_dir = out_dir;
     ctx.log = [logbuf](std::string_view s) { logbuf->append(s); };
-    ctx.report_dep = [this, depcollector](std::string_view p) {
+    ctx.report_dep = [depcollector](std::string_view p) {
         auto rel = util::norm(p);
         depcollector->add(rel);
     };

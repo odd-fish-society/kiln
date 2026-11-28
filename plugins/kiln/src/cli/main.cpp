@@ -14,6 +14,21 @@ using namespace kiln;
 
 namespace {
 
+// `k=v` arguments of a repeatable option (`--feature`, `--tool`); false, with
+// the error printed, when one has no '='.
+bool parse_pairs(const std::vector<std::string>& raw, const char* option,
+                 std::vector<std::pair<std::string, std::string>>& out) {
+    for (auto& f : raw) {
+        auto eq = f.find('=');
+        if (eq == std::string::npos || eq == 0) {
+            std::fprintf(stderr, "kiln: %s expects k=v, got '%s'\n", option, f.c_str());
+            return false;
+        }
+        out.push_back({f.substr(0, eq), f.substr(eq + 1)});
+    }
+    return true;
+}
+
 console::ProgressMode default_progress_mode() {
     if (!console::is_tty(1))
         return console::ProgressMode::Plain;
@@ -110,7 +125,7 @@ int main(int argc, char** argv) {
     std::vector<std::string> targets;
     int jobs = 0;
     std::string platform, config;
-    std::vector<std::string> features_raw, enable_plugins, disable_plugins;
+    std::vector<std::string> features_raw, tools_raw, enable_plugins, disable_plugins;
     std::string progress_str;
     bool fail_fast = false, explain = false, print_config_hash = false, verbose = false;
     fs::path workspace;
@@ -119,6 +134,7 @@ int main(int argc, char** argv) {
     build->add_option("--platform", platform, "platform override");
     build->add_option("--config", config, "config override");
     build->add_option("--feature", features_raw, "feature flag k=v (repeatable)");
+    build->add_option("--tool", tools_raw, "tool override name=path, e.g. cxx=clang++ (repeatable)");
     build->add_option("--enable-plugin", enable_plugins, "enable plugin (repeatable)");
     build->add_option("--disable-plugin", disable_plugins, "disable plugin (repeatable)");
     build->add_option("--progress", progress_str, "fancy|plain|none");
@@ -158,7 +174,7 @@ int main(int argc, char** argv) {
 
     // ---- daemon -------------------------------------------------------------------
     auto* daemon = app.add_subcommand("daemon", "Watch the workspace and rebuild");
-    std::vector<std::string> d_targets, d_features, d_enable, d_disable;
+    std::vector<std::string> d_targets, d_features, d_tools, d_enable, d_disable;
     std::string d_platform, d_config, d_progress, d_workspace;
     int d_jobs = 0;
     daemon->add_option("target", d_targets, "target[:platform-config]");
@@ -166,6 +182,7 @@ int main(int argc, char** argv) {
     daemon->add_option("--platform", d_platform, "platform override");
     daemon->add_option("--config", d_config, "config override");
     daemon->add_option("--feature", d_features, "feature flag k=v (repeatable)");
+    daemon->add_option("--tool", d_tools, "tool override name=path, e.g. cxx=clang++ (repeatable)");
     daemon->add_option("--enable-plugin", d_enable, "enable plugin (repeatable)");
     daemon->add_option("--disable-plugin", d_disable, "disable plugin (repeatable)");
     daemon->add_option("--progress", d_progress, "fancy|plain|none");
@@ -180,11 +197,13 @@ int main(int argc, char** argv) {
     // ---- test ---------------------------------------------------------------------
     auto* test = app.add_subcommand("test", "Build + run a test target (default: the workspace's test_target)");
     std::string t_target, t_platform, t_config, t_workspace;
+    std::vector<std::string> t_tools;
     int t_jobs = 0;
     test->add_option("target", t_target, "target name (default: the workspace's test_target)");
     test->add_option("-j", t_jobs, "worker count");
     test->add_option("--platform", t_platform, "platform override");
     test->add_option("--config", t_config, "config override");
+    test->add_option("--tool", t_tools, "tool override name=path, e.g. cxx=clang++ (repeatable)");
     test->add_option("--workspace", t_workspace, "workspace root (default: auto-detect)");
 
     // ---- smoke ----------------------------------------------------------------------
@@ -235,15 +254,9 @@ int main(int argc, char** argv) {
             opts.target_specs = targets;
             opts.platform_override = platform;
             opts.config_override = config;
-            for (auto& f : features_raw) {
-                auto eq = f.find('=');
-                if (eq == std::string::npos) {
-                    std::fprintf(stderr, "kiln: --feature expects k=v, got '%s'\n",
-                                 f.c_str());
-                    return 2;
-                }
-                opts.features.push_back({f.substr(0, eq), f.substr(eq + 1)});
-            }
+            if (!parse_pairs(features_raw, "--feature", opts.features) ||
+                !parse_pairs(tools_raw, "--tool", opts.tools))
+                return 2;
             opts.enable_plugins = enable_plugins;
             opts.disable_plugins = disable_plugins;
             opts.jobs = jobs;
@@ -293,15 +306,9 @@ int main(int argc, char** argv) {
             opts.target_specs = d_targets;
             opts.platform_override = d_platform;
             opts.config_override = d_config;
-            for (auto& f : d_features) {
-                auto eq = f.find('=');
-                if (eq == std::string::npos) {
-                    std::fprintf(stderr, "kiln: --feature expects k=v, got '%s'\n",
-                                 f.c_str());
-                    return 2;
-                }
-                opts.features.push_back({f.substr(0, eq), f.substr(eq + 1)});
-            }
+            if (!parse_pairs(d_features, "--feature", opts.features) ||
+                !parse_pairs(d_tools, "--tool", opts.tools))
+                return 2;
             opts.enable_plugins = d_enable;
             opts.disable_plugins = d_disable;
             opts.jobs = d_jobs;
@@ -323,8 +330,11 @@ int main(int argc, char** argv) {
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
         } else if (*test) {
+            std::vector<std::pair<std::string, std::string>> tools;
+            if (!parse_pairs(t_tools, "--tool", tools))
+                return 2;
             auto r = cmd_test(fs::path(t_workspace), t_target, t_jobs, t_platform,
-                              t_config);
+                              t_config, tools);
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());

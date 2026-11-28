@@ -1,0 +1,9 @@
+// Kiln's test suite. Most cases build a small workspace and run the real
+// kiln binary on it, so `kiln` is a companion: it is built beside the suite,
+// in the same config, and the suite finds it there.
+target "kiln_tests" {
+    platforms = { "linux" },
+    default_config = "release",
+    link = { "kiln_tests/kiln_tests" },
+    companions = { "kiln" },
+}

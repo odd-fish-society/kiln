@@ -28,7 +28,8 @@ Result<int> cmd_daemon(const BuildOptions& opts, console::Renderer& renderer);
 Result<int> cmd_setup_clion(const fs::path& root, const std::string& config);
 Result<int> cmd_clean(const fs::path& root, bool traces, bool dead);
 Result<int> cmd_test(const fs::path& root, const std::string& target, int jobs,
-                     const std::string& platform, const std::string& config);
+                     const std::string& platform, const std::string& config,
+                     const std::vector<std::pair<std::string, std::string>>& tools = {});
 // The workspace's hamr suite (`smoke.suite`) under hamr, the nightly tier or
 // the fast one; `extra` goes to `hamr run` as it is (--only, --changed, ...).
 // Replaces the process with hamr's on success.

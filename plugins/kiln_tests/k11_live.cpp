@@ -138,7 +138,7 @@ struct Daemon {
             close(pipefd[0]);
             close(pipefd[1]);
             chdir(root.c_str());
-            execl(KILN_BINARY_PATH, KILN_BINARY_PATH, "daemon", "--progress=plain",
+            execl(kiln_binary().c_str(), kiln_binary().c_str(), "daemon", "--progress=plain",
                   "--workspace", ".", (char*)nullptr);
             _exit(127);
         }

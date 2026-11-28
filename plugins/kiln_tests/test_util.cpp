@@ -12,6 +12,34 @@
 
 namespace kiln::testutil {
 
+namespace {
+
+fs::path self_dir() {
+    std::error_code ec;
+    return fs::read_symlink("/proc/self/exe", ec).parent_path();
+}
+
+} // namespace
+
+const std::string& kiln_binary() {
+    static const std::string bin = (self_dir() / "kiln").string();
+    return bin;
+}
+
+const fs::path& source_root() {
+    static const fs::path root = [] {
+        std::error_code ec;
+        for (fs::path d = self_dir(); !d.empty(); d = d.parent_path()) {
+            if (fs::exists(d / "kiln.workspace.cluau", ec))
+                return d;
+            if (d == d.root_path())
+                break;
+        }
+        return fs::path();
+    }();
+    return root;
+}
+
 TempDir::TempDir() {
     char tmpl[] = "/tmp/kiln_test_XXXXXX";
     char* dir = mkdtemp(tmpl);
@@ -36,12 +64,7 @@ void write_tree(const fs::path& root, const std::map<std::string, std::string>& 
 RunResult run_kiln(const fs::path& dir, const std::vector<std::string>& args,
                    const std::map<std::string, std::string>& env) {
     RunResult r;
-#ifdef KILN_BINARY_PATH
-    const char* bin = KILN_BINARY_PATH;
-#else
-    const char* bin = "./kiln";
-#endif
-    std::vector<std::string> argv = {bin};
+    std::vector<std::string> argv = {kiln_binary()};
     for (auto& a : args)
         argv.push_back(a);
 

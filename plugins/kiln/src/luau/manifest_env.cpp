@@ -251,9 +251,12 @@ struct FileSetUD {
     std::string dir_rel; // workspace-relative dir the pattern was rooted at
 };
 
+// Glob results carry their own userdata tag: its destructor frees the file
+// list, and the declaration callables (tag 1, one byte each) never read as one.
+constexpr int kFileSetTag = 2;
+
 FileSetUD* check_fileset(lua_State* L, int idx) {
-    FileSetUD* ud = static_cast<FileSetUD*>(
-        lua_touserdatatagged(L, idx, 1 /* 'kiln' */));
+    FileSetUD* ud = static_cast<FileSetUD*>(lua_touserdatatagged(L, idx, kFileSetTag));
     if (!ud)
         luaL_typeerrorL(L, idx, "glob result");
     return ud;
@@ -305,7 +308,8 @@ bool read_fileset(lua_State* L, int idx, EvalState* st, const char* field,
 }
 
 void push_fileset(lua_State* L, FileSetUD* ud) {
-    FileSetUD* copy = static_cast<FileSetUD*>(lua_newuserdatatagged(L, sizeof(FileSetUD), 1));
+    FileSetUD* copy =
+        static_cast<FileSetUD*>(lua_newuserdatatagged(L, sizeof(FileSetUD), kFileSetTag));
     new (copy) FileSetUD(std::move(*ud));
     lua_getfield(L, LUA_REGISTRYINDEX, "kiln_fileset_mt");
     lua_setmetatable(L, -2);
@@ -432,10 +436,6 @@ int require_impl(lua_State* L) {
 }
 
 // ---- declaration functions --------------------------------------------------
-
-std::string cur_file(EvalState* st) {
-    return st->primary_file;
-}
 
 int decl_plugin(lua_State* L) {
     EvalState* st = state_from(L);
@@ -1707,6 +1707,9 @@ void install_api(lua_State* L, EvalState* st) {
 
     lua_createtable(L, 0, 1);
     lua_setfield(L, LUA_REGISTRYINDEX, "kiln_fileset_mt");
+    lua_setuserdatadtor(L, kFileSetTag, [](lua_State*, void* p) {
+        static_cast<FileSetUD*>(p)->~FileSetUD();
+    });
 
     // Register the module/plugin/cook callables with their spec metatables.
     set_field(L, "plugin", decl_plugin);

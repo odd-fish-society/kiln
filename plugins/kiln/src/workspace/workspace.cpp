@@ -210,4 +210,10 @@ Result<Workspace> load_workspace(const fs::path& root) {
     return Result<Workspace>::success(std::move(ws));
 }
 
+void apply_tool_overrides(Workspace& ws,
+                          const std::vector<std::pair<std::string, std::string>>& tools) {
+    for (auto& [name, path] : tools)
+        ws.config.tools[name] = path;
+}
+
 } // namespace kiln

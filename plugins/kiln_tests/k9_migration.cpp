@@ -28,11 +28,6 @@ using namespace kiln::testutil;
 
 namespace {
 
-std::string param_of(const TaskDecl& d, const std::string& k) {
-    auto it = d.params.find(k);
-    return it == d.params.end() ? "" : it->second;
-}
-
 struct RuleHarness {
     TempDir tmp;
     fs::path root = tmp.path / "ws";

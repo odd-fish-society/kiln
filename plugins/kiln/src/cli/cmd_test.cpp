@@ -34,7 +34,8 @@ int run_process(const fs::path& bin) {
 } // namespace
 
 Result<int> cmd_test(const fs::path& root, const std::string& target_in, int jobs,
-                     const std::string& platform, const std::string& config) {
+                     const std::string& platform, const std::string& config,
+                     const std::vector<std::pair<std::string, std::string>>& tools) {
     std::string target = target_in;
     if (target.empty()) {
         auto found = root.empty() ? find_workspace_root(fs::current_path())
@@ -55,8 +56,12 @@ Result<int> cmd_test(const fs::path& root, const std::string& target_in, int job
     opts.target_specs = { target };
     opts.platform_override = platform;
     opts.config_override = config;
+    opts.tools = tools;
     opts.jobs = jobs;
     opts.progress = console::ProgressMode::Plain;
+
+    // A `target:platform-config` spec names the binary by its target alone.
+    const std::string name = target.substr(0, target.find(':'));
 
     // Resolve the config dir name (e.g. linux-dev) so the binary path is
     // known before building (spec §7: the link rule emits
@@ -77,7 +82,7 @@ Result<int> cmd_test(const fs::path& root, const std::string& target_in, int job
         size_t colon = line.find(':');
         if (colon == std::string_view::npos)
             continue;
-        if (line.substr(0, colon) != target)
+        if (line.substr(0, colon) != name)
             continue;
         size_t space = line.find(' ', colon + 1);
         cfg = std::string(line.substr(colon + 1,
@@ -113,7 +118,7 @@ Result<int> cmd_test(const fs::path& root, const std::string& target_in, int job
         }
         root_path = *found;
     }
-    fs::path bin = root_path / ".kiln" / "out" / cfg / "bin" / target;
+    fs::path bin = root_path / ".kiln" / "out" / cfg / "bin" / name;
     std::printf("kiln: running %s\n", bin.string().c_str());
     std::fflush(stdout);
     return Result<int>::success(run_process(bin));

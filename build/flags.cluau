@@ -1,0 +1,35 @@
+// Compile and link flags for Kiln's own code, by config and feature. The
+// vendored libraries (Luau, SQLite, BLAKE3, ...) build with their own flags.
+//
+//   release          optimised (Kiln's default)
+//   dev              unoptimised, with debug info
+//   dev-asan-ubsan   ASan and UBSan, unoptimised, with debug info
+//
+// The `static_runtime` feature (`--feature static_runtime=1`) links the C++
+// runtime into the binary, so a release runs on any glibc Linux at least as
+// new as the one it was built on.
+
+let conf = config.config
+let sanitize = conf == "dev-asan-ubsan"
+
+let flags: { string } = { "-Wall", "-Wextra", "-Wno-unused-parameter" }
+let link_flags: { string } = {}
+
+if (sanitize) {
+    for (_, f in ipairs({ "-fsanitize=address", "-fsanitize=undefined",
+                          "-fno-sanitize-recover=undefined", "-fno-omit-frame-pointer", "-g" })) {
+        table.insert(flags, f)
+    }
+    table.insert(link_flags, "-fsanitize=address")
+    table.insert(link_flags, "-fsanitize=undefined")
+}
+
+if (config.features.static_runtime == "1") {
+    table.insert(link_flags, "-static-libstdc++")
+    table.insert(link_flags, "-static-libgcc")
+}
+
+return {
+    flags = flags,
+    link_flags = link_flags,
+}

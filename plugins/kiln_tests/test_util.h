@@ -22,6 +22,13 @@ struct TempDir {
     TempDir& operator=(const TempDir&) = delete;
 };
 
+// The kiln binary under test: the one beside this test binary (a build puts
+// `kiln` in the same bin folder, as the target's companion).
+const std::string& kiln_binary();
+// Kiln's source tree: the first folder above this test binary holding
+// kiln.workspace.cluau.
+const fs::path& source_root();
+
 // Writes a tree: map rel path → content. Creates parent dirs.
 void write_tree(const fs::path& root, const std::map<std::string, std::string>& files);
 

@@ -33,19 +33,23 @@ git clone --recursive https://github.com/odd-fish-society/kiln.git
 cd kiln && ./bootstrap.sh
 ```
 
-The bootstrap builds Kiln with CMake, then uses that binary to build Kiln again, and
-leaves the result in `.bootstrap/self-build/kiln` for you to put on your `PATH`. It then
-builds Kiln a third time and checks that the binary hasn't changed by a single byte.
+Kiln builds itself. The bootstrap downloads the release that `build/seed.env` pins (the
+seed), checks it against the checksum there, and has it build Kiln from source. That
+Kiln then builds itself and leaves the result in `.bootstrap/self-build/kiln` for you to
+put on your `PATH`. Finally it builds Kiln once more and checks that the binary hasn't
+changed by a single byte.
 
-You'll need Linux, GCC 15 or Clang 19 or newer (Kiln uses C++20 and `#embed`), CMake and
-Ninja. Cooking assets also needs whatever tools your workspace names, such as `glslc`
+You'll need Linux on x86-64, GCC 15 or Clang 19 or newer (Kiln uses C++20 and `#embed`)
+and curl. Cooking assets also needs whatever tools your workspace names, such as `glslc`
 or `basisu`. Luau, cluau and hamr come in as nested submodules, which is why the clone
 needs `--recursive`.
 
-A project that builds Kiln from source usually adds it as a `kiln/` submodule and runs
-the CMake build from its own scripts. The workspace can state the oldest Kiln it works
-with, `workspace { kiln_version = ">=0.1" }`, and an older Kiln will stop and say which
-version it needs.
+A project that builds Kiln from source usually adds it as a `kiln/` submodule. Its
+scripts run `kiln/seed.sh <cache folder>`, which prints the path of the seed (fetching it
+the first time), and have the seed build `kiln:linux-release` inside `kiln/`. From then
+on the Kiln that build produced can rebuild itself. The workspace can state the oldest
+Kiln it works with, `workspace { kiln_version = ">=0.1" }`, and an older Kiln will stop
+and say which version it needs.
 
 ## A first workspace
 
@@ -180,6 +184,12 @@ command "audit" {
 With that, `kiln audit --strict` builds `auditor` and runs it as `auditor --platform
 linux --strict`. The `run` list understands `{workspace}`, `{platform}`, `{config}`,
 `{bin:<target>}` and `{kiln}`.
+
+`--tool <name>=<path>` replaces one entry of the workspace's `tools` table for a single
+run of `build`, `test` or `daemon`, so `kiln build game --tool cxx=clang++ --tool
+cc=clang` tries another compiler without editing the workspace. The compiler is part of
+every compile's digest, so switching reruns the compiles, and switching back finds the
+earlier outputs in the cache.
 
 In a terminal Kiln shows a progress bar pinned to the bottom of the screen. When its
 output goes to a pipe or a CI log, it prints one line per task instead. You can choose

@@ -518,7 +518,7 @@ TEST_CASE("K4.15 Luau manifests are refused, each naming kiln convert") {
 
 TEST_CASE("K4.16 kiln check: typed manifests, typed requires, cluau's strict rules, cluau lines") {
     WS w;
-    auto defs = util::read_file(fs::path(KILN_SOURCE_DIR) / "types/build.d.luau");
+    auto defs = util::read_file(source_root() / "types/build.d.luau");
     REQUIRE(defs.ok());
     write_tree(w.root, {
         {"build/defaults.cluau", "const std = \"c++20\"\nreturn { std = std, flags = { \"-g\" } }\n"},

@@ -130,3 +130,41 @@ TEST_CASE("K6.4 dependency chain error names the whole chain") {
     CHECK(r.out.find("core") != std::string::npos);
     CHECK(r.out.find("optional") != std::string::npos);
 }
+
+TEST_CASE("K6.9 --tool overrides a tools entry for one invocation") {
+    TempDir tmp;
+    write_tree(tmp.path, fixture());
+    // A compiler wrapper that records each call, then compiles with c++.
+    write_tree(tmp.path, {{"wrap-cxx.sh",
+                           "#!/bin/sh\necho x >> \"$(dirname \"$0\")/wrapped.log\"\nexec c++ \"$@\"\n"}});
+    fs::permissions(tmp.path / "wrap-cxx.sh", fs::perms::owner_all);
+    std::string wrapper = (tmp.path / "wrap-cxx.sh").string();
+    auto log = tmp.path / "wrapped.log";
+
+    auto plain = run_kiln(tmp.path, build_args());
+    REQUIRE(plain.code == 0);
+    CHECK(!fs::exists(log));
+
+    // The override reaches the compiles, and a different compiler reruns them.
+    auto args = build_args();
+    args.push_back("--tool");
+    args.push_back("cxx=" + wrapper);
+    auto wrapped = run_kiln(tmp.path, args);
+    REQUIRE(wrapped.code == 0);
+    REQUIRE(fs::exists(log));
+    CHECK(count_executed(wrapped.out) > 0);
+
+    // Only for that invocation: the next plain build doesn't call it.
+    fs::remove(log);
+    auto again = run_kiln(tmp.path, build_args());
+    REQUIRE(again.code == 0);
+    CHECK(!fs::exists(log));
+
+    // Each value is name=path.
+    auto bad = build_args();
+    bad.push_back("--tool");
+    bad.push_back("cxx");
+    auto r = run_kiln(tmp.path, bad);
+    CHECK(r.code == 2);
+    CHECK(r.out.find("--tool expects k=v") != std::string::npos);
+}

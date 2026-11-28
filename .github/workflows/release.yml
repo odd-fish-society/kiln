@@ -31,34 +31,33 @@ jobs:
           ref: ${{ env.TAG }}
           submodules: recursive
 
-      - name: Tools
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
-
-      # The C++ runtime is linked in, so the binary runs on any glibc Linux
-      # at least as new as the runner's.
+      # The seed builds today's Kiln, and that Kiln builds the release and the
+      # suite. The C++ runtime is linked in, so the binary runs on any glibc
+      # Linux at least as new as the runner's.
       - name: Build
         run: |
-          cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release -DKILN_BUILD_TESTS=ON \
-            "-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++ -static-libgcc"
-          cmake --build build/release -j "$(nproc)"
+          seed=$(./seed.sh)
+          "$seed" build kiln --progress=plain
+          cp .kiln/out/linux-release/bin/kiln "$RUNNER_TEMP/kiln"
+          "$RUNNER_TEMP/kiln" build kiln_tests --feature static_runtime=1 --progress=plain
 
       # The tag names the version the binary reports.
       - name: Check the tag against the version
         run: |
-          version=$(./build/release/kiln --version | sed -n 's/^kiln \([0-9.]*\)$/\1/p')
+          version=$(.kiln/out/linux-release/bin/kiln --version | sed -n 's/^kiln \([0-9.]*\)$/\1/p')
           if [ "v$version" != "$TAG" ]; then
             echo "the tag is $TAG, but kiln --version says $version"
             exit 1
           fi
 
       - name: Suite
-        run: ./build/release/kiln_tests
+        run: .kiln/out/linux-release/bin/kiln_tests
 
       - name: Package
         run: |
           dir="kiln-$TAG-linux-x86_64"
           mkdir -p "$dir/bin" "$dir/types"
-          cp build/release/kiln "$dir/bin/"
+          cp .kiln/out/linux-release/bin/kiln "$dir/bin/"
           cp types/build.d.luau "$dir/types/"
           cp LICENSE README.md CHANGELOG.md "$dir/"
           tar -czf "$dir.tar.gz" "$dir"

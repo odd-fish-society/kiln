@@ -80,7 +80,7 @@ TEST_CASE("RC.1 a command builds first, expands its tokens, appends the argument
     CHECK(shown[1] == "linux");
     CHECK(shown[2] == "linux-dev");
     CHECK(fs::equivalent(shown[3], bin));
-    CHECK(fs::path(shown[4]).filename() == fs::path(KILN_BINARY_PATH).filename());
+    CHECK(fs::path(shown[4]).filename() == fs::path(kiln_binary()).filename());
     CHECK(shown[5] == "a");
     CHECK(shown[6] == "b c");
     CHECK(shown[7] == "--flag");

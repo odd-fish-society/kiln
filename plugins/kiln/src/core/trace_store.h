@@ -37,6 +37,9 @@ public:
     static constexpr int kSchemaVersion = 2;
 
     explicit TraceStore(fs::path db_path);
+    ~TraceStore() { close(); }
+    TraceStore(const TraceStore&) = delete;
+    TraceStore& operator=(const TraceStore&) = delete;
 
     Result<void> open();
     void close();

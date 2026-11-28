@@ -168,7 +168,7 @@ For determinism the link passes `--build-id=sha1` explicitly. The amended spec �
 forbids relying on the linker's default, because distros configure different defaults.
 The rest of the spec §7a.3 flag list (`-Werror=date-time`, `-ffile-prefix-map`,
 `ar rcsD`) is applied in the compile and archive rules. Release and shipping configs
-define `NDEBUG=1`, as the CMake stage0 build does.
+define `NDEBUG=1`, as the CMake stage0 build did.
 
 `bootstrap.sh` keeps its state under `.bootstrap/`, which is gitignored
 (now in spec §7a.2). Before the `cmp` it asserts that the stage1 and stage2 ConfigTuple
@@ -910,3 +910,33 @@ The luau-lsp advice and the `.luaurc` template went too. luau-lsp can't read clu
 they only ever helped Luau manifests. `kiln check` is the type-checker for manifests
 now, and `types/build.d.luau` stays a Luau definitions file, since that is what the
 checker reads.
+
+## Kiln builds itself from a released seed
+
+From 0.3.0 Kiln has no CMake build. The first build of a checkout starts from a released
+Kiln, the seed that `build/seed.env` pins, and from then on Kiln builds itself (spec
+§7a.2). This reverses the old rule that the CMake build was a permanent escape hatch.
+
+We kept CMake while Kiln had no releases, because nothing else could build the first
+binary. Once releases existed it cost more than it gave: every new source group or
+library had to be listed in both build descriptions, the suite could only be built by
+CMake, and CMake's sanitizer preset had quietly stopped adding the sanitizer flags, so
+the "ASan + UBSan" job had been running an ordinary build. Building the suite with Kiln
+fixed that, and the first real sanitizer run found two leaks: the trace store and the
+file-hash cache never closed their SQLite connections, and glob results in manifest
+userdata had no destructor.
+
+The seed is pinned by version and checksum, and `seed.sh` refuses anything else. A
+cached copy that no longer matches is downloaded again. The bootstrap builds today's
+source with the seed, then has that binary build Kiln again before the proof build, so
+the convergence check compares two builds made by today's Kiln even when the seed lowers
+some task differently.
+
+The cost is the platform question. Only Linux x86-64 has releases, so a platform without
+one has no seed. When that day comes, a first binary can be cross-built, or the old
+CMake files can be brought back from history for one build. We'd rather pay that once
+than maintain a second build forever.
+
+We chose `--tool name=path` over a feature flag for picking a compiler. It changes one
+entry of the `tools` table for one run, needs no manifest change (so the seed can still
+read Kiln's manifests), and is useful outside CI.

@@ -23,6 +23,9 @@ namespace kiln {
 class FileHashCache {
 public:
     explicit FileHashCache(fs::path db_path);
+    ~FileHashCache() { close(); }
+    FileHashCache(const FileHashCache&) = delete;
+    FileHashCache& operator=(const FileHashCache&) = delete;
 
     Result<void> open();
     void close();

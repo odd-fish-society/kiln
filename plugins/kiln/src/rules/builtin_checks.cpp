@@ -78,15 +78,6 @@ TaskResult run_check_pkg_config(TaskCtx& ctx) {
     return r;
 }
 
-std::vector<std::string> indexed_params(const TaskDecl& decl, const std::string& key) {
-    std::vector<std::string> out;
-    std::string prefix = key + ".";
-    for (auto& [k, v] : decl.params)
-        if (k.size() > prefix.size() && k.compare(0, prefix.size(), prefix) == 0)
-            out.push_back(v);
-    return out;
-}
-
 } // namespace
 
 void register_checks() {

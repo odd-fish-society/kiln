@@ -1,6 +1,6 @@
 // hamr's C++ test library: the one header hamr/test.h, from the hamr
-// repository (a git submodule at hamr/ in this plugin). Only the CMake build
-// of kiln_tests includes it; nothing in Kiln's own build graph links it.
+// repository (a git submodule at hamr/ in this plugin). The kiln_tests target
+// uses it; the kiln binary doesn't.
 
 plugin "hamr" {}
 

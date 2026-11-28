@@ -22,6 +22,8 @@ struct BuildOptions {
     std::string platform_override;
     std::string config_override;
     std::vector<std::pair<std::string, std::string>> features;
+    // `--tool name=path`: overrides of the workspace's tools table.
+    std::vector<std::pair<std::string, std::string>> tools;
     std::vector<std::string> enable_plugins;
     std::vector<std::string> disable_plugins;
     int jobs = 0;

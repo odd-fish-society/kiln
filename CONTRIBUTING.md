@@ -21,8 +21,8 @@ to change, so we can agree on the approach before you spend time on it. Then:
 2. Make the change, with tests. Kiln's tests live in `plugins/kiln_tests/`, one file per
    area, and most of them build a tiny workspace and run the real binary against it.
 3. Run the suite and the bootstrap check locally (below).
-4. Open the pull request. CI runs on it: the suite with GCC and with Clang, the suite
-   under ASan and UBSan, and the bootstrap convergence check.
+4. Open the pull request. CI runs on it: the suite with GCC, with Clang and under ASan
+   and UBSan, and the bootstrap convergence check.
 
 We rebase pull requests rather than merging them, so history stays linear. Keep a pull
 request to one piece of work, and write commit messages that say what changed and why,
@@ -30,7 +30,7 @@ with no attribution lines.
 
 ## Building and testing
 
-You'll need Linux, GCC 15 or Clang 19 or newer, CMake and Ninja. Clone with the
+You'll need Linux on x86-64, GCC 15 or Clang 19 or newer, and curl. Clone with the
 submodules:
 
 ```sh
@@ -38,21 +38,29 @@ git clone --recursive https://github.com/odd-fish-society/kiln.git
 cd kiln
 ```
 
-To build and run the suite:
+Kiln builds itself, starting from a released Kiln (the seed). The first time, run the
+bootstrap, which fetches the seed, builds Kiln and leaves it in
+`.bootstrap/self-build/kiln`:
 
 ```sh
-cmake -S . -B build/tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DKILN_BUILD_TESTS=ON
-cmake --build build/tests
-./build/tests/kiln_tests
+./bootstrap.sh
 ```
 
-`./build/tests/kiln_tests --case 'K4*'` runs only the cases whose names match. To check
-the build under the sanitizers, use the `dev` preset (`cmake --preset dev && cmake
---build build/dev`, then `./build/dev/kiln_tests`).
+With that Kiln on your `PATH` (or called by its path), `kiln test` builds the suite and
+the kiln binary it tests, then runs it:
 
-`./bootstrap.sh` builds Kiln, has it build itself, builds it once more with that binary,
-and checks that the last two are byte-identical. Run it before you send a change that
-touches how Kiln compiles or links.
+```sh
+kiln test
+kiln test --tool cxx=clang++ --tool cc=clang   # with Clang
+kiln test --config dev-asan-ubsan              # under ASan and UBSan
+```
+
+`.kiln/out/linux-release/bin/kiln_tests --case 'K4*'` runs only the cases whose names
+match.
+
+The bootstrap also builds Kiln once more with the Kiln it built, and checks that the last
+two binaries are byte-identical. Run it again before you send a change that touches how
+Kiln compiles or links.
 
 ## What to keep in mind
 
@@ -65,9 +73,10 @@ a project, its paths or its tools, and the boundary lint in the suite fails if t
 Anything specific to one project belongs in that project's workspace files: its own
 rules, commands and targets.
 
-Kiln's own manifests have to stay readable by the previous Kiln, because the bootstrap
-reads them with it. So a change to the manifest API lands first, and Kiln's own
-manifests start using it in a later change.
+Kiln's own manifests have to stay readable by the seed, the release `build/seed.env`
+pins, because the bootstrap reads them with it. So a change to the manifest API lands
+first, and Kiln's own manifests start using it only after a release has it and the seed
+has moved to that release.
 
 ## Licensing of contributions
 
@@ -114,8 +123,8 @@ When `dev` has gathered enough for a release:
 3. Fast-forward `main` to it.
 4. Tag it with an annotated `v0.x.y` whose message is the changelog entry, headed
    `Kiln 0.x.y: <summary>`.
-5. Push `main` and the tag. The tag starts the Release workflow, which builds Kiln,
-   checks that `kiln --version` matches the tag, runs the suite, and publishes the
-   GitHub release with the Linux download and the tag's message as its notes.
+5. Push `main` and the tag. The tag starts the Release workflow, which builds Kiln from
+   the seed, checks that `kiln --version` matches the tag, runs the suite, and publishes
+   the GitHub release with the Linux download and the tag's message as its notes.
 
 `main` then holds exactly the commit CI passed on `dev`.
