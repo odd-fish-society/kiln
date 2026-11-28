@@ -4,6 +4,31 @@ Each release is an annotated tag (`v0.x.0`, or `v0.x.y` for a release of
 fixes only) whose message is the entry below. Versions before 1.0 may change
 the manifest API; every entry says whether existing manifests need to change.
 
+## 0.4.0
+
+Dependencies, embedded files, and a CI action. Existing manifests don't need to change.
+
+- `dependency "name" { git = "...", commit = "..." }` in `kiln.workspace.cluau` declares
+  a repository the workspace builds from source. Kiln fetches it into the workspace's own
+  store (`.kiln/store/`) and links it at `.kiln/deps/<name>`; manifests reach its files
+  as `dep:<name>/...` in globs, sources, include folders and the other paths they write.
+  Each repository and commit is fetched once, workspaces nested inside another share
+  the outermost one's store (`share_store = false` opts out), and nothing is written
+  outside the workspace.
+- `kiln fetch` fetches and links the declared dependencies; any build does too.
+  `--dependency name=dir` (on `build`, `test`, `daemon` and `fetch`) links one to your
+  own checkout for a run. `kiln cache` shows the store, and `kiln cache --prune` deletes
+  what no workspace uses.
+- A module's `embed = { name, files, base }` compiles files into it as a table,
+  `<name>_files` and `<name>_count` in `<name>.embed.h`. Editing an embedded file
+  rebuilds only the table.
+- The `setup-kiln` action (`.github/actions/setup-kiln`) installs a release in a GitHub
+  Actions job, checks its checksum and caches the dependency store.
+- `seed.sh` keeps its download in the outermost workspace's store, so a Kiln checkout
+  inside a project shares it.
+- Fixed: a header a dependency task generates no longer costs one extra rebuild of the
+  code that includes it after a fresh build.
+
 ## 0.3.0
 
 Kiln builds itself from a released Kiln, and the CMake build is gone. Manifests don't

@@ -22,8 +22,8 @@ add your own without changing Kiln.
 Releases are a single binary for Linux x86-64, with the standard rules built in:
 
 ```sh
-curl -fsSL https://github.com/odd-fish-society/kiln/releases/download/v0.3.0/kiln-v0.3.0-linux-x86_64.tar.gz | tar -xz
-./kiln-v0.3.0-linux-x86_64/bin/kiln --version
+curl -fsSL https://github.com/odd-fish-society/kiln/releases/download/v0.4.0/kiln-v0.4.0-linux-x86_64.tar.gz | tar -xz
+./kiln-v0.4.0-linux-x86_64/bin/kiln --version
 ```
 
 In a GitHub Actions workflow, the `setup-kiln` action installs a release, checks its
