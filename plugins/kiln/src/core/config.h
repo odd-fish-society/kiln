@@ -28,6 +28,14 @@ struct PluginRoot {
 };
 
 // Global workspace settings from kiln.workspace.cluau.
+// A declared dependency (spec §6.9).
+struct DependencyConfig {
+    std::string name;
+    std::string git;
+    std::string commit;
+    std::string site; // "file:line" of the declaration
+};
+
 struct WorkspaceConfig {
     std::string name;
     std::map<std::string, int> pools;         // named concurrency caps ("link" = 2)
@@ -45,6 +53,8 @@ struct WorkspaceConfig {
     std::string test_target;                  // `kiln test`'s default target
     std::string smoke_suite = "hamr.cluau";   // `kiln smoke`'s hamr suite
     std::string smoke_hamr;                   // script printing the hamr binary; empty = PATH
+    std::vector<DependencyConfig> dependencies; // declaration order
+    bool share_store = true;                  // nested: use the outermost workspace's store
 };
 
 } // namespace kiln

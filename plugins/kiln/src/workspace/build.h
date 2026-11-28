@@ -24,6 +24,8 @@ struct BuildOptions {
     std::vector<std::pair<std::string, std::string>> features;
     // `--tool name=path`: overrides of the workspace's tools table.
     std::vector<std::pair<std::string, std::string>> tools;
+    // `--dependency name=dir`: link these dependencies to the given folders.
+    std::vector<std::pair<std::string, std::string>> dependencies;
     std::vector<std::string> enable_plugins;
     std::vector<std::string> disable_plugins;
     int jobs = 0;

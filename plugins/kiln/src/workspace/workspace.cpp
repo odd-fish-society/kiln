@@ -67,6 +67,8 @@ Result<Workspace> load_workspace(const fs::path& root) {
     if (!wres.ok())
         return Result<Workspace>::fail(ws.workspace_file + ": " + wres.error);
     ws.commands = wres->decls.commands;
+    for (auto& d : wres->decls.dependencies)
+        ws.config.dependencies.push_back({d.name, d.git, d.commit, d.file});
     if (wres->decls.workspace) {
         auto& w = *wres->decls.workspace;
         ws.config.name = w.name;
@@ -85,6 +87,7 @@ Result<Workspace> load_workspace(const fs::path& root) {
         ws.config.env_allow = w.env_allow;
         ws.config.default_config = w.default_config;
         ws.config.system_libs = w.system_libs;
+        ws.config.share_store = w.share_store;
         if (w.plugin_roots_declared) {
             ws.config.plugin_roots.clear();
             for (auto& pr : w.plugin_roots) {

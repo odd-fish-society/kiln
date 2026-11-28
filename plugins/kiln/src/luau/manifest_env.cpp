@@ -20,6 +20,7 @@ namespace kiln::luau {
 const std::set<std::string>& builtin_verbs() {
     static const std::set<std::string> v = {"build", "plugins", "query", "why-dirty", "daemon",
                                             "setup-clion", "test", "smoke", "check", "convert", "clean",
+                                            "fetch", "cache",
                                             "run", "help"};
     return v;
 }
@@ -111,6 +112,40 @@ std::string call_site(lua_State* L, EvalState* st) {
     if (lua_getinfo(L, 1, "l", &ar) && ar.currentline > 0)
         return st->primary_file + ":" + std::to_string(ar.currentline);
     return st->primary_file;
+}
+
+// ---- manifest paths -----------------------------------------------------------
+
+// `dep:<name>/<rest>` names a file in a declared dependency's tree, linked at
+// .kiln/deps/<name>; the result is that workspace-relative path. Returns ""
+// when `p` isn't a dep: path.
+std::string dep_path(lua_State* L, EvalState* st, const std::string& p) {
+    if (!util::starts_with(p, "dep:"))
+        return "";
+    const std::string rest = p.substr(4);
+    const auto slash = rest.find('/');
+    const std::string name = rest.substr(0, slash);
+    if (name.empty())
+        luaL_error(L, "%s: '%s' names no dependency (write dep:<name>/<path>)", call_site(L, st).c_str(),
+                   p.c_str());
+    if (!st->opts.dependencies.count(name))
+        luaL_error(L, "%s: '%s' names dependency '%s', which kiln.workspace.cluau doesn't declare",
+                   call_site(L, st).c_str(), p.c_str(), name.c_str());
+    const std::string base = ".kiln/deps/" + name;
+    const std::string tail = slash == std::string::npos ? "" : rest.substr(slash + 1);
+    const std::string ws_rel = tail.empty() ? base : util::norm(base + "/" + tail);
+    if (ws_rel != base && !util::starts_with(ws_rel, base + "/"))
+        luaL_error(L, "%s: '%s' leaves the dependency's tree", call_site(L, st).c_str(), p.c_str());
+    return ws_rel;
+}
+
+// A path written in a manifest, workspace-relative: a dep: path, else relative
+// to the manifest's folder.
+std::string manifest_path(lua_State* L, EvalState* st, const std::string& p) {
+    std::string dep = dep_path(L, st, p);
+    if (!dep.empty())
+        return dep;
+    return util::join_rel(st->manifest_dir_rel, p);
 }
 
 // ---- unknown-field validation (spec §6.2) -----------------------------------
@@ -292,7 +327,7 @@ bool read_fileset(lua_State* L, int idx, EvalState* st, const char* field,
                     if (!p)
                         luaL_error(L, "'%s' entries must be strings, glob results, or tables",
                                    field);
-                    std::string ws_rel = util::join_rel(st->manifest_dir_rel, p);
+                    std::string ws_rel = manifest_path(L, st, p);
                     if (ws_rel == ".." || util::starts_with(ws_rel, "../"))
                         luaL_error(L, "'%s' path escapes the workspace root: %s", field, p);
                     files.push_back(ws_rel);
@@ -323,17 +358,36 @@ int glob_impl(lua_State* L) {
     if (current_kind(st) == FileKind::RuleLibrary)
         luaL_error(L, "%s: `glob` is not available in a rule library (its cook's inputs are)",
                    call_site(L, st).c_str());
-    auto res = st->opts.glob_cache ? st->opts.glob_cache->glob(st->opts.manifest_dir, pattern)
-                                   : glob(st->opts.manifest_dir, pattern);
+    // A dep: pattern globs inside the dependency's linked tree.
+    fs::path root = st->opts.manifest_dir;
+    std::string dir_rel = st->manifest_dir_rel;
+    std::string sub = pattern;
+    if (util::starts_with(sub, "dep:")) {
+        const std::string rest = sub.substr(4);
+        const auto slash = rest.find('/');
+        if (slash == std::string::npos)
+            luaL_error(L, "%s: glob '%s' needs a pattern after the dependency (dep:<name>/<pattern>)",
+                       call_site(L, st).c_str(), pattern);
+        dir_rel = dep_path(L, st, sub.substr(0, 4 + slash));
+        sub = rest.substr(slash + 1);
+        if (sub.find("..") != std::string::npos)
+            luaL_error(L, "%s: glob '%s' leaves the dependency's tree", call_site(L, st).c_str(), pattern);
+        root = st->opts.workspace_root / dir_rel;
+        std::error_code ec;
+        if (!fs::is_directory(root, ec))
+            luaL_error(L, "%s: dependency '%s' isn't fetched yet (`kiln fetch`, or any `kiln build`, fetches it)",
+                       call_site(L, st).c_str(), rest.substr(0, slash).c_str());
+    }
+    auto res = st->opts.glob_cache ? st->opts.glob_cache->glob(root, sub) : glob(root, sub);
     if (!res.ok())
         luaL_error(L, "%s", res.error.c_str());
     FileSetUD ud;
-    ud.fs.pattern = std::move(res->pattern);
+    ud.fs.pattern = pattern;
     ud.fs.files = std::move(res->files);
-    ud.dir_rel = st->manifest_dir_rel;
+    ud.dir_rel = dir_rel;
     // Validate: matched paths must stay inside the workspace.
     for (auto& f : ud.fs.files) {
-        std::string ws_rel = util::join_rel(st->manifest_dir_rel, f);
+        std::string ws_rel = util::join_rel(ud.dir_rel, f);
         if (ws_rel == ".." || util::starts_with(ws_rel, "../"))
             luaL_error(L, "glob '%s' escapes the workspace root", pattern);
     }
@@ -348,7 +402,7 @@ int glob_impl(lua_State* L) {
         FileSet record;
         record.pattern = ud.fs.pattern;
         for (auto& f : ud.fs.files)
-            record.files.push_back(util::join_rel(st->manifest_dir_rel, f));
+            record.files.push_back(util::join_rel(ud.dir_rel, f));
         st->decls.globs.push_back(std::move(record));
     }
     push_fileset(L, &ud);
@@ -505,7 +559,7 @@ int spec_module(lua_State* L) {
     validate_fields(L, 2, st,
                     {"sources", "exclude", "public_includes", "private_includes", "public_defines",
                      "private_defines", "deps", "platforms", "configs", "cpp_std", "pch",
-                     "syslibs", "public_syslibs", "public_link_flags", "flags"},
+                     "syslibs", "public_syslibs", "public_link_flags", "flags", "embed"},
                     {});
     if (st->decls.modules.empty())
         luaL_error(L, "internal: module spec without declaration");
@@ -533,7 +587,7 @@ int spec_module(lua_State* L) {
     auto join_inc = [&](std::vector<std::string> raw) {
         std::vector<std::string> out;
         for (auto& d : raw)
-            out.push_back(util::join_rel(st->manifest_dir_rel, d));
+            out.push_back(manifest_path(L, st, d));
         return out;
     };
     m.public_includes = join_inc(get_strvec_field(L, 2, "public_includes"));
@@ -546,7 +600,7 @@ int spec_module(lua_State* L) {
     m.cpp_std = get_string_field(L, 2, "cpp_std", false, present);
     m.pch = get_string_field(L, 2, "pch", false, present);
     if (!m.pch.empty()) {
-        std::string ws_rel = util::join_rel(st->manifest_dir_rel, m.pch);
+        std::string ws_rel = manifest_path(L, st, m.pch);
         if (ws_rel == ".." || util::starts_with(ws_rel, "../"))
             luaL_error(L, "module '%s': pch path escapes the workspace root: %s",
                        m.name.c_str(), m.pch.c_str());
@@ -556,6 +610,74 @@ int spec_module(lua_State* L) {
     m.public_syslibs = get_strvec_field(L, 2, "public_syslibs");
     m.public_link_flags = get_strvec_field(L, 2, "public_link_flags");
     m.flags = get_strvec_field(L, 2, "flags");
+
+    // embed: one { name, files, base } table, or a list of them.
+    lua_getfield(L, 2, "embed");
+    if (!lua_isnil(L, -1)) {
+        if (!lua_istable(L, -1))
+            luaL_typeerrorL(L, -1, "embed");
+        auto read_embed = [&](int idx) {
+            validate_fields(L, idx, st, {"name", "files", "base"}, {});
+            EmbedDecl e;
+            bool present = false;
+            e.name = get_string_field(L, idx, "name", true, present);
+            bool ident = !e.name.empty() && !(e.name[0] >= '0' && e.name[0] <= '9');
+            for (char c : e.name)
+                ident = ident && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                  (c >= '0' && c <= '9') || c == '_');
+            if (!ident)
+                luaL_error(L, "module '%s': embed name '%s' must be a C identifier", m.name.c_str(),
+                           e.name.c_str());
+            for (auto& other : m.embeds)
+                if (other.name == e.name)
+                    luaL_error(L, "module '%s': embed '%s' declared twice", m.name.c_str(), e.name.c_str());
+            lua_getfield(L, idx, "files");
+            if (lua_isnil(L, -1))
+                luaL_error(L, "module '%s': embed '%s' needs `files`", m.name.c_str(), e.name.c_str());
+            if (!read_fileset(L, -1, st, "files", e.files))
+                luaL_typeerrorL(L, -1, "files");
+            lua_pop(L, 1);
+            std::sort(e.files.begin(), e.files.end());
+            e.files.erase(std::unique(e.files.begin(), e.files.end()), e.files.end());
+            // Each file's name in the table: relative to `base`, else its
+            // file name. Names must be unique.
+            std::string base = get_string_field(L, idx, "base", false, present);
+            if (!base.empty())
+                base = manifest_path(L, st, base);
+            std::set<std::string> seen;
+            for (auto& f : e.files) {
+                std::string entry;
+                if (base.empty()) {
+                    entry = util::path_basename(f);
+                } else if (util::starts_with(f, base + "/")) {
+                    entry = f.substr(base.size() + 1);
+                } else {
+                    luaL_error(L, "module '%s': embed '%s': %s is not under its base %s", m.name.c_str(),
+                               e.name.c_str(), f.c_str(), base.c_str());
+                }
+                if (!seen.insert(entry).second)
+                    luaL_error(L, "module '%s': embed '%s' has two files named '%s' (set `base` to keep their folders)",
+                               m.name.c_str(), e.name.c_str(), entry.c_str());
+                e.entries.push_back(entry);
+            }
+            m.embeds.push_back(std::move(e));
+        };
+        lua_getfield(L, -1, "name");
+        const bool single = !lua_isnil(L, -1);
+        lua_pop(L, 1);
+        if (single) {
+            read_embed(lua_gettop(L));
+        } else {
+            lua_pushnil(L);
+            while (lua_next(L, -2) != 0) {
+                if (!lua_istable(L, -1))
+                    luaL_error(L, "module '%s': embed entries must be { name, files, base } tables", m.name.c_str());
+                read_embed(lua_gettop(L));
+                lua_pop(L, 1);
+            }
+        }
+    }
+    lua_pop(L, 1);
 
     lua_getfield(L, 2, "deps");
     if (!lua_isnil(L, -1)) {
@@ -634,7 +756,7 @@ int spec_c_library(lua_State* L) {
     auto join_inc = [&](std::vector<std::string> raw) {
         std::vector<std::string> out;
         for (auto& d : raw)
-            out.push_back(util::join_rel(st->manifest_dir_rel, d));
+            out.push_back(manifest_path(L, st, d));
         return out;
     };
     c.includes = join_inc(get_strvec_field(L, 2, "includes"));
@@ -834,7 +956,8 @@ int spec_workspace(lua_State* L) {
     validate_fields(L, 2, st,
                     {"name", "pools", "jobs", "tools", "strict_globs", "cpp_std",
                      "c_std", "env_allow", "default_config", "system_libs",
-                     "plugin_roots", "rules", "link_record", "test_target", "smoke", "kiln_version"},
+                     "plugin_roots", "rules", "link_record", "test_target", "smoke", "kiln_version",
+                     "share_store"},
                     {});
     if (!st->decls.workspace)
         luaL_error(L, "internal: workspace spec without declaration");
@@ -842,6 +965,7 @@ int spec_workspace(lua_State* L) {
     bool present = false;
     w.name = get_string_field(L, 2, "name", false, present);
     w.strict_globs = get_bool_field(L, 2, "strict_globs", false);
+    w.share_store = get_bool_field(L, 2, "share_store", true);
     w.cpp_std = get_string_field(L, 2, "cpp_std", false, present);
     if (w.cpp_std.empty())
         w.cpp_std = "c++20";
@@ -967,6 +1091,52 @@ int spec_command(lua_State* L) {
     c.config = get_string_field(L, 2, "config", false, present);
     if (c.run.empty())
         luaL_error(L, "%s: command '%s' needs a non-empty `run`", c.file.c_str(), c.name.c_str());
+    return 0;
+}
+
+// ---- dependencies -------------------------------------------------------------
+
+int decl_dependency(lua_State* L) {
+    EvalState* st = state_from(L);
+    const char* name = luaL_checkstring(L, 1);
+    if (current_kind(st) != FileKind::Workspace)
+        luaL_error(L, "%s: `dependency` is only allowed in kiln.workspace.cluau", call_site(L, st).c_str());
+    bool ok = name[0] != 0;
+    for (const char* c = name; *c; ++c)
+        ok = ok && ((*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') || *c == '_' || *c == '-');
+    if (!ok)
+        luaL_error(L, "%s: dependency name '%s' must be lowercase letters, digits, '_' and '-'",
+                   call_site(L, st).c_str(), name);
+    for (auto& d : st->decls.dependencies)
+        if (d.name == name)
+            luaL_error(L, "%s: dependency '%s' declared twice (first at %s)", call_site(L, st).c_str(), name,
+                       d.file.c_str());
+    DependencyDecl d;
+    d.name = name;
+    d.file = call_site(L, st);
+    st->decls.dependencies.push_back(std::move(d));
+    lua_newuserdatatagged(L, 1, 1);
+    lua_getfield(L, LUA_REGISTRYINDEX, "kiln_dependency_mt");
+    lua_setmetatable(L, -2);
+    return 1;
+}
+
+int spec_dependency(lua_State* L) {
+    EvalState* st = state_from(L);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    validate_fields(L, 2, st, {"git", "commit"}, {});
+    if (st->decls.dependencies.empty())
+        luaL_error(L, "internal: dependency spec without declaration");
+    auto& d = st->decls.dependencies.back();
+    bool present = false;
+    d.git = get_string_field(L, 2, "git", true, present);
+    d.commit = get_string_field(L, 2, "commit", true, present);
+    bool hex = d.commit.size() == 40;
+    for (char c : d.commit)
+        hex = hex && ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
+    if (!hex)
+        luaL_error(L, "%s: dependency '%s': commit must be a full commit id (40 lowercase hex digits), not '%s'",
+                   d.file.c_str(), d.name.c_str(), d.commit.c_str());
     return 0;
 }
 
@@ -1699,6 +1869,11 @@ void install_api(lua_State* L, EvalState* st) {
     lua_setfield(L, LUA_REGISTRYINDEX, "kiln_command_mt");
 
     lua_createtable(L, 0, 1);
+    lua_pushcfunction(L, spec_dependency, "spec");
+    lua_setfield(L, -2, "__call");
+    lua_setfield(L, LUA_REGISTRYINDEX, "kiln_dependency_mt");
+
+    lua_createtable(L, 0, 1);
     lua_pushcfunction(L, spec_rule, "spec");
     lua_setfield(L, -2, "__call");
     lua_setfield(L, LUA_REGISTRYINDEX, "kiln_rule_mt");
@@ -1719,6 +1894,7 @@ void install_api(lua_State* L, EvalState* st) {
     set_field(L, "target", decl_target);
     set_field(L, "workspace", decl_workspace);
     set_field(L, "command", decl_command);
+    set_field(L, "dependency", decl_dependency);
     set_field(L, "glob", glob_impl);
     set_field(L, "require", require_impl);
     set_field(L, "rule", decl_rule);

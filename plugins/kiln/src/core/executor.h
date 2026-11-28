@@ -22,6 +22,7 @@ public:
         TaskId id;
         bool outputs_changed = false; // this session
         Hash256 output_summary;       // from dep's (new or old) trace
+        std::vector<std::string> outputs; // its declared outputs (workspace-relative)
     };
 
     struct Result {

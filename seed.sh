@@ -4,7 +4,12 @@
 # once into <cache>/<version>/ and checked against the checksum; a cached
 # copy that no longer matches is thrown away and downloaded again.
 #
-#   seed.sh [cache-dir]     default: .bootstrap/seed in this checkout
+#   seed.sh [cache-dir]
+#
+# The default cache is the dependency store's releases folder of the
+# outermost workspace holding this checkout (<root>/.kiln/store/releases),
+# so a Kiln checkout nested in a project shares one copy with it, and nothing
+# is written outside that workspace.
 #
 # Exit codes: 0 ok (the path is on stdout), 1 the seed can't be had.
 
@@ -12,7 +17,17 @@ set -u
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$ROOT/build/seed.env"
-CACHE="${1:-$ROOT/.bootstrap/seed}"
+# The outermost folder at or above this checkout holding a kiln.workspace.cluau.
+outermost() {
+    dir=$ROOT
+    found=$ROOT
+    while [ "$dir" != "/" ]; do
+        [ -f "$dir/kiln.workspace.cluau" ] && found=$dir
+        dir=$(dirname -- "$dir")
+    done
+    printf '%s\n' "$found"
+}
+CACHE="${1:-$(outermost)/.kiln/store/releases}"
 VERSION="$KILN_SEED_VERSION"
 
 fail() {

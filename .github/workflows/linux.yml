@@ -1,7 +1,7 @@
 # Kiln builds itself from the seed (the release build/seed.env pins), then
 # builds and runs its suite with GCC, with Clang and under ASan and UBSan (the
-# boundary lint included), and checks that Kiln rebuilding itself converges
-# byte for byte.
+# boundary lint included), checks that Kiln rebuilding itself converges
+# byte for byte, and runs the setup-kiln action against a published release.
 #
 # The nested submodules (Luau, cluau, hamr) are checked out at the commits
 # this commit pins.
@@ -66,3 +66,23 @@ jobs:
       # itself again from a fresh state: the last two must be byte-identical.
       - name: Bootstrap
         run: ./bootstrap.sh
+
+  setup-kiln:
+    name: setup-kiln action
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      # The action as this commit has it, installing a published release.
+      - id: kiln
+        uses: ./.github/actions/setup-kiln
+        with:
+          version: 0.3.0
+          cache-store: 'false'
+
+      - name: Check
+        run: |
+          kiln --version | grep -x 'kiln 0.3.0'
+          test -x "${{ steps.kiln.outputs.kiln }}"
+          test -d .kiln/store/releases/0.3.0

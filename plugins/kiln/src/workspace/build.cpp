@@ -1,4 +1,5 @@
 #include "workspace/build.h"
+#include "workspace/deps.h"
 #include "workspace/sweep.h"
 
 #include <algorithm>
@@ -623,6 +624,19 @@ Result<BuildOutcome> run_build(const BuildOptions& opts, console::Renderer& rend
         return Result<BuildOutcome>::fail(ws.error);
     apply_tool_overrides(*ws, opts.tools);
 
+    // Declared dependencies are fetched and linked before anything evaluates
+    // a manifest that globs into them.
+    std::vector<std::string> dep_warnings;
+    {
+        deps::SyncOptions so;
+        so.overrides = opts.dependencies;
+        so.note = [&](const std::string& line) { renderer.note(line); };
+        auto synced = deps::sync(*ws, so);
+        if (!synced.ok())
+            return Result<BuildOutcome>::fail(synced.error);
+        dep_warnings = std::move(synced->warnings);
+    }
+
     std::vector<TargetSpec> specs;
     if (opts.target_specs.empty()) {
         if (ws->targets.size() == 1) {
@@ -647,6 +661,7 @@ Result<BuildOutcome> run_build(const BuildOptions& opts, console::Renderer& rend
     }
 
     BuildOutcome outcome;
+    outcome.warnings = std::move(dep_warnings);
     RunState run(ws->root);
     if (auto o = run.hashes.open(); !o.ok())
         return Result<BuildOutcome>::fail(o.error);

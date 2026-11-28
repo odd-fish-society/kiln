@@ -64,6 +64,7 @@ void register_host();
 void register_checks();
 void register_proto();
 void register_flatbuffers();
+void register_embed();
 } // namespace builtin
 
 void register_builtin_rules() {
@@ -74,6 +75,7 @@ void register_builtin_rules() {
     builtin::register_checks();
     builtin::register_proto();
     builtin::register_flatbuffers();
+    builtin::register_embed();
 }
 
 } // namespace kiln::rules

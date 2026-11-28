@@ -26,6 +26,16 @@ curl -fsSL https://github.com/odd-fish-society/kiln/releases/download/v0.3.0/kil
 ./kiln-v0.3.0-linux-x86_64/bin/kiln --version
 ```
 
+In a GitHub Actions workflow, the `setup-kiln` action installs a release, checks its
+checksum, puts `kiln` on the `PATH` and caches your workspace's dependency store between
+runs:
+
+```yaml
+- uses: odd-fish-society/kiln/.github/actions/setup-kiln@v0.4.0
+  with:
+    version: 0.4.0
+```
+
 To build from source:
 
 ```sh
@@ -165,6 +175,8 @@ kiln setup-clion                    # link compile_commands.json for CLion
 kiln clean                          # delete the outputs (--traces forgets past builds too)
 kiln clean --dead                   # delete only cooks whose sources are gone and unused variants
 kiln test                           # build and run the workspace's test target
+kiln fetch                          # fetch the workspace's declared dependencies
+kiln cache                          # what the dependency store holds (--prune tidies it)
 kiln smoke                          # run the workspace's hamr suite
 kiln <command> [args...]            # a command your workspace declares (see kiln --help)
 ```
@@ -258,6 +270,53 @@ in `src/`, `include/` and `content/`, and give even a vendored library its own p
 A `../` glob can help while you migrate a tree, but don't keep it. Glob results are
 sorted and hashed, so a new file is picked up without any work from you. Shared helpers
 go in `build/*.cluau`, and you pull them in with `require "build/helpers"`.
+
+### Dependencies
+
+A library you build from source, rather than vendor, can be declared in
+`kiln.workspace.cluau`, pinned by its full commit id:
+
+```cluau
+dependency "luau" {
+    git = "https://github.com/luau-lang/luau.git",
+    commit = "0afee00064945abbeb6e6ef2b87633564c54e176",
+}
+```
+
+Kiln fetches it into the workspace's store (`.kiln/store/`) and links it at
+`.kiln/deps/luau`. A plugin you write builds it, reaching its files with `dep:` paths:
+
+```cluau
+plugin "luau" {}
+
+c_library "luau_vm" {
+    sources = glob("dep:luau/VM/src/*.cpp"),
+    public_includes = { "dep:luau/VM/include" },
+}
+```
+
+The first `kiln build` fetches what's missing, and later builds fetch nothing. Each
+repository and commit is downloaded once into the workspace, and workspaces nested inside
+it (a library checked out as a submodule, say) share its store, so they don't download it
+again. Kiln never writes outside the workspace for this, not even to your home folder.
+To work on a dependency alongside your project, point Kiln at your own clone for a run:
+`kiln build game --dependency luau=../luau`.
+
+### Embedding files
+
+A module can carry files in its binary, such as scripts, fonts or shaders:
+
+```cluau
+module "runner" {
+    sources = glob("src/*.cpp"),
+    embed = { name = "std_lib", files = glob("std/*.cluau") },
+}
+```
+
+Kiln generates `std_lib.embed.h`, which declares `std_lib_files` (each file's name,
+bytes and size, sorted by name) and `std_lib_count`, and compiles the table into the
+module. Editing an embedded file rebuilds the table and relinks; nothing that includes
+the header recompiles.
 
 `kiln check` type-checks every manifest against `types/build.d.luau` in strict mode, with
 the errors on your cluau lines, so it's worth running before you build. There's no
@@ -380,7 +439,9 @@ Everything Kiln writes goes under `.kiln/`, which you should add to `.gitignore`
 products are in `out/<platform>-<config>/`. Kiln's memory of past builds is in
 `traces.sqlite` and `hashcache.sqlite`; you can delete them at any time, and the worst
 that happens is a full rebuild. `compile_commands/` is for IDEs, and `graph/` holds the
-project model as stable JSON that you're welcome to script against.
+project model as stable JSON that you're welcome to script against. `store/` holds the
+dependencies you declared and the Kiln releases the bootstrap uses, and `deps/` links
+each dependency to its tree there; `kiln clean` leaves both alone.
 
 ## Things that might surprise you
 

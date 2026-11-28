@@ -35,7 +35,8 @@ int run_process(const fs::path& bin) {
 
 Result<int> cmd_test(const fs::path& root, const std::string& target_in, int jobs,
                      const std::string& platform, const std::string& config,
-                     const std::vector<std::pair<std::string, std::string>>& tools) {
+                     const std::vector<std::pair<std::string, std::string>>& tools,
+                     const std::vector<std::pair<std::string, std::string>>& dependencies) {
     std::string target = target_in;
     if (target.empty()) {
         auto found = root.empty() ? find_workspace_root(fs::current_path())
@@ -57,6 +58,7 @@ Result<int> cmd_test(const fs::path& root, const std::string& target_in, int job
     opts.platform_override = platform;
     opts.config_override = config;
     opts.tools = tools;
+    opts.dependencies = dependencies;
     opts.jobs = jobs;
     opts.progress = console::ProgressMode::Plain;
 

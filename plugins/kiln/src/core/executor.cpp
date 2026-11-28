@@ -226,11 +226,18 @@ Executor::Result Executor::run_task(const TaskDecl& decl,
     // content is trusted only if it was last written before the task started;
     // one written during the run may not be what the tool read, and the trace
     // then keeps the pre-run digest (the next build reruns the task).
+    // A dependency task's declared output is trusted too, however recently it
+    // was written: its producer finished before this task started, and no
+    // other task writes it (a generated header would otherwise cost one
+    // extra rerun after every fresh build).
     Hash256 stored_digest = *digest;
     if (collected_deps != dyn_deps) {
+        std::set<std::string> produced;
+        for (auto& d : dep_info)
+            produced.insert(d.outputs.begin(), d.outputs.end());
         bool trusted = true;
         for (auto& p : collected_deps)
-            if (!hashed_before.count(p) && !written_before(workspace_root_ / p, started)) {
+            if (!hashed_before.count(p) && !produced.count(p) && !written_before(workspace_root_ / p, started)) {
                 trusted = false;
                 break;
             }

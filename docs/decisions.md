@@ -940,3 +940,49 @@ than maintain a second build forever.
 We chose `--tool name=path` over a feature flag for picking a compiler. It changes one
 entry of the `tools` table for one run, needs no manifest change (so the seed can still
 read Kiln's manifests), and is useful outside CI.
+
+## Dependencies live in the workspace
+
+From 0.4.0 a workspace can declare the repositories it builds from source, and Kiln
+fetches them (spec §6.9). Our own libraries are moving to Kiln, and each pins its
+dependencies by commit, which their CMake builds fetch at configure time. Doing the same
+by hand in every repository would mean a fetch script per library, and submodules would
+make a project that vendors one of them clone that library's dependencies a second
+time.
+
+The rule we kept to is that a build writes only inside the workspace it was pointed at.
+So the store is the workspace's own `.kiln/store/`, not a cache under the user's home.
+We considered a machine-wide store, which would save the most downloads, and turned it
+down for that reason. What we kept from it is sharing within a workspace: a workspace
+nested inside another one on disk uses the outermost one's store, so a project and the
+libraries checked out inside it download each repository and commit once. Two separate
+clones each download their own, and CI caches the store.
+
+Fetched sources sit in the store, never beside a plugin's manifest, so a repository's
+tracked files are only what its authors wrote. Manifests reach them as `dep:<name>/...`,
+which resolves to the link `.kiln/deps/<name>`. That keeps every hashed path
+workspace-relative and the same in every checkout, which a store path would not be.
+
+Trees are read-only, because one tree can serve several workspaces and an edit made by
+mistake through one link would change all of them. Working on a dependency is what
+`--dependency name=dir` is for.
+
+## The embed rule
+
+From 0.4.0 a module can `embed` files (spec §7.4). Embedding a standard library or a font
+into a binary is common, and the usual answers are a generator in the build tool's own
+language, which only that build can run, or C++26 `#embed`, which needs the newest
+compilers and a list of files kept by hand. A built-in rule takes its files from a glob,
+writes plain byte arrays any compiler accepts, and documents the table's layout, so a
+CMake build of the same code can produce the same table with a script of its own.
+
+The header and the table are separate tasks. The header depends only on the table's
+name, so editing an embedded file rebuilds the table and relinks without recompiling
+the code that includes the header.
+
+Making that work showed a cost every generated header had: a header a compile discovers
+was only trusted when it was written before the compile started, and a generated one
+is written just before. The trace then kept the pre-run digest, and the next build
+reran the compile once. A dependency task's declared output is now trusted however
+recently it was written, since its producer finished before the compile started and no
+other task writes it.

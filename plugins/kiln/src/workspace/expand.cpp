@@ -43,6 +43,8 @@ Result<PluginExpansion> expand_plugin(
     env_opts.rule_libraries = ws.config.rules;
     env_opts.lowers_in_cpp = lowers_in_cpp;
     env_opts.glob_cache = memo ? &memo->globs : nullptr;
+    for (auto& d : ws.config.dependencies)
+        env_opts.dependencies.insert(d.name);
 
     auto res = luau::evaluate_file(ws.root / manifest_rel, env_opts);
     if (!res.ok())

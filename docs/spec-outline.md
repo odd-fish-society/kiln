@@ -93,7 +93,8 @@ docs/                         this outline, decisions.md, kpak-format.md
   <root>/<name>/plugin.build.cluau    one per plugin, in each plugin root (default: plugins/)
   <root>/<name>/src/  include/  content/
   .kiln/                      all of Kiln's state (gitignored): traces.sqlite,
-                              hashcache.sqlite, graph/, out/, logs/, compile_commands/
+                              hashcache.sqlite, graph/, out/, logs/, compile_commands/,
+                              deps/ (links to declared dependencies) and store/ (§6.9)
 ```
 
 A game project with layers usually looks like this:
@@ -520,6 +521,7 @@ module(name: string)(spec: {
   deps: { public: {string}?, private: {string}? }?,  // "plugin/module" or "module"
   platforms: {string}?, configs: {string}?,          // filters, data rather than logic
   cpp_std: string?,                    // default from the workspace
+  embed: { name*, files*, base? } | {{...}}?,       // files compiled in as a table (§7.4)
 })
 
 cook(name: string)(spec: {
@@ -544,6 +546,11 @@ command(name: string)(spec: {          // only in kiln.workspace.cluau
   config: string?,                     // default: the workspace's default_config
 })
 
+dependency(name: string)(spec: {       // only in kiln.workspace.cluau (§6.9)
+  git: string*,                        // a URL or a path git fetches from
+  commit: string*,                     // the full 40-digit commit id
+})
+
 glob(pattern: string) -> FileSet       // see §6.4 (not available in rule libraries)
 path.join(a, b), path.parent(p), path.basename(p),
 path.norm(p), path.extension(p), path.replace_extension(p, ext),
@@ -553,7 +560,7 @@ config: frozen table {platform, config, features}   // read-only, for data filte
 ```
 
 `plugin`, `module` and `cook` are only allowed in a plugin manifest, `target` only in a
-target file and `command` only in the workspace file. Anything else is an error with
+target file, and `command` and `dependency` only in the workspace file. Anything else is an error with
 the file and line.
 
 `kiln <name> [args...]`, or `kiln run [--config C] [-j N] [--workspace P] <name>
@@ -606,6 +613,13 @@ says). A `../` glob should be a temporary state or a rare exception. A self-cont
 plugin can move between roots with a plain `git mv`, while inputs reached through
 `../` depend on the directory depth, and their asset ids come from the resolved
 workspace path (§9).
+
+A pattern that starts with `dep:<name>/` globs inside a declared dependency's tree
+(§6.9), rooted at its link `.kiln/deps/<name>`, and the matches are workspace-relative
+paths under that link. The same prefix works in every path a manifest writes: sources,
+include folders, a `pch` header, an embed's `base`. A name the workspace doesn't declare
+is an error, and so is a dependency that isn't fetched yet (any `kiln build` fetches
+it first). A `dep:` path can't leave its tree.
 
 `glob` returns a FileSet that carries the sorted list of matches and the pattern. The
 expansion's digest includes the pattern and the hash of the sorted list, so adding or
@@ -825,6 +839,80 @@ The tests build a fixture plugin end to end from its manifest. They check that:
 - the standard library type-checks cleanly;
 - every rule error names its cause.
 
+### 6.9 Dependencies
+
+A workspace declares the repositories it builds from source:
+
+```cluau
+dependency "luau" {
+    git = "https://github.com/luau-lang/luau.git",
+    commit = "0afee00064945abbeb6e6ef2b87633564c54e176",
+}
+```
+
+A dependency is source the workspace's own manifests build: a plugin declares its
+`c_library` or `module` over `dep:luau/...` paths, and the manifest is committed with the
+workspace. Kiln only fetches the files.
+
+**Isolation.** Nothing Kiln fetches or makes lives outside the workspace: the trees are
+in a store under `.kiln/`, and git runs with the user's hooks off and no prompt. A build
+writes nothing to the user's home or cache folders.
+
+**The store**, `.kiln/store/`, holds:
+
+- `git/<repo>.git`, a bare mirror per repository URL (`<repo>` is the first 16 hex digits
+  of the URL's BLAKE3). Moving a pin fetches only the objects that are new.
+- `src/<repo>/<commit>/`, a read-only tree per repository and commit, and
+  `src/<repo>/<commit>.ok` beside it, written once the tree is complete. A tree whose
+  stamp is missing is checked out again. Checkouts go to a partial folder first and are
+  renamed into place, so an existing tree is always complete.
+- `users/<workspace>.json`, which trees each workspace using the store links.
+- `releases/`, the cache of Kiln releases (the seed, §7a.2).
+
+The mirror gets a commit by fetching it by id; for a server that refuses that, it
+fetches every branch and tag. A commit the repository doesn't have is an error naming
+the dependency. A store is locked while Kiln works in it, so a build and a daemon, or
+two nested workspaces, never race.
+
+**Nested workspaces share one store.** A workspace inside another one on disk uses the
+store of the outermost folder at or above it that holds a `kiln.workspace.cluau`, so a
+dependency pinned by several nested workspaces at one commit is one tree, and nothing
+is written outside the outermost workspace. `share_store = false` in a workspace keeps
+its own store. When two workspaces using one store pin the same repository at different
+commits, the build prints a warning naming both.
+
+**Links.** `.kiln/deps/<name>` is a symlink to the dependency's tree (relative, so moving
+the whole folder keeps it valid). Paths through it are workspace-relative, so digests,
+traces, depfiles and compile commands name `.kiln/deps/<name>/...` and never the store,
+and the same checkout builds the same everywhere. Links for names the workspace no
+longer declares are removed. A file at `.kiln/deps/<name>` that isn't a link is an
+error rather than something Kiln deletes.
+
+**Fetching.** `kiln build`, `kiln test` and `kiln daemon` fetch and link before
+anything evaluates a plugin manifest; `kiln fetch` does only that and prints each link.
+Nothing is fetched for a dependency already linked at its commit.
+
+**Your own checkout.** `--dependency <name>=<dir>` (on `build`, `test`, `daemon` and
+`fetch`) links the dependency to a folder of the user's own for that run, for editing it
+alongside the workspace; the next run without the option links the store's tree again.
+Naming a dependency the workspace doesn't declare is an error.
+
+**The cache command.** `kiln cache` prints the store's trees with their sizes and the
+workspaces using each, the mirrors' and releases' sizes and the total. `kiln cache
+--prune` deletes the trees no workspace using the store declares (a workspace whose
+folder is gone no longer counts), and the mirrors left with no tree. `kiln clean`
+leaves the store and the links alone.
+
+Submodules of a dependency aren't checked out; a library that needs one declares it as
+a dependency of its own.
+
+The tests (KD) cover fetching once per repository and commit, nested workspaces
+sharing the store and the warning for differing pins, `share_store = false`, an
+override and its edits rebuilding, a tree whose stamp is gone, a missing commit, a short
+commit id, an undeclared `dep:` name, a `dependency` outside the workspace file, a build
+that leaves a fresh `HOME` and `XDG_CACHE_HOME` empty, and `kiln fetch` and `kiln
+cache --prune`.
+
 ## 7. Two graphs
 
 Kiln works with two graphs. The first evaluates manifests into declarations. The second
@@ -1037,6 +1125,50 @@ without recompiling them, and editing a public header in core recompiles them. E
 audio's manifest reruns only the expansions that read it, and `kiln query
 "rdeps(plugins/core)"` lists audio and game.
 
+### 7.4 Embedded files
+
+A module can carry files in its code:
+
+```cluau
+module "runner" {
+    sources = glob("src/*.cpp"),
+    embed = { name = "hamr_std", files = { glob("std/*.cluau"), "types/host.d.luau" } },
+}
+```
+
+`embed` is one `{ name, files, base }` table or a list of them. For each one Kiln writes
+two files under `.kiln/out/<config>/gen/<plugin>/embed/<module>/`, puts that folder on
+the module's include path, and compiles the second into the module:
+
+```cpp
+// <name>.embed.h
+struct KilnEmbeddedFile { const char* name; const unsigned char* data; std::size_t size; };
+extern const KilnEmbeddedFile <name>_files[];
+extern const std::size_t <name>_count;
+```
+
+`<name>.embed.cpp` defines them. The table is sorted by entry name. An entry's name is
+the file's name, or with `base` its path under that folder (`sub/b.txt`); two files with
+one name are an error that suggests `base`. Each `data` holds the file's bytes followed by
+a 0 that `size` doesn't count, so text can be read as a C string. A table of no files has
+`count` 0. The struct is guarded by `KILN_EMBEDDED_FILE_DEFINED`, so several tables can
+be included together. `name` must be a C identifier and unique in its module.
+
+The output is plain byte arrays, which any C++ compiler accepts, and it holds no path or
+time, so equal files give equal text. The header and the table are separate tasks: the
+header depends only on the name, so editing an embedded file rebuilds the table and the
+link, never what includes the header. Files joining or leaving a glob join or leave the
+table like any glob change. A CMake build of the same code can write the same table with
+a script of its own.
+
+A dependency's declared output is trusted when a compile discovers it, however recently
+it was written: its producer finished before the compile started, and no other task
+writes it. So a generated header costs no extra rebuild after a fresh build.
+
+The tests (KE) cover the table's contents, order and sizes with and without `base`, an
+empty file, two tables in one module, an edit rebuilding only the table, files joining
+and leaving the glob, and the naming errors.
+
 ## 7a. Self-hosting
 
 Kiln's own repository is a Kiln workspace, laid out by its own rules (§0). The
@@ -1071,10 +1203,11 @@ produces; the log lines say what is happening.
 
 The **seed** is the released Kiln that `build/seed.env` pins: its version, and for each
 platform the SHA256 of the release download. `seed.sh [cache-dir]` prints its path. It
-downloads the release the first time, into `<cache-dir>/<version>/` (by default
-`.bootstrap/seed/`), refuses a download whose checksum doesn't match the pin, and
-downloads again when a cached copy no longer matches. Only platforms with a release have
-a seed.
+downloads the release the first time, into `<cache-dir>/<version>/`, refuses a download
+whose checksum doesn't match the pin, and downloads again when a cached copy no longer
+matches. The default cache is the store's `releases/` folder of the outermost workspace
+holding the checkout (§6.9), so a Kiln checkout nested in a project shares one copy with
+it. Only platforms with a release have a seed.
 
 The **seed build** is today's source built by the seed: `seed build kiln:linux-release`
 produces `seed-build/kiln`.
@@ -1280,7 +1413,7 @@ This is the complete list:
 
 ```
 kiln build [<target>[:<config>]...] [-j N] [--platform=] [--config=] [--feature k=v]
-           [--tool name=path]* [--enable-plugin=p]* [--disable-plugin=p]*
+           [--tool name=path]* [--dependency name=dir]* [--enable-plugin=p]* [--disable-plugin=p]*
            [--progress=fancy|plain|none] [--fail-fast] [--explain]
                                           # --explain prints why each task ran
 kiln plugins --target=T [--platform=][--config=][--json]
@@ -1290,10 +1423,12 @@ kiln daemon [build args]
 kiln setup-clion [--config=]
 kiln clean [--traces]                     # deletes .kiln/out (and the traces with the flag)
 kiln clean --dead                         # deletes dead cooks and variant folders no record lists
-kiln test [<target>] [-j N] [--platform=] [--config=] [--tool name=path]*
+kiln test [<target>] [-j N] [--platform=] [--config=] [--tool name=path]* [--dependency name=dir]*
                                           # build and run; default: the test_target
 kiln smoke [--nightly] [-j N] [-- <hamr run args>]       # the workspace's hamr suite
 kiln check [--defs=]                      # type-check the manifests
+kiln fetch [--dependency name=dir]*       # fetch and link the declared dependencies (§6.9)
+kiln cache [--prune]                      # the dependency store's contents and sizes
 kiln convert <file.luau>... [--check]     # convert Luau manifests to cluau (§6.7)
 kiln run [--config=C] [-j N] [<name> [args...]]          # a workspace command (§6.2); no name lists them
 kiln <name> [args...]                     # the same, for any name that isn't a built-in verb

@@ -140,6 +140,12 @@ std::string decl_set_to_json(const DeclSet& decls) {
                         {"flags", strvec(m.flags)},
                         {"file", m.file},
                         {"line", m.line}});
+        if (!m.embeds.empty()) {
+            json embeds = json::array();
+            for (auto& e : m.embeds)
+                embeds.push_back({{"name", e.name}, {"files", strvec(e.files)}, {"entries", strvec(e.entries)}});
+            mods.back()["embeds"] = embeds;
+        }
     }
     j["modules"] = mods;
     auto cooks = json::array();
@@ -236,7 +242,14 @@ std::string decl_set_to_json(const DeclSet& decls) {
                           {"default_config", w.default_config},
                           {"system_libs", strvec(w.system_libs)},
                           {"plugin_roots_declared", w.plugin_roots_declared},
-                          {"plugin_roots", roots}};
+                          {"plugin_roots", roots},
+                          {"share_store", w.share_store}};
+    }
+    if (!decls.dependencies.empty()) {
+        json deps = json::array();
+        for (auto& d : decls.dependencies)
+            deps.push_back({{"name", d.name}, {"git", d.git}, {"commit", d.commit}, {"file", d.file}});
+        j["dependencies"] = deps;
     }
     if (!decls.commands.empty()) {
         json cmds = json::array();
@@ -298,6 +311,13 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
             m.public_syslibs = to_strvec(v.value("public_syslibs", json::array()));
             m.public_link_flags = to_strvec(v.value("public_link_flags", json::array()));
             m.flags = to_strvec(v.value("flags", json::array()));
+            for (auto& ev : v.value("embeds", json::array())) {
+                EmbedDecl e;
+                e.name = ev.value("name", "");
+                e.files = to_strvec(ev.value("files", json::array()));
+                e.entries = to_strvec(ev.value("entries", json::array()));
+                m.embeds.push_back(std::move(e));
+            }
             m.file = v.value("file", "");
             m.line = v.value("line", 0);
             out.modules.push_back(std::move(m));
@@ -395,7 +415,16 @@ bool decl_set_from_json(const std::string& s, DeclSet& out) {
                 pr.layer = rv.value("layer", "");
                 w.plugin_roots.push_back(std::move(pr));
             }
+            w.share_store = v.value("share_store", true);
             out.workspace = std::move(w);
+        }
+        for (auto& v : j.value("dependencies", json::array())) {
+            DependencyDecl d;
+            d.name = v.value("name", "");
+            d.git = v.value("git", "");
+            d.commit = v.value("commit", "");
+            d.file = v.value("file", "");
+            out.dependencies.push_back(std::move(d));
         }
         for (auto& v : j.value("commands", json::array())) {
             CommandDecl c;

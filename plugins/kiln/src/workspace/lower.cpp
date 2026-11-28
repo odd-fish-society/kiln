@@ -702,7 +702,7 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
     for (auto& m : declset.modules) {
         if (!passes_filter(m.platforms, m.configs, ctx.ct))
             continue;
-        if (m.sources.empty())
+        if (m.sources.empty() && m.embeds.empty())
             continue;
         std::string site = m.file + ":" + std::to_string(m.line);
 
@@ -756,6 +756,36 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
                                           ref.plugin + "' not lowered before '" + plugin +
                                           "'");
             iface_deps.push_back(*ctx.tasks[ref.plugin].interface_task);
+        }
+        // embed (spec §7.4): per table, one task writes <name>.embed.h (it
+        // depends on the name alone, so editing an embedded file recompiles
+        // nothing that includes it) and one writes <name>.embed.cpp, the
+        // bytes, which only the table's own compile reads.
+        std::vector<std::pair<std::string, TaskId>> embed_cpps; // the .cpp and the task writing it
+        if (!m.embeds.empty()) {
+            const std::string gen_dir = ".kiln/out/" + cfg_name(ctx.ct) + "/gen/" + plugin + "/embed/" + m.name;
+            includes.push_back(gen_dir);
+            for (auto& e : m.embeds) {
+                std::map<std::string, std::string> hp;
+                hp["name"] = e.name;
+                hp["part"] = "header";
+                hp["out"] = gen_dir + "/" + e.name + ".embed.h";
+                TaskDecl hd = make_task(ctx, "embed", pdir + "/" + m.name + "/embed-header:" + e.name, hp, {}, {},
+                                        {hp["out"]}, "", code_variant(ctx, "embed", hp, {}));
+                iface_deps.push_back(hd.id);
+                KILN_TRY(void_result(sched.add(std::move(hd))));
+
+                std::map<std::string, std::string> tp;
+                tp["name"] = e.name;
+                tp["part"] = "table";
+                tp["out"] = gen_dir + "/" + e.name + ".embed.cpp";
+                set_indexed(tp, "file", e.files);
+                set_indexed(tp, "entry", e.entries);
+                TaskDecl td = make_task(ctx, "embed", pdir + "/" + m.name + "/embed:" + e.name, tp, e.files, {},
+                                        {tp["out"]}, "", code_variant(ctx, "embed", tp, {}));
+                embed_cpps.push_back({tp["out"], td.id});
+                KILN_TRY(void_result(sched.add(std::move(td))));
+            }
         }
         for (auto& odep : declset.plugin->optional_deps)
             defines.push_back("KILN_HAS_" + util::to_upper(odep) + "=" +
@@ -875,6 +905,30 @@ Result<void> lower_plugin(Scheduler& sched, LowerCtx& ctx, const std::string& pl
             KILN_TRY(void_result(sched.add(std::move(d))));
             pt.compiles.push_back(id);
             pt.module_compiles[m.name].push_back(id);
+            pt.module_objs[m.name].push_back(obj);
+        }
+
+        // The embed tables, compiled with the module's own settings.
+        for (auto& [src, table_task] : embed_cpps) {
+            std::string obj = ".kiln/out/" + cfg_name(ctx.ct) + "/obj/" + plugin + "/" + mdir + "/" +
+                              util::path_basename(src) + ".o";
+            std::map<std::string, std::string> ep;
+            ep["std"] = m.cpp_std.empty() ? ctx.ws->config.cpp_std : m.cpp_std;
+            ep["opt"] = opt_for(ctx.ct);
+            ep["debug"] = debug_for(ctx.ct);
+            ep["tool"] = cxx;
+            ep["out"] = obj;
+            ep["depfile"] = obj + ".d";
+            set_indexed(ep, "include", sorted_uniq(includes));
+            set_indexed(ep, "define", sorted_uniq(defines));
+            set_indexed(ep, "sdk_root", sdk_roots);
+            set_indexed(ep, "flag", m.flags);
+            std::vector<TaskId> edeps = iface_deps;
+            edeps.push_back(table_task);
+            TaskDecl ed = make_task(ctx, "compile_cpp", src, ep, {src}, edeps, {obj}, "", mvariant);
+            auto eid = ed.id;
+            KILN_TRY(void_result(sched.add(std::move(ed))));
+            pt.module_compiles[m.name].push_back(eid);
             pt.module_objs[m.name].push_back(obj);
         }
 

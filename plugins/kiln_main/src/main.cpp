@@ -125,7 +125,7 @@ int main(int argc, char** argv) {
     std::vector<std::string> targets;
     int jobs = 0;
     std::string platform, config;
-    std::vector<std::string> features_raw, tools_raw, enable_plugins, disable_plugins;
+    std::vector<std::string> features_raw, tools_raw, deps_raw, enable_plugins, disable_plugins;
     std::string progress_str;
     bool fail_fast = false, explain = false, print_config_hash = false, verbose = false;
     fs::path workspace;
@@ -135,6 +135,7 @@ int main(int argc, char** argv) {
     build->add_option("--config", config, "config override");
     build->add_option("--feature", features_raw, "feature flag k=v (repeatable)");
     build->add_option("--tool", tools_raw, "tool override name=path, e.g. cxx=clang++ (repeatable)");
+    build->add_option("--dependency", deps_raw, "link a dependency to your own checkout, name=dir (repeatable)");
     build->add_option("--enable-plugin", enable_plugins, "enable plugin (repeatable)");
     build->add_option("--disable-plugin", disable_plugins, "disable plugin (repeatable)");
     build->add_option("--progress", progress_str, "fancy|plain|none");
@@ -174,7 +175,7 @@ int main(int argc, char** argv) {
 
     // ---- daemon -------------------------------------------------------------------
     auto* daemon = app.add_subcommand("daemon", "Watch the workspace and rebuild");
-    std::vector<std::string> d_targets, d_features, d_tools, d_enable, d_disable;
+    std::vector<std::string> d_targets, d_features, d_tools, d_deps, d_enable, d_disable;
     std::string d_platform, d_config, d_progress, d_workspace;
     int d_jobs = 0;
     daemon->add_option("target", d_targets, "target[:platform-config]");
@@ -183,6 +184,7 @@ int main(int argc, char** argv) {
     daemon->add_option("--config", d_config, "config override");
     daemon->add_option("--feature", d_features, "feature flag k=v (repeatable)");
     daemon->add_option("--tool", d_tools, "tool override name=path, e.g. cxx=clang++ (repeatable)");
+    daemon->add_option("--dependency", d_deps, "link a dependency to your own checkout, name=dir (repeatable)");
     daemon->add_option("--enable-plugin", d_enable, "enable plugin (repeatable)");
     daemon->add_option("--disable-plugin", d_disable, "disable plugin (repeatable)");
     daemon->add_option("--progress", d_progress, "fancy|plain|none");
@@ -197,13 +199,14 @@ int main(int argc, char** argv) {
     // ---- test ---------------------------------------------------------------------
     auto* test = app.add_subcommand("test", "Build + run a test target (default: the workspace's test_target)");
     std::string t_target, t_platform, t_config, t_workspace;
-    std::vector<std::string> t_tools;
+    std::vector<std::string> t_tools, t_deps;
     int t_jobs = 0;
     test->add_option("target", t_target, "target name (default: the workspace's test_target)");
     test->add_option("-j", t_jobs, "worker count");
     test->add_option("--platform", t_platform, "platform override");
     test->add_option("--config", t_config, "config override");
     test->add_option("--tool", t_tools, "tool override name=path, e.g. cxx=clang++ (repeatable)");
+    test->add_option("--dependency", t_deps, "link a dependency to your own checkout, name=dir (repeatable)");
     test->add_option("--workspace", t_workspace, "workspace root (default: auto-detect)");
 
     // ---- smoke ----------------------------------------------------------------------
@@ -223,6 +226,18 @@ int main(int argc, char** argv) {
     std::string ck_workspace, ck_defs;
     check->add_option("--defs", ck_defs, "the manifest definitions (default: types/build.d.luau)");
     check->add_option("--workspace", ck_workspace, "workspace root (default: auto-detect)");
+
+    // ---- fetch / cache ----------------------------------------------------------------
+    auto* fetch = app.add_subcommand("fetch", "Fetch and link the workspace's declared dependencies (.kiln/deps)");
+    std::string f_workspace;
+    std::vector<std::string> f_deps;
+    fetch->add_option("--dependency", f_deps, "link a dependency to your own checkout, name=dir (repeatable)");
+    fetch->add_option("--workspace", f_workspace, "workspace root (default: auto-detect)");
+    auto* cache = app.add_subcommand("cache", "Show the dependency store's trees and sizes (--prune deletes unused trees)");
+    std::string ca_workspace;
+    bool ca_prune = false;
+    cache->add_flag("--prune", ca_prune, "delete trees no workspace using the store declares");
+    cache->add_option("--workspace", ca_workspace, "workspace root (default: auto-detect)");
 
     // ---- convert --------------------------------------------------------------------
     auto* convert = app.add_subcommand("convert", "Convert Luau manifests to cluau (writes <stem>.cluau beside each, then removes the .luau)");
@@ -255,7 +270,8 @@ int main(int argc, char** argv) {
             opts.platform_override = platform;
             opts.config_override = config;
             if (!parse_pairs(features_raw, "--feature", opts.features) ||
-                !parse_pairs(tools_raw, "--tool", opts.tools))
+                !parse_pairs(tools_raw, "--tool", opts.tools) ||
+                !parse_pairs(deps_raw, "--dependency", opts.dependencies))
                 return 2;
             opts.enable_plugins = enable_plugins;
             opts.disable_plugins = disable_plugins;
@@ -307,7 +323,8 @@ int main(int argc, char** argv) {
             opts.platform_override = d_platform;
             opts.config_override = d_config;
             if (!parse_pairs(d_features, "--feature", opts.features) ||
-                !parse_pairs(d_tools, "--tool", opts.tools))
+                !parse_pairs(d_tools, "--tool", opts.tools) ||
+                !parse_pairs(d_deps, "--dependency", opts.dependencies))
                 return 2;
             opts.enable_plugins = d_enable;
             opts.disable_plugins = d_disable;
@@ -330,16 +347,29 @@ int main(int argc, char** argv) {
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
         } else if (*test) {
-            std::vector<std::pair<std::string, std::string>> tools;
-            if (!parse_pairs(t_tools, "--tool", tools))
+            std::vector<std::pair<std::string, std::string>> tools, dependencies;
+            if (!parse_pairs(t_tools, "--tool", tools) || !parse_pairs(t_deps, "--dependency", dependencies))
                 return 2;
             auto r = cmd_test(fs::path(t_workspace), t_target, t_jobs, t_platform,
-                              t_config, tools);
+                              t_config, tools, dependencies);
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
         } else if (*smoke) {
             auto r = cmd_smoke(fs::path(s2_workspace), s2_jobs, s2_nightly, s2_extra);
+            rc = r.ok() ? *r : 2;
+            if (!r.ok())
+                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
+        } else if (*fetch) {
+            std::vector<std::pair<std::string, std::string>> overrides;
+            if (!parse_pairs(f_deps, "--dependency", overrides))
+                return 2;
+            auto r = cmd_fetch(fs::path(f_workspace), overrides);
+            rc = r.ok() ? *r : 2;
+            if (!r.ok())
+                std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());
+        } else if (*cache) {
+            auto r = cmd_cache(fs::path(ca_workspace), ca_prune);
             rc = r.ok() ? *r : 2;
             if (!r.ok())
                 std::fprintf(stderr, "kiln: error: %s\n", r.error.c_str());

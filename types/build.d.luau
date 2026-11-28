@@ -23,6 +23,15 @@ export type ModuleDeps = {
     private: { string? }?,
 }
 
+-- `embed` on a module: the files' bytes in a generated table, <name>_files and
+-- <name>_count, declared in "<name>.embed.h" (spec §7.3). Each entry is named
+-- by the file's name, or its path under `base` when given.
+export type EmbedSpec = {
+    name: string,
+    files: FileSet,
+    base: string?,
+}
+
 export type ModuleSpec = {
     sources: FileSet,
     exclude: FileSet?,
@@ -39,6 +48,7 @@ export type ModuleSpec = {
     public_syslibs: { string? }?,
     public_link_flags: { string? }?,
     flags: { string? }?,
+    embed: EmbedSpec | { EmbedSpec }?,
 }
 
 export type CookSpec = {
@@ -120,6 +130,17 @@ export type WorkspaceSpec = {
     smoke: { suite: string?, hamr: string? }?,
     -- The oldest Kiln this workspace accepts: ">=X.Y" or ">=X.Y.Z".
     kiln_version: string?,
+    -- Inside another workspace, use the outermost one's dependency store
+    -- (default true); false keeps this workspace's own .kiln/store.
+    share_store: boolean?,
+}
+
+-- `dependency "name" { ... }` (workspace manifest only): a repository Kiln
+-- fetches at `commit` into the store and links at .kiln/deps/<name>, which
+-- manifests reach as "dep:<name>/<path>" (spec §6.9).
+export type DependencySpec = {
+    git: string,
+    commit: string, -- the full 40-digit commit id
 }
 
 -- `command "name" { ... }` (workspace manifest only): `kiln <name> [args]`
@@ -224,6 +245,7 @@ declare function c_library(name: string): (spec: CLibrarySpec) -> ()
 declare function target(name: string): (spec: TargetSpec) -> ()
 declare function workspace(name: string): (spec: WorkspaceSpec) -> ()
 declare function command(name: string): (spec: CommandSpec) -> ()
+declare function dependency(name: string): (spec: DependencySpec) -> ()
 
 declare function glob(pattern: string): FileSet
 -- `require "build/x"` is Luau's own require: a checker that resolves Kiln's

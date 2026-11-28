@@ -27,6 +27,14 @@ struct PluginDecl {
     int line = 0;
 };
 
+// `embed = { name, files, base }` on a module: the files' bytes in a generated
+// table the module compiles (the built-in embed rule).
+struct EmbedDecl {
+    std::string name;               // a C identifier: <name>_files, <name>_count
+    std::vector<std::string> files; // workspace-relative
+    std::vector<std::string> entries; // each file's name in the table, parallel to files
+};
+
 struct ModuleDecl {
     std::string plugin;
     std::string name;
@@ -46,6 +54,7 @@ struct ModuleDecl {
     std::vector<std::string> public_syslibs;  // propagate to dependents' links
     std::vector<std::string> public_link_flags; // extra link-flag tokens, propagated (KILN-3 analog)
     std::vector<std::string> flags;           // extra compile-flag tokens (KILN-1)
+    std::vector<EmbedDecl> embeds;
     std::string file;
     int line = 0;
 };
@@ -151,6 +160,16 @@ struct TargetDecl {
     int line = 0;
 };
 
+// `dependency "name" { git, commit }` in the workspace manifest: a repository
+// Kiln fetches at a commit into the workspace's store and links at
+// .kiln/deps/<name>, which manifests reach as `dep:<name>/...`.
+struct DependencyDecl {
+    std::string name;
+    std::string git;    // a URL or a path git can fetch from
+    std::string commit; // 40 lowercase hex digits
+    std::string file;   // the declaring call site
+};
+
 // One entry of the workspace's plugin_roots list (spec §0).
 struct PluginRootDecl {
     std::string path;  // workspace-relative, forward-slash
@@ -182,6 +201,8 @@ struct WorkspaceDecl {
     // last stdout line is the hamr binary (empty = hamr on PATH).
     std::string smoke_suite;
     std::string smoke_hamr;
+    // Nested inside another workspace, share the outermost one's store.
+    bool share_store = true;
 };
 
 // `command "name" { help, build, run, config }` in the workspace manifest: a
@@ -205,6 +226,7 @@ struct DeclSet {
     std::optional<TargetDecl> target;
     std::optional<WorkspaceDecl> workspace;
     std::vector<CommandDecl> commands; // call order
+    std::vector<DependencyDecl> dependencies; // call order
     std::vector<std::string> required_files; // sorted, deduped
     std::vector<FileSet> globs;              // call order; each FileSet sorted
 };

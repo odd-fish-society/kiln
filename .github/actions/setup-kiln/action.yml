@@ -1,0 +1,80 @@
+# Puts a released Kiln on PATH for a workflow, checked against its checksum,
+# and caches the workspace's dependency store between runs.
+#
+#   - uses: odd-fish-society/kiln/.github/actions/setup-kiln@v0.4.0
+#     with:
+#       version: 0.4.0
+#
+# The release is downloaded into the workspace (.kiln/store/releases), like
+# seed.sh does, so a job writes nothing outside its checkout.
+name: Set up Kiln
+description: Download a Kiln release, check its checksum, put it on PATH, and cache the dependency store.
+
+inputs:
+  version:
+    description: The Kiln version to install (for example 0.4.0).
+    required: true
+  sha256:
+    description: >
+      The release download's SHA256. Without it, the action checks the download against the
+      release's own SHA256SUMS, which guards against a broken download but not a replaced release.
+    required: false
+    default: ''
+  workspace:
+    description: The workspace folder (where kiln.workspace.cluau is).
+    required: false
+    default: '.'
+  cache-store:
+    description: Cache the workspace's .kiln/store between runs, keyed on kiln.workspace.cluau.
+    required: false
+    default: 'true'
+
+outputs:
+  kiln:
+    description: The path of the kiln binary.
+    value: ${{ steps.install.outputs.kiln }}
+
+runs:
+  using: composite
+  steps:
+    - name: Restore the dependency store
+      if: inputs.cache-store == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ inputs.workspace }}/.kiln/store/git
+          ${{ inputs.workspace }}/.kiln/store/src
+        key: kiln-store-${{ runner.os }}-${{ hashFiles(format('{0}/kiln.workspace.cluau', inputs.workspace)) }}
+        restore-keys: kiln-store-${{ runner.os }}-
+
+    - name: Install Kiln ${{ inputs.version }}
+      id: install
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        WANT_SHA256: ${{ inputs.sha256 }}
+        WORKSPACE: ${{ inputs.workspace }}
+      run: |
+        set -euo pipefail
+        case "$(uname -s)-$(uname -m)" in
+          Linux-x86_64) platform=linux-x86_64 ;;
+          *) echo "Kiln $VERSION has no release for $(uname -s) $(uname -m)"; exit 1 ;;
+        esac
+        name="kiln-v$VERSION-$platform"
+        base="https://github.com/odd-fish-society/kiln/releases/download/v$VERSION"
+        dir="$WORKSPACE/.kiln/store/releases/$VERSION"
+        mkdir -p "$dir"
+        curl -fsSL --retry 3 -o "$dir/$name.tar.gz" "$base/$name.tar.gz"
+        if [ -z "$WANT_SHA256" ]; then
+          WANT_SHA256=$(curl -fsSL --retry 3 "$base/SHA256SUMS" | awk -v f="$name.tar.gz" '$2 == f { print $1 }')
+        fi
+        got=$(sha256sum "$dir/$name.tar.gz" | cut -d' ' -f1)
+        if [ "$got" != "$WANT_SHA256" ]; then
+          echo "$name.tar.gz has checksum $got, expected $WANT_SHA256"
+          exit 1
+        fi
+        tar -xzf "$dir/$name.tar.gz" -C "$dir"
+        bin="$(cd "$dir/$name/bin" && pwd)"
+        "$bin/kiln" --version
+        echo "$bin" >> "$GITHUB_PATH"
+        echo "kiln=$bin/kiln" >> "$GITHUB_OUTPUT"

@@ -29,7 +29,13 @@ Result<int> cmd_setup_clion(const fs::path& root, const std::string& config);
 Result<int> cmd_clean(const fs::path& root, bool traces, bool dead);
 Result<int> cmd_test(const fs::path& root, const std::string& target, int jobs,
                      const std::string& platform, const std::string& config,
-                     const std::vector<std::pair<std::string, std::string>>& tools = {});
+                     const std::vector<std::pair<std::string, std::string>>& tools = {},
+                     const std::vector<std::pair<std::string, std::string>>& dependencies = {});
+// `kiln fetch [--dependency name=dir]`: fetch and link every declared dependency.
+Result<int> cmd_fetch(const fs::path& root,
+                      const std::vector<std::pair<std::string, std::string>>& overrides);
+// `kiln cache [--prune]`: the dependency store's contents and sizes.
+Result<int> cmd_cache(const fs::path& root, bool prune);
 // The workspace's hamr suite (`smoke.suite`) under hamr, the nightly tier or
 // the fast one; `extra` goes to `hamr run` as it is (--only, --changed, ...).
 // Replaces the process with hamr's on success.

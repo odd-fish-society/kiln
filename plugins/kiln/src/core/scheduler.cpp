@@ -206,6 +206,7 @@ void Scheduler::worker_loop() {
             Executor::DepInfo di;
             di.id = graph_.nodes()[d].decl.id;
             di.outputs_changed = session_[d].outputs_changed;
+            di.outputs = graph_.nodes()[d].decl.declared_outputs;
             if (session_[d].new_trace) {
                 if (graph_.nodes()[d].decl.outputs_opaque)
                     di.output_summary = input_summary_hash(session_[d].new_trace->inputs);
