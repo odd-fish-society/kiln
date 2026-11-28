@@ -1,5 +1,6 @@
 target "kiln" {
     platforms = { "linux" },
     default_config = "release",
-    link = { "kiln/cli" },
+    enable_plugins = { "kiln_main" },
+    link = { "kiln_main/main" },
 }

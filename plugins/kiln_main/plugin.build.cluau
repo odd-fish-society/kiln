@@ -1,0 +1,17 @@
+// The kiln executable's entry point, kept apart from the verbs in kiln/cli so
+// a binary that links Kiln's code (the suite) doesn't get a second `main`.
+// Only the kiln target enables it.
+
+const flags = require "build/flags"
+
+plugin "kiln_main" {
+    enabled_by_default = false,
+    public_deps = { "kiln", "cli11" },
+}
+
+module "main" {
+    sources = glob("src/*.cpp"),
+    deps = { private = { "kiln/cli", "cli11/cli11" } },
+    cpp_std = "c++20",
+    flags = flags.flags,
+}

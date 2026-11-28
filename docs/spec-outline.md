@@ -74,7 +74,8 @@ plugins/kiln/src/workspace/   workspace loading, plugin resolution, expansion, l
                               and the dead-output sweep (the target graph)
 plugins/kiln/src/luau/        the VM, the manifest environment, declarations, glob, lints
 plugins/kiln/src/rules/       the built-in rules: C and C++, PCH, exec, copy, checks
-plugins/kiln/src/cli/         main.cpp and one file per group of verbs
+plugins/kiln/src/cli/         one file per group of verbs
+plugins/kiln_main/src/        main.cpp, the entry point (only the kiln target enables it)
 plugins/kiln/src/console/     the progress renderer and ANSI helpers
 plugins/kiln/std/cook.cluau   the standard cook rules, built into the binary
 plugins/kiln_tests/           one test file per area (k1_core_loop.cpp, ...) and fixtures/

@@ -77,7 +77,8 @@ RunResult run_kiln(const fs::path& dir, const std::vector<std::string>& args,
         dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[0]);
         close(pipefd[1]);
-        chdir(dir.c_str());
+        if (chdir(dir.c_str()) != 0)
+            _exit(127);
         for (auto& [k, v] : env)
             setenv(k.c_str(), v.c_str(), 1);
         std::vector<char*> cargv;

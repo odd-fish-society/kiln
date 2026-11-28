@@ -239,7 +239,8 @@ TEST_CASE("R1.6 daemon rebuilds on a save under the second root") {
         dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[0]);
         close(pipefd[1]);
-        chdir(tmp.path.c_str());
+        if (chdir(tmp.path.c_str()) != 0)
+            _exit(127);
         execl(kiln_binary().c_str(), kiln_binary().c_str(), "daemon", "--progress=plain",
               "--workspace", ".", (char*)nullptr);
         _exit(127);
